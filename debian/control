@@ -1,0 +1,53 @@
+Source: mm-pve-tools
+Section: admin
+Priority: optional
+Maintainer: MasterMind TI <infra@mastermindti.cloud>
+Build-Depends: debhelper-compat (= 13),
+ perl,
+ python3
+Standards-Version: 4.7.2
+Homepage: https://github.com/MasterMindTIBR/mm-pve-tools
+Vcs-Git: https://github.com/MasterMindTIBR/mm-pve-tools.git
+Vcs-Browser: https://github.com/MasterMindTIBR/mm-pve-tools
+Rules-Requires-Root: binary-targets
+
+Package: mm-pve-tools
+Architecture: all
+Depends: ${misc:Depends},
+ ${perl:Depends},
+ pve-manager (>= 9.0),
+ pve-file-restore-ntfs3g (>= 2.0)
+Description: MasterMind tool modules for the Proxmox VE GUI
+ Extensible toolset from MasterMind TI that lives inside the Proxmox VE
+ web GUI and survives PVE package updates.
+ .
+ Current modules:
+  * renumber - change the VMID of a VM without copying data (move_disk);
+  * restore - publish a folder from a PBS backup to the customer VM over
+    read-only SMB for a limited time, through a dedicated gateway VM;
+  * branding - logo, favicon, title and header texts on every node.
+ .
+ Desired state is kept cluster-wide in /etc/pve/mm-tools/ and applied on
+ each node by "mm-pve apply" (on demand, timer, boot and dpkg triggers).
+
+Package: mm-gw-restore
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ iproute2,
+ proxmox-backup-client,
+ ntfs-3g,
+ ntfs-3g-plugin-dedup,
+ fuse3,
+ samba,
+ nftables,
+ iputils-arping,
+ qemu-guest-agent
+Description: MasterMind restore gateway for Proxmox VE backups
+ Runs inside the dedicated Debian gateway VM used by the "restore" module
+ of mm-pve-tools. Maps PBS backups read-only (ntfs-3g + dedup plugin) and
+ publishes a single chosen folder per session through Samba with
+ per-session credentials, nftables rules and VLAN isolation.
+ .
+ Controlled from the PVE node via the QEMU guest agent; no listening
+ management port.

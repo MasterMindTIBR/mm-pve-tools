@@ -1,0 +1,3 @@
+[-BuiltinFunctions::ProhibitSleepViaSelect]
+[-Subroutines::ProhibitExplicitReturnUndef]
+[-ValuesAndExpressions::ProhibitLeadingZeros]

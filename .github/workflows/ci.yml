@@ -1,0 +1,156 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  schedule:
+    - cron: '23 4 * * 1' # semanal: âncoras + compat ntfs3g
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_IMAGE: docker://debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+
+jobs:
+  perl:
+    name: Perl (syntax + perlcritic + tests)
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    steps:
+      - name: checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            perl make libperl-critic-perl
+      - name: perl -c em tudo (com stubs PVE p/ endpoints)
+        shell: bash
+        run: |
+          rc=0
+          while IFS= read -r f; do
+            perl -Ilib -Iperl -It/lib-stubs -c "$f" || rc=1
+          done < <(find bin lib perl -type f ! -name '*.py' ! -name '*.pod' ! -path '*/t/*' | sort)
+          exit $rc
+      - name: lint Perl
+        run: make lint
+      - name: testes (prove)
+        run: make test
+
+  gateway:
+    name: Gateway (unittest python)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - run: make test-gateway
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: shellcheck nos .sh
+        run: |
+          find . -path ./.git -prune -o -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck
+
+  eslint:
+    name: JS lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: eslint (js/src concatenável)
+        run: |
+          make js
+          npx --yes eslint@8.57.1 -c .eslintrc.json js/src build/mm-tools.js
+
+  build:
+    name: Build .deb + lintian
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential debhelper lintian python3
+      - name: build
+        run: |
+          # root é exigido pelo maintscripts do pacote
+          dpkg-buildpackage -us -uc -b
+          mkdir -p dist && mv ../*.deb ../*.changes dist/ 2>/dev/null || true
+      - name: lintian
+        run: lintian --fail-on error,warning --pedantic dist/*.changes
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: debs
+          path: dist/
+
+  anchors:
+    name: Âncoras de patch (pve-manager + widget-toolkit upstream)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: baixa pve-manager mais recente e testa apply-patches
+        run: |
+          set -e
+          BASE=http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64
+          PKGS=$(curl -fsSL "$BASE/Packages")
+          VER=$(printf '%s\n' "$PKGS" | python3 -c '
+          import re
+          import sys
+          match = re.search(r"(?ms)^Package: pve-manager\n.*?^Version: (\S+)$", sys.stdin.read())
+          if not match:
+              raise SystemExit("pve-manager não encontrado em Packages")
+          print(match.group(1))
+          ')
+          echo "pve-manager $VER"
+          curl -fsSL -o pm.deb "$BASE/pve-manager_${VER}_all.deb"
+          rm -rf /tmp/root && mkdir -p /tmp/root
+          dpkg-deb -x pm.deb /tmp/root
+          # fixture do repo também precisa passar
+          make -s js >/dev/null
+          rc=0
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --check --root /tmp/root || rc=$?
+          case "$rc" in
+            0|3) ;;
+            *) exit "$rc" ;;
+          esac
+      - name: âncora do branding (Logo.js do widget-toolkit)
+        run: |
+          curl -fsSL -o Logo.js \
+            'https://git.proxmox.com/?p=proxmox-widget-toolkit.git;a=blob_plain;f=src/Logo.js;hb=HEAD'
+          grep -q "Ext.define('PMX.image.LogoSVG'" Logo.js
+          grep -q 'proxmox_logo.svg' Logo.js
+
+  ntfs3g-compat:
+    name: Compatibilidade com releases do ntfs3g (APT MasterMind)
+    if: vars.MASTERMIND_APT_READY == 'true'
+    runs-on: ubuntu-24.04
+    # APT é integração externa do Rock 3. A sonda só executa quando a variável
+    # de repositório MASTERMIND_APT_READY estiver explicitamente habilitada.
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl
+      - name: apt update contra apt.mastermindti.cloud
+        run: |
+          curl -fsSLo /usr/share/keyrings/mastermind-archive.gpg \
+            https://apt.mastermindti.cloud/debian/../mastermind-archive.gpg
+          printf 'Types: deb\nURIs: https://apt.mastermindti.cloud/debian\nSuites: trixie\nComponents: stable testing\nSigned-By: /usr/share/keyrings/mastermind-archive.gpg\n' \
+            > /etc/apt/sources.list.d/mastermind.sources
+          apt-get update -o Acquire::Retries=0
+          apt-get install --simulate mm-pve-tools mm-gw-restore

@@ -1,0 +1,38 @@
+#!/bin/sh
+# postinst do mm-pve-tools
+# Regras (plano): nenhuma falha aqui pode quebrar a instalação ou deixar o
+# pveproxy/pvedaemon parados. apply-patches é tolerante por projeto (D5).
+
+set -e
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+case "$1" in
+    configure)
+        # Directorios de estado (fora do pmxcfs)
+        mkdir -p /var/lib/mm-pve-tools /var/log
+        touch /var/log/mm-pve-tools.log || true
+
+        # Patches do pve-manager + estado desejado. Idempotentes; qualquer
+        # problema fica registrado no log e o PVE permanece funcional.
+        if [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
+            /usr/lib/mm-pve-tools/apply-patches || true
+        fi
+        if command -v mm-pve >/dev/null 2>&1; then
+            mm-pve apply >/dev/null 2>&1 || true
+        fi
+        ;;
+    triggered)
+        # Trigger dpkg: pve-manager atualizado → reaplica patch + estado.
+        if [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
+            /usr/lib/mm-pve-tools/apply-patches || true
+        fi
+        if command -v mm-pve >/dev/null 2>&1; then
+            mm-pve apply >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

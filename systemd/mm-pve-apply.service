@@ -1,0 +1,12 @@
+[Unit]
+Description=MasterMind mm-pve-tools: aplica estado desejado no node
+Documentation=file:///usr/share/doc/mm-pve-tools
+After=pveproxy.service pvedaemon.service pve-cluster.service
+ConditionPathExists=/etc/pve/mm-tools/config.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/mm-pve apply
+# Nunca demora mais que o ciclo do timer
+TimeoutStartSec=4min
+Nice=10

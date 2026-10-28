@@ -1,0 +1,34 @@
+#!/bin/sh
+# postinst do mm-gw-restore (VM gateway Debian 13)
+# Cria a estrutura, garante o include do Samba e aplica sysctl/nft base.
+# Tudo idempotente; falha aqui não pode deixar o gateway sem rede.
+
+set -e
+
+case "$1" in
+    configure)
+        install -d -m 0755 /srv/gw-restore/sessions /var/lib/gw-restore/sessions \
+            /var/log/gw-restore /etc/samba/gw-restore.d /etc/gw-restore/keys
+
+        # Include do Samba: uma única linha no [global], arquivo gerado pelo gw-restore
+        if [ -f /etc/samba/smb.conf ]; then
+            if ! grep -qE '^\s*include\s*=\s*/etc/samba/gw-restore\.conf' /etc/samba/smb.conf; then
+                sed -i '/^\[\s*global\s*\]/a include = /etc/samba/gw-restore.conf' \
+                    /etc/samba/smb.conf
+            fi
+        fi
+        [ -f /etc/samba/gw-restore.conf ] || : > /etc/samba/gw-restore.conf
+
+        # sysctl de hardening (não rotear, não responder ARP cruzado)
+        sysctl -p /etc/sysctl.d/90-gw-restore.conf >/dev/null 2>&1 || true
+
+        # Tabela base do nftables (política drop nas vl*)
+        if command -v nft >/dev/null 2>&1; then
+            nft -f /etc/gw-restore/gw-restore.conf >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

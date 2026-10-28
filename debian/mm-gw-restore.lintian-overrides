@@ -1,0 +1,2 @@
+mm-gw-restore: initial-upload-closes-no-bugs
+mm-gw-restore: unusual-interpreter /usr/sbin/nft [etc/gw-restore/gw-restore.conf]

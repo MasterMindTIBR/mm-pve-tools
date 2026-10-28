@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build + pre-release (canal testing)
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential debhelper
+      - name: versão
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: build
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir -p dist
+          mv ../*.deb dist/
+          (cd dist && sha256sum *.deb > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-debs
+          path: dist/
+      - name: pre-release
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
+        with:
+          prerelease: true # pre-release = canal testing (D16)
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
+
+  dispatch-apt:
+    name: Avisa o repositório APT (MasterMindTIBR/apt)
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: token do GitHub App mastermind-apt-bot
+        id: app
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: ${{ vars.APT_BOT_APP_ID }}
+          private-key: ${{ secrets.APT_BOT_PRIVATE_KEY }}
+          owner: MasterMindTIBR
+          repositories: apt
+      - name: repository_dispatch
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ steps.app.outputs.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/MasterMindTIBR/apt/dispatches \
+            -d '{"event_type":"apt-publish","client_payload":{"repo":"mm-pve-tools","version":"${{ needs.build.outputs.version }}"}}'

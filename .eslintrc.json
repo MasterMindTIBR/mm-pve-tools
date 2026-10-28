@@ -1,0 +1,22 @@
+{
+  "root": true,
+  "env": { "browser": true, "es2024": true },
+  "parserOptions": { "ecmaVersion": 2024, "sourceType": "script" },
+  "globals": {
+    "Ext": "readonly",
+    "Proxmox": "readonly",
+    "PVE": "readonly",
+    "MM": "readonly",
+    "gettext": "readonly"
+  },
+  "extends": "eslint:recommended",
+  "rules": {
+    "no-unused-vars": ["error", { "args": "none", "varsIgnorePattern": "^_" }],
+    "no-console": "warn",
+    "no-mixed-spaces-and-tabs": "off",
+    "eqeqeq": ["error", "smart"],
+    "no-var": "error",
+    "prefer-const": "off",
+    "no-undef": "error"
+  }
+}

@@ -1,0 +1,7 @@
+[Unit]
+Description=MasterMind gw-restore: coleta de sessões vencidas
+Documentation=file:///usr/share/doc/mm-gw-restore
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/gw-restore gc

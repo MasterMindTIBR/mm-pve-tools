@@ -1,0 +1,41 @@
+=encoding UTF-8
+
+=for comment
+Manpage do gw-restore (lado do gateway do módulo restore).
+Contrato completo dos subcomandos: ver plano mm-pve-tools, seção "No gateway".
+
+=head1 NAME
+
+gw-restore - publica pastas de backups PBS via Samba, por sessão
+
+=head1 SYNOPSIS
+
+B<gw-restore> B<publish> (JSON de entrada no stdin; JSON de saída no stdout)
+
+B<gw-restore> B<revoke> I<id-sessão> | B<--all>
+
+B<gw-restore> B<list> [B<--json>]
+
+B<gw-restore> B<gc> [B<--boot>]
+
+B<gw-restore> B<selfcheck> [B<--json>]
+
+=head1 DESCRIPTION
+
+Roda na VM gateway Debian. Mapeia snapshots de backup do PBS com
+C<proxmox-backup-client map>, monta NTFS só-leitura com ntfs-3g + plugin de
+dedup e publica UMA pasta por sessão via Samba (SMB3 obrigatório, usuário e
+senha aleatórios por sessão, C<hosts allow> com o IP da VM de destino, regra
+nftables por subinterface VLAN). Sessões expiram por tempo (B<gc>) ou por
+revogação explícita. Nenhuma credencial vai para log.
+
+Os pré-requisitos do gateway (token PBS em C</etc/gw-restore/pbs.env>,
+chave C<TRUNK=><interface> indicando a trunk VLAN-aware, keyfiles em
+C</etc/gw-restore/keys/<storage>.enc> para backups criptografados) são
+verificados por B<gw-restore selfcheck>.
+
+=head1 SEE ALSO
+
+L<mm-pve(8)>
+
+=cut

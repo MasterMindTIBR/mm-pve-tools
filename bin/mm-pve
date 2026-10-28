@@ -1,0 +1,278 @@
+#!/usr/bin/perl
+# mm-pve — CLI da MasterMind para o PVE (root).
+# A lógica dos módulos fica aqui; API e GUI só chamam esta CLI (plano D4).
+
+use strict;
+use warnings;
+use FindBin;
+use Getopt::Long qw(:config no_auto_abbrev no_ignore_case bundling);
+use JSON::PP;
+
+BEGIN {
+    # Desenvolvimento: rodando direto do repo (bin/ + lib/ + perl/)
+    my $dev = "$FindBin::Bin/..";
+    if (-d "$dev/lib/MMPve") {
+        unshift @INC, "$dev/lib", "$dev/perl";
+    }
+}
+
+use MMPve::Core::Config;
+use MMPve::Core::Apply;
+use MMPve::Core::Status;
+use MMPve::Core::Patch;
+use MMPve::Core::Modules;
+
+our $VERSION = '0.1.0';
+
+my $JSON = 0;
+
+sub out_json {
+    my ($d) = @_;
+    binmode(STDOUT);
+    print JSON::PP->new->canonical->pretty->utf8->encode($d), "\n";
+}
+
+sub usage {
+    print <<'EOF';
+mm-pve — ferramentas MasterMind para Proxmox VE
+
+uso: mm-pve [--json] <comando> [opções]
+
+comandos do núcleo:
+  version                      versão do mm-pve-tools
+  config get                   mostra o config (com digest)
+  config set --file <arquivo>  substitui o config (--stdin lê da entrada)
+                               [--digest <sha256:...>] exige revisão concorrente
+  config set-module <nome> --enable|--disable
+  apply [--no-patches]         aplica patches + módulos neste node
+  status                       diagnóstico deste node
+  patch check|apply|revert     patch do pve-manager
+  help                         esta ajuda
+
+comandos por módulo:
+  renumber ...                 troca de VMID   (mm-pve renumber --help)
+  restore ...                  publicação de pasta (mm-pve restore --help)
+  branding ...                 identidade visual (mm-pve branding --help)
+
+global: --json  saída em JSON
+EOF
+}
+
+sub fail {
+    my ($msg, $hint) = @_;
+    print STDERR "ERRO: $msg\n";
+    print STDERR "Continue com: $hint\n" if $hint;
+    exit 1;
+}
+
+sub cmd_config_get {
+    my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
+    if ($JSON) {
+        out_json({
+            config => $cfg,
+            digest => $digest,
+            absent => $absent ? 1 : 0,
+        });
+    } else {
+        print JSON::PP->new->pretty->canonical->encode($cfg);
+        print "digest: " . ($digest // '(inexistente: defaults)') . "\n";
+    }
+    return 0;
+}
+
+sub cmd_config_set {
+    my @argv = @_;
+    my ($file, $stdin, $digest);
+    local @ARGV = @argv;
+    GetOptions(
+        'file=s'   => \$file,
+        'stdin'    => \$stdin,
+        'digest=s' => \$digest,
+    ) or return 2;
+    my $raw;
+    if ($stdin) {
+        local $/;
+        $raw = <STDIN>;
+    } elsif ($file) {
+        open(my $fh, '<', $file) or fail "não abri $file: $!";
+        local $/;
+        $raw = <$fh>;
+        close $fh;
+    } else {
+        fail 'config set precisa de --file <arquivo.json> ou --stdin';
+    }
+    my $data = eval { decode_json($raw) };
+    fail "JSON inválido: $@" if $@;
+    my ($saved, $dig) = eval { MMPve::Core::Config->save($data, defined $digest ? (digest => $digest) : ()) };
+    fail(($@ =~ /^DIGEST_MISMATCH/ ? "outra pessoa salvou antes de você; releia o config ($@)" : $@),
+        'mm-pve config get') if $@;
+    print "config salvo (revision $saved->{revision})\ndigest: $dig\n" unless $JSON;
+    out_json({ revision => $saved->{revision}, digest => $dig }) if $JSON;
+    return 0;
+}
+
+sub cmd_config_set_module {
+    my @argv = @_;
+    my ($enable, $disable);
+    local @ARGV = @argv;
+    GetOptions('enable' => \$enable, 'disable' => \$disable) or return 2;
+    my $name = shift @ARGV;
+    fail 'uso: config set-module <renumber|restore|branding> --enable|--disable' unless $name;
+    my ($cfg, $digest) = MMPve::Core::Config->load;
+    my %known = map { $_ => 1 } MMPve::Core::Modules->names;
+    fail "módulo desconhecido '$name' (conhecidos: " . join(', ', sort keys %known) . ')'
+        unless $known{$name};
+    fail 'use --enable OU --disable' unless $enable ^ $disable;
+    $cfg->{modules}{$name} = $enable ? 1 : 0;
+    my ($saved) = eval { MMPve::Core::Config->save($cfg, digest => $digest) };
+    fail $@, 'mm-pve apply' if $@;
+    print "módulo $name " . ($enable ? 'ligado' : 'desligado') . " (revision $saved->{revision}); rode mm-pve apply\n";
+    return 0;
+}
+
+sub cmd_apply {
+    my @argv = @_;
+    my $nopatch;
+    local @ARGV = @argv;
+    GetOptions('no-patches' => \$nopatch) or return 2;
+    my $res = eval { MMPve::Core::Apply->apply_all($nopatch ? (patches => 0) : ()) };
+    fail $@, 'mm-pve status' if $@;
+    if ($JSON) {
+        out_json($res);
+    } else {
+        print "apply revision $res->{revision}: " . ($res->{ok} ? 'OK' : 'COM ERROS') . "\n";
+        for my $n (sort keys %{ $res->{modules} // {} }) {
+            my $m = $res->{modules}{$n};
+            printf "  %-9s %-7s %s\n", $n, ($m->{enabled} ? 'ligado' : 'desligado'),
+                ($m->{ok} ? 'ok' : "ERRO: " . ($m->{error} // '?'));
+        }
+        my $p = $res->{patches};
+        if ($p) {
+            for my $t (sort keys %{ $p->{targets} // {} }) {
+                printf "  patch %-10s %s\n", $t, $p->{targets}{$t}{status};
+            }
+        }
+    }
+    return $res->{ok} ? 0 : 1;
+}
+
+sub cmd_status {
+    my $s = eval { MMPve::Core::Status->collect };
+    fail $@ if $@;
+    if ($JSON) {
+        out_json($s);
+    } else {
+        print "node:            $s->{node}\n";
+        print "mm-pve-tools:    $s->{package_version}\n";
+        print "pve:             $s->{pve_version}\n";
+        my $ap = $s->{applied};
+        print "estado:          $ap->{state} (aplicada r" . ($ap->{applied_revision} // '-') . ', config r' . ($ap->{config_revision} // '-') . ")\n";
+        my $pc = $ap->{patches} // {};
+        print "patch index.tpl: " . ($pc->{index_tpl}{status} // '?') . "\n";
+        print "patch Nodes.pm:  " . ($pc->{nodes_pm}{status} // '?') . "\n";
+        my $nt = $s->{ntfs3g};
+        print "ntfs3g:          " . (defined $nt->{ok} ? ($nt->{ok} ? 'OK' : 'FALHOU: ' . ($nt->{error} // '')) : '(pulou)') . "\n";
+    }
+    return 0;
+}
+
+sub cmd_patch {
+    my @argv = @_;
+    my $sub = shift @argv // '';
+    if ($sub eq 'check') {
+        my $c = MMPve::Core::Patch->check;
+        out_json($c) if $JSON;
+        for my $k (sort keys %{$c}) { print "$k: $c->{$k}{status}\n" unless $JSON }
+        return 0;
+    }
+    if ($sub eq 'apply') {
+        my $r = MMPve::Core::Patch->apply;
+        out_json($r) if $JSON;
+        return $r->{ok} ? 0 : 1;
+    }
+    if ($sub eq 'revert') {
+        my $r = MMPve::Core::Patch->revert;
+        out_json($r) if $JSON;
+        return 0;
+    }
+    print STDERR "uso: mm-pve patch check|apply|revert\n";
+    return 2;
+}
+
+# ---------------------------------------------------------------- main
+
+my @argv = @ARGV;
+my $cmd = shift @argv // 'help';
+
+# --json pode vir antes ou depois do comando
+if ($cmd eq '--json') {
+    $JSON = 1;
+    $cmd = shift @argv // 'help';
+}
+@argv = grep { $_ ne '--json' ? 1 : do { $JSON = 1; 0 } } @argv;
+
+my %MODULE_CMD = (
+    renumber => 'MMPve::Module::Renumber',
+    restore  => 'MMPve::Module::Restore',
+    branding => 'MMPve::Module::Branding',
+);
+
+my $rc;
+if ($cmd eq 'help' || $cmd eq '--help' || $cmd eq '-h') {
+    usage();
+    $rc = 0;
+} elsif ($cmd eq 'version') {
+    out_json({ version => $VERSION }) if $JSON;
+    print "mm-pve-tools $VERSION\n" unless $JSON;
+    $rc = 0;
+} elsif ($cmd eq 'config') {
+    my $sub = shift @argv // 'get';
+    if ($sub eq 'get') {
+        $rc = cmd_config_get();
+    } elsif ($sub eq 'set') {
+        $rc = cmd_config_set(@argv);
+    } elsif ($sub eq 'set-module') {
+        $rc = cmd_config_set_module(@argv);
+    } else {
+        print STDERR "uso: mm-pve config get|set|set-module\n";
+        $rc = 2;
+    }
+} elsif ($cmd eq 'apply') {
+    $rc = cmd_apply(@argv);
+} elsif ($cmd eq 'status') {
+    $rc = cmd_status(@argv);
+} elsif ($cmd eq 'patch') {
+    $rc = cmd_patch(@argv);
+} elsif ($MODULE_CMD{$cmd}) {
+    my $cls = $MODULE_CMD{$cmd};
+    eval "require $cls" or do { print STDERR "$cls indisponível: $@\n"; exit 1 };
+    $rc = $cls->cli(\@argv);
+} else {
+    print STDERR "comando desconhecido '$cmd'\n";
+    usage();
+    $rc = 2;
+}
+exit($rc // 0);
+
+__END__
+=encoding UTF-8
+
+=head1 NAME
+
+mm-pve - CLI MasterMind para Proxmox VE
+
+=head1 SYNOPSIS
+
+B<mm-pve> [B<--json>] I<comando> [opções]
+
+Comandos: version, config (get|set|set-module), apply, status, patch
+(check|apply|revert) e os subcomandos dos módulos: renumber, restore,
+branding.
+
+=head1 DESCRIPTION
+
+Toda a lógica dos módulos mm-pve-tools vive nesta CLI; a API (pvedaemon) e a
+GUI chamam a CLI. Tarefa interrompida imprime o comando exato para continuar
+(--resume/--rollback).
+
+=cut

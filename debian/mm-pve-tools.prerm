@@ -1,0 +1,17 @@
+#!/bin/sh
+# prerm do mm-pve-tools: na remoção, tira as duas linhas de patch e deixa o
+# PVE original. Em upgrade (upgrade/failed-upgrade) não mexe.
+
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        if [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
+            /usr/lib/mm-pve-tools/apply-patches --revert || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

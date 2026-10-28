@@ -1,0 +1,10 @@
+mm-pve-tools (0.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+    - Core: mm-pve CLI, /etc/pve/mm-tools desired state, per-node apply,
+      pve-manager patches via dpkg triggers, systemd timer, PVE API2 class,
+      mm-tools.js GUI core.
+    - Modules: renumber, restore, branding.
+    - Gateway package mm-gw-restore (gw-restore, nftables, samba, sysctl).
+
+ -- MasterMind TI <infra@mastermindti.cloud>  Tue, 27 Oct 2026 16:20:00 -0300

@@ -1,0 +1,7 @@
+gateway/gw-restore usr/sbin
+gateway/systemd/gw-restore-gc.service usr/lib/systemd/system
+gateway/systemd/gw-restore-gc.timer usr/lib/systemd/system
+gateway/sysctl/90-gw-restore.conf etc/sysctl.d
+gateway/nftables/gw-restore.conf etc/gw-restore
+gateway/samba/gw-restore.conf.example etc/gw-restore
+gateway/gw-restore.env.example etc/gw-restore

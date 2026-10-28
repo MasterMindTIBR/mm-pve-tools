@@ -1,0 +1,77 @@
+#!/usr/bin/perl
+# apply-patches — aplica/verifica/reverte os patches de 1 linha no pve-manager.
+# Chamado por: postinst (configure/triggered), mm-pve apply, CI (--check).
+#
+# Saída/exit (modo apply): sempre 0 exceto catástrofe interna (5). Âncora
+# ausente NÃO é erro: o PVE fica original e o log registra (plano D5).
+# Modo --check: 0 = tudo aplicado; 3 = aplicável mas não aplicado;
+# 4 = âncora quebrada (CI sinaliza antes do update chegar no cliente).
+
+use strict;
+use warnings;
+use FindBin;
+use Getopt::Long qw(:config no_auto_abbrev);
+use JSON::PP;
+
+BEGIN {
+    my $dev = "$FindBin::Bin/../../..";    # repo layout lib/mm-pve-tools/
+    if (-d "$dev/lib/MMPve") {
+        unshift @INC, "$dev/lib", "$dev/perl";
+    } else {
+        # instalado: /usr/lib/mm-pve-tools/apply-patches
+        unshift @INC, '/usr/share/perl5';
+    }
+}
+
+use MMPve::Core::Patch;
+
+my ($check, $revert, $json, $root, $syntax, $norestart);
+GetOptions(
+    'check'          => \$check,
+    'revert'         => \$revert,
+    'json'           => \$json,
+    'root=s'         => \$root,
+    'syntax-check=s' => \$syntax,
+    'no-restart'     => \$norestart,
+) or exit 2;
+
+$ENV{MM_PVE_ROOT} = $root if defined $root;
+my %opts;
+$opts{syntax_check} = $syntax if defined $syntax;
+$opts{no_restart} = 1 if $norestart;
+
+if ($check) {
+    my $c = MMPve::Core::Patch->check;
+    print JSON::PP->new->canonical->pretty->utf8->encode($c), "\n" if $json;
+    my ($missing_anchor, $not_applied) = (0, 0);
+    for my $k (sort keys %{$c}) {
+        my $st = $c->{$k}{status};
+        print "$k: $st\n" unless $json;
+        $missing_anchor = 1 if $st eq 'anchor_missing';
+        $not_applied = 1 if $st eq 'not_applied' || $st eq 'file_missing';
+    }
+    exit($missing_anchor ? 4 : ($not_applied ? 3 : 0));
+}
+
+if ($revert) {
+    my $r = MMPve::Core::Patch->revert(%opts);
+    print JSON::PP->new->canonical->pretty->utf8->encode($r), "\n" if $json;
+    for my $k (sort keys %{ $r->{targets} // {} }) {
+        print "$k: ", $r->{targets}{$k}{status}, "\n" unless $json;
+    }
+    exit 0;
+}
+
+# modo padrão: apply (tolerante)
+my $r = eval { MMPve::Core::Patch->apply(%opts) };
+if ($@) {
+    print STDERR "apply-patches: erro interno: $@\n";
+    MMPve::Core::Util->can('log_line') and eval { MMPve::Core::Util::log_line("apply-patches erro: $@") };
+    exit 5;
+}
+print JSON::PP->new->canonical->pretty->utf8->encode($r), "\n" if $json;
+for my $k (sort keys %{ $r->{targets} // {} }) {
+    my $t = $r->{targets}{$k};
+    print "$k: $t->{status}", (defined $t->{note} ? " ($t->{note})" : ''), "\n" unless $json;
+}
+exit 0;
