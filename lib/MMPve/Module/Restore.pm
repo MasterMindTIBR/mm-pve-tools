@@ -24,7 +24,7 @@ use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_d
 use MMPve::Contract::Gateway;
 use MMPve::Journal;
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 # intervalo entre polls de agent/exec-status (sobrescrito em teste)
 our $POLL_DELAY = 2;

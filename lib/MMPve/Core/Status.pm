@@ -12,7 +12,7 @@ use MMPve::Core::Modules;
 use MMPve::Core::Runner;
 use MMPve::Core::Util qw(log_line);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 # ntfs3g-check: contrato JSON do meta-pacote (ver plano ntfs3g, Rock 3):
 #   {"ok":true,"file_restore":{...},"restore_image":{...},"initramfs_cache_fresh":true}

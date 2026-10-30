@@ -11,7 +11,7 @@ use Digest::SHA ();
 use File::Basename qw(basename);
 use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir flock_ex unlock log_line);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 use constant {
     CONFIG_DIR_DEFAULT => '/etc/pve/mm-tools',

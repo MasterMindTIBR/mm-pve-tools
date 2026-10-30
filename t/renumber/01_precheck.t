@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use JSON::PP;
 use File::Path qw(make_path);
 
@@ -13,8 +14,7 @@ use MMPve::Module::Renumber;
 use MMPve::Core::Runner;
 require PVE::Storage;    # stub (ver t/lib-stubs/PVE/Storage.pm) — R2.6 #9
 
-my $tmp = "$Bin/tmp-pre";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-renumber-pre-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 $ENV{MM_PVE_ROOT} = "$tmp";
 

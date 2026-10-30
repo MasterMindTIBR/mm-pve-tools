@@ -3,13 +3,13 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use JSON::PP qw(decode_json);
 
 use lib "$Bin/../../lib", "$Bin/../../perl";
 use MMPve::Core::Apply;
 
-my $tmp = "$Bin/tmp-apply";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-apply-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_ROOT} = "$tmp";
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 
@@ -60,5 +60,4 @@ subtest 'módulo desligado roda revert' => sub {
     ok($revertiu, 'revert chamado p/ branding desligado');
 };
 
-system("rm -rf $tmp");
 done_testing();

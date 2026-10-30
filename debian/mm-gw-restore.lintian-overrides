@@ -1,2 +1,4 @@
+# Publicação inicial: esta versão não fecha um bug Debian específico.
 mm-gw-restore: initial-upload-closes-no-bugs
+# O arquivo é uma entrada nftables deliberadamente interpretada pelo nft.
 mm-gw-restore: unusual-interpreter /usr/sbin/nft [etc/gw-restore/gw-restore.conf]

@@ -5,7 +5,7 @@ package MMPve::Core::Modules;
 use strict;
 use warnings;
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 my @REGISTRY = qw(
     MMPve::Module::Renumber

@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use JSON::PP;
 
@@ -15,8 +16,7 @@ use MMPve::Core::Runner;
 use MMPve::Journal;
 require PVE::Storage;    # stub (ver t/lib-stubs/PVE/Storage.pm) — R2.6 #9
 
-my $tmp = "$Bin/tmp-run";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-renumber-run-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 $ENV{MM_PVE_ROOT} = "$tmp";
 $MMPve::Core::Runner::OVERRIDE = \&MockPve::handler;   ## no critic

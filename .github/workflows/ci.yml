@@ -61,6 +61,8 @@ jobs:
             | xargs -0 -r shellcheck --shell=sh
           find lib gateway -type f -name '*.sh' -print0 \
             | xargs -0 -r shellcheck --shell=sh
+          find scripts -type f -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck --shell=bash
 
   eslint:
     name: JS lint
@@ -82,26 +84,85 @@ jobs:
       - name: dependências de build
         uses: ./.github/actions/debian-build-deps
       - name: build
-        run: |
-          dpkg-buildpackage -us -uc -b
-          mkdir -p dist
-          mv ../*.deb ../*.changes ../*.buildinfo dist/
-      - name: lintian
-        run: lintian --fail-on error,warning --pedantic dist/*.changes
+        run: scripts/build-deb.sh --in-container --lintian
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: debs
           path: dist/
 
   anchors:
-    name: Âncoras de patch (pve-manager + widget-toolkit upstream)
+    name: Âncoras de patch (pve-manager 9.2.24 fixado)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: baixa os pacotes mais recentes e aplica os patches
+      - name: baixa o pve-manager fixado e o widget-toolkit atual
         run: |
           set -euo pipefail
-          MIRROR=http://download.proxmox.com/debian/pve
+          MIRROR=https://download.proxmox.com/debian/pve
+          BASE="$MIRROR/dists/trixie/pve-no-subscription/binary-amd64"
+          curl -fsSL "$BASE/Packages" -o Packages
+          python3 - <<'PY' > packages.tsv
+          import re
+          import subprocess
+
+          source = open("Packages", encoding="utf-8").read()
+          pinned = open("ci/pve-manager.version", encoding="utf-8").read().strip()
+          wanted = ("pve-manager", "proxmox-widget-toolkit")
+          latest = {}
+          for stanza in re.split(r"\n\s*\n", source):
+              fields = dict(
+                  line.split(": ", 1)
+                  for line in stanza.splitlines()
+                  if ": " in line and not line.startswith((" ", "\t"))
+              )
+              package = fields.get("Package")
+              if package not in wanted or "Version" not in fields or "Filename" not in fields:
+                  continue
+              if package == "pve-manager" and fields["Version"] != pinned:
+                  continue
+              current = latest.get(package)
+              if current is None or subprocess.run(
+                  ["dpkg", "--compare-versions", fields["Version"], "gt", current["Version"]],
+                  check=False,
+              ).returncode == 0:
+                  latest[package] = fields
+          missing = [package for package in wanted if package not in latest]
+          if missing:
+              raise SystemExit("pacote(s) ausente(s): " + ", ".join(missing))
+          for package in wanted:
+              item = latest[package]
+              print(f"{package}\t{item['Version']}\t{item['Filename']}")
+          PY
+          while IFS=$'\t' read -r package version filename; do
+            echo "$package $version"
+            curl -fsSL -o "$package.deb" "$MIRROR/$filename"
+            case "$package" in
+              pve-manager) dpkg-deb -x "$package.deb" /tmp/root ;;
+              proxmox-widget-toolkit) dpkg-deb -x "$package.deb" /tmp/widget ;;
+            esac
+          done < packages.tsv
+          make -s js >/dev/null
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root /tmp/root
+          perl -I/tmp/root/usr/share/perl5 -Ilib -Iperl -It/lib-stubs -c \
+            /tmp/root/usr/share/perl5/PVE/API2/Nodes.pm
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" /tmp/widget
+          grep -R -q 'proxmox_logo.svg' /tmp/widget
+
+  anchors-latest:
+    name: Âncoras contra upstream mais recente (semanal, não bloqueante)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: aplica os patches no upstream mais recente
+        id: check
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          MIRROR=https://download.proxmox.com/debian/pve
           BASE="$MIRROR/dists/trixie/pve-no-subscription/binary-amd64"
           curl -fsSL "$BASE/Packages" -o Packages
           python3 - <<'PY' > packages.tsv
@@ -133,8 +194,8 @@ jobs:
               item = latest[package]
               print(f"{package}\t{item['Version']}\t{item['Filename']}")
           PY
-          while IFS=$'\t' read -r package version filename; do
-            echo "$package $version"
+          rm -rf /tmp/root /tmp/widget
+          while IFS=$'\t' read -r package _ filename; do
             curl -fsSL -o "$package.deb" "$MIRROR/$filename"
             case "$package" in
               pve-manager) dpkg-deb -x "$package.deb" /tmp/root ;;
@@ -147,6 +208,41 @@ jobs:
             /tmp/root/usr/share/perl5/PVE/API2/Nodes.pm
           grep -R -q "Ext.define('PMX.image.LogoSVG'" /tmp/widget
           grep -R -q 'proxmox_logo.svg' /tmp/widget
+      - name: abre ou atualiza o issue único de upstream
+        if: steps.check.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'CI: âncoras upstream quebradas';
+            const body = [
+              'A verificação semanal contra o upstream mais recente falhou.',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Fechar este issue somente depois de atualizar as âncoras e a prova.'
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            const issue = existing.data.find(item => item.title === title);
+            if (issue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body
+              });
+            }
 
   ntfs3g-compat:
     name: Compatibilidade com releases do ntfs3g (APT MasterMind)

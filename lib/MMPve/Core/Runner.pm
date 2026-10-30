@@ -14,7 +14,7 @@ use IO::Select;
 use Symbol qw(gensym);
 use JSON::PP qw(decode_json);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 our $OVERRIDE;
 

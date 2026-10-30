@@ -4,7 +4,7 @@
  * Estilo: Ext JS 6, mesmo padrão do pvemanagerlib.js.
  */
 
-Ext.define('MM.Version', { singleton: true, version: '0.1.0' });
+Ext.define('MM.Version', { singleton: true, version: '@MM_PVE_VERSION@' });
 
 /* Registro de abas da tela MasterMind (cada módulo adiciona a sua). */
 Ext.define('MM.Registry', {

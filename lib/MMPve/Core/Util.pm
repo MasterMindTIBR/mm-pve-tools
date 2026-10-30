@@ -13,7 +13,7 @@ our @EXPORT_OK = qw(
     ensure_dir flock_ex unlock
 );
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 # Todos os caminhos de sistema passam por root_path: em teste, MM_PVE_ROOT
 # desloca o prefixo. Caminhos do pmxcfs (/etc/pve/mm-tools) NÃO passam por

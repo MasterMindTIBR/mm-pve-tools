@@ -9,4 +9,5 @@ runs:
         set -eu
         apt-get update -qq
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          build-essential debhelper lintian perl make libperl-critic-perl python3
+          build-essential debhelper lintian perl make libperl-critic-perl python3 \
+          devscripts equivs

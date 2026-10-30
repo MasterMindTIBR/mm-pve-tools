@@ -21,7 +21,7 @@ use MMPve::Core::Util qw(
     root_path read_file write_file_atomic ensure_dir log_line
 );
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 use constant {
     IMAGES_DIR => '/usr/share/pve-manager/images/mm-branding',

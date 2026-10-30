@@ -9,7 +9,7 @@ Standards-Version: 4.7.2
 Homepage: https://github.com/MasterMindTIBR/mm-pve-tools
 Vcs-Git: https://github.com/MasterMindTIBR/mm-pve-tools.git
 Vcs-Browser: https://github.com/MasterMindTIBR/mm-pve-tools
-Rules-Requires-Root: binary-targets
+Rules-Requires-Root: no
 
 Package: mm-pve-tools
 Architecture: all

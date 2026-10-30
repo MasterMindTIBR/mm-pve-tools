@@ -14,10 +14,17 @@ override_dh_auto_build:
 		docs/gw-restore.pod build/man/gw-restore.8
 
 override_dh_auto_test:
+ifneq ($(filter nocheck,$(DEB_BUILD_OPTIONS)),)
+	@echo "testes omitidos por DEB_BUILD_OPTIONS=nocheck"
+else
 	$(MAKE) test test-gateway
+endif
 
-override_dh_auto_install:
+override_dh_install:
 	dh_install
+	version='$(shell dpkg-parsechangelog -SVersion | sed -E 's/^[0-9]+://' | sed -E 's/-[^-]+$$//')'; \
+	grep -rlIZF '@MM_PVE_VERSION@' debian/mm-pve-tools debian/mm-gw-restore \
+	    | xargs -0 -r sed -i "s/@MM_PVE_VERSION@/$$version/g"
 
 override_dh_fixperms:
 	dh_fixperms

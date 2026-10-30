@@ -6,9 +6,7 @@ PROVE      = prove $(PERL_INC)
 JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js
 JS_OUT     = build/mm-tools.js
 
-PKG_VER := $(shell dpkg-parsechangelog -l debian/changelog -SVersion 2>/dev/null || echo 0.1.0-1)
-
-.PHONY: all js test test-gateway lint build build-dir pkg-direct check-anchors clean
+.PHONY: all js test test-gateway lint build build-dir check-anchors clean
 
 all: js
 
@@ -44,33 +42,8 @@ lint:
 	else echo "perlcritic ausente (CI roda)"; fi; \
 	exit $$rc
 
-build: js
-	dpkg-buildpackage -us -uc -b
-
-# Build local de fumaça sem debhelper (o CI usa "make build" com debhelper).
-pkg-direct: js
-	@set -e; \
-	rm -rf build/stage-mm-pve-tools build/stage-mm-gw-restore; \
-	for p in mm-pve-tools mm-gw-restore; do \
-	    mkdir -p build/stage-$$p/DEBIAN; \
-	    python3 scripts/pkg-direct-control.py "$$p" debian/control \
-	        build/stage-$$p/DEBIAN/control; \
-	    [ -s build/stage-$$p/DEBIAN/control ] || { echo "stanza ausente p/ $$p"; exit 1; }; \
-	    while read -r src dst; do \
-	        [ -e "$$src" ] || { echo "FALTA $$src ($$p)"; exit 1; }; \
-	        mkdir -p "build/stage-$$p/$$dst"; \
-	        if [ -d "$$src" ]; then cp -r "$$src" "build/stage-$$p/$$dst/"; \
-	        else cp "$$src" "build/stage-$$p/$$dst/"; fi; \
-	    done < debian/$$p.install; \
-	    for sc in postinst prerm; do \
-	        [ -f debian/$$p.$$sc ] && cp debian/$$p.$$sc build/stage-$$p/DEBIAN/$$sc; \
-	    done; done; \
-	chmod 755 build/stage-*/DEBIAN/postinst build/stage-*/DEBIAN/prerm; \
-	chmod 755 build/stage-mm-pve-tools/usr/sbin/mm-pve \
-	         build/stage-mm-pve-tools/usr/lib/mm-pve-tools/apply-patches \
-	         build/stage-mm-gw-restore/usr/sbin/gw-restore; \
-	dpkg-deb --build --root-owner-group build/stage-mm-pve-tools build/mm-pve-tools_$(PKG_VER)_all.deb; \
-	dpkg-deb --build --root-owner-group build/stage-mm-gw-restore build/mm-gw-restore_$(PKG_VER)_all.deb
+build:
+	./scripts/build-deb.sh
 
 # Valida as âncoras contra o fixture upstream: antes (espera 3=aplicável),
 # aplica (espera 0), depois (espera 0=aplicado). 4=âncora quebrada=falha.

@@ -20,7 +20,7 @@ use warnings;
 use JSON::PP qw(encode_json decode_json);
 use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir now_iso log_line);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 my $MAX = 1024 * 1024;    # limite do pmxcfs
 

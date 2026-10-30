@@ -3,12 +3,11 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use JSON::PP qw(decode_json);
 
 my $repo = "$Bin/../..";
-my $tmp  = "$Bin/tmp-cli";
-system("rm -rf $tmp") == 0 or die;
-system("mkdir -p $tmp") == 0 or die;
+my $tmp  = tempdir('mm-pve-branding-cli-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 
 my @ENVV = (
     "MM_PVE_ROOT=$tmp",
@@ -108,5 +107,4 @@ subtest 'uso' => sub {
     like($out, qr/uso: mm-pve branding/, 'mensagem de uso');
 };
 
-system("rm -rf $tmp");
 done_testing();

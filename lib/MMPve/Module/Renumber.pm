@@ -17,7 +17,7 @@ use MMPve::Core::Config;
 use MMPve::Journal;
 use MMPve::Core::Util qw(read_file write_file_atomic root_path log_line);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 # Espera de tarefa pvesh (testes reduzem o intervalo/timeout).
 our $TASK_POLL    = 2;      # segundos entre consultas a /nodes/<n>/tasks/<upid>/status

@@ -22,7 +22,7 @@ use MMPve::Core::Status;
 use MMPve::Core::Patch;
 use MMPve::Core::Modules;
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 my $JSON = 0;
 

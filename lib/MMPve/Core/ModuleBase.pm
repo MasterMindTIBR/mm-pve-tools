@@ -7,7 +7,7 @@ use strict;
 use warnings;
 use MMPve::Core::Runner;
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 sub name {
     my ($class) = @_;

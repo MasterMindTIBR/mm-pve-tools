@@ -3,11 +3,11 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use JSON::PP qw(decode_json);
 
 my $repo = "$Bin/../..";
-my $tmp = "$Bin/tmp-cli";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-cli-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 
 my @ENVV = (
     "MM_PVE_ROOT=$tmp",
@@ -82,5 +82,4 @@ subtest 'patch check em root vazio: file_missing, exit 0' => sub {
     like($out, qr/file_missing/, 'alvos ausentes reportados');
 };
 
-system("rm -rf $tmp");
 done_testing();

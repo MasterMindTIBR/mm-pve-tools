@@ -19,7 +19,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-VERSION = "1.0"
+VERSION = "@MM_PVE_VERSION@"
 
 # --------------------------------------------------------------------------
 # Caminhos (sobrescritos pelo Ctx nos testes)
@@ -64,6 +64,9 @@ def _contract_path():
     configured = os.environ.get("MM_PVE_CONTRACT_DIR")
     if configured:
         return Path(configured) / "gw-restore.v1.schema.json"
+    installed = Path("/usr/share/mm-gw-restore/contract/gw-restore.v1.schema.json")
+    if installed.is_file():
+        return installed
     return Path(__file__).resolve().parent.parent / "contract" / "gw-restore.v1.schema.json"
 
 

@@ -3,14 +3,14 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use File::Copy qw(copy);
 
 use lib "$Bin/../../lib";
 use MMPve::Core::Patch;
 
-my $tmp = "$Bin/tmp-patch";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-patch-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 
 sub fresh_root {
     my ($name) = @_;
@@ -109,5 +109,4 @@ sub first_index {
     return -1;
 }
 
-system("rm -rf $tmp");
 done_testing();

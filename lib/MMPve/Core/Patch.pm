@@ -12,7 +12,7 @@ use File::Copy qw(copy);
 use MMPve::Core::Runner;
 use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line now_iso);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 my %TARGETS = (
     index_tpl => {

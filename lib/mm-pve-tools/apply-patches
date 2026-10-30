@@ -3,9 +3,10 @@
 # Chamado por: postinst (configure/triggered), mm-pve apply, CI (--check).
 #
 # Saída/exit (modo apply): sempre 0 exceto catástrofe interna (5). Âncora
-# ausente NÃO é erro: o PVE fica original e o log registra (plano D5).
+# ausente não impede o PVE original de continuar; o modo --check, usado pelo
+# CI, transforma essa condição em falha explícita antes do update no cliente.
 # Modo --check: 0 = tudo aplicado; 3 = aplicável mas não aplicado;
-# 4 = âncora quebrada (CI sinaliza antes do update chegar no cliente).
+# 4 = âncora quebrada.
 
 use strict;
 use warnings;
