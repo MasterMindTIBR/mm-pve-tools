@@ -10,6 +10,7 @@ use Sys::Hostname qw(hostname);
 use MMPve::Core::Apply;
 use MMPve::Core::Modules;
 use MMPve::Core::Runner;
+use MMPve::Core::Config;
 use MMPve::Core::Util qw(log_line);
 
 our $VERSION = '@MM_PVE_VERSION@';
@@ -55,8 +56,9 @@ sub collect {
     $s{ntfs3g} = $opts{skip_ntfs3g} ? { ok => undef, skipped => 1 } : $class->_ntfs3g_state;
 
     my %mods;
+    my $cfg = $opts{config} // MMPve::Core::Config->load;
     for my $m (MMPve::Core::Modules->all) {
-        $mods{ $m->name } = { check => eval { $m->check(undef) } || { ok => 0, error => $@ } };
+        $mods{ $m->name } = { check => eval { $m->check($cfg) } || { ok => 0, error => $@ } };
     }
     $s{modules} = \%mods;
 

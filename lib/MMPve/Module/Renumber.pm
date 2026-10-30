@@ -405,7 +405,7 @@ sub _step_move_disks {
         }
         next unless $d->{kind} eq 'volume';
         next unless exists $old_conf->{ $d->{key} };        # já movido (retomada)
-        my $upid = MMPve::Core::Runner->pvesh(create => "$path/move_disk",
+        my $upid = MMPve::Core::Runner->pvesh_task(create => "$path/move_disk",
             disk => $d->{key}, 'target-vmid' => $meta->{to}, 'target-disk' => $d->{key});
         $class->wait_task($upid);
         $moved++;
@@ -760,7 +760,7 @@ sub _undo_move_disks {
         $class->_classify_drives($new_conf, \%storage_types);
 
     for my $d (@on_new) {
-        my $upid = MMPve::Core::Runner->pvesh(create => "$new_path/move_disk",
+        my $upid = MMPve::Core::Runner->pvesh_task(create => "$new_path/move_disk",
             disk => $d->{key}, 'target-vmid' => $from, 'target-disk' => $d->{key});
         $class->wait_task($upid);
     }

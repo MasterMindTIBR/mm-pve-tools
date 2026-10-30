@@ -8,7 +8,7 @@
  *     sessões (GET restore/sessions) e botão Revogar;
  *  d) em falha: passo/erro + comando pronto `mm-pve restore publish
  *     ... --resume` com botão copiar.
- * A senha NUNCA aparece no Task Log — só no GET restore/result/<upid>
+ * A senha NUNCA aparece no Task Log — só no GET restore/results/<result_key>
  * (one-shot, dono da tarefa).
  */
 
@@ -283,15 +283,17 @@ Ext.define('MM.window.RestorePublish', {
 		url: '/nodes/localhost/mm-tools/restore/publish',
 		params: spec,
 		success: (res) => {
-		    let upid = res?.data;
-		    if (!upid) { return; }
+		    let task = res?.data || res;
+		    let upid = task?.upid;
+		    let resultKey = task?.result_key;
+		    if (!upid || !resultKey) { return; }
 		    me.close();
 		    Ext.create('Proxmox.window.TaskViewer', {
 			upid,
 			autoShow: true,
 			listeners: {
 			    // busca única do resultado quando a janela fecha
-			    destroy: () => MM.Restore.fetchResult(upid),
+			    destroy: () => MM.Restore.fetchResult(resultKey),
 			},
 		    });
 		},
@@ -356,10 +358,10 @@ Ext.define('MM.window.RestorePublish', {
     },
 });
 
-/* GET restore/result/<upid> — uma única vez; arquivo apagado no servidor */
-MM.Restore.fetchResult = function (upid, attempt = 0) {
+/* GET restore/results/<result_key> — uma única vez; arquivo apagado no servidor */
+MM.Restore.fetchResult = function (resultKey, attempt = 0) {
     MM.Api.request({
-	url: `/nodes/localhost/mm-tools/restore/result/${encodeURIComponent(upid)}`,
+	url: `/nodes/localhost/mm-tools/restore/results/${encodeURIComponent(resultKey)}`,
 	success: (res) => {
 	    Ext.create('MM.window.RestoreResult', {
 		autoShow: true,
@@ -369,7 +371,7 @@ MM.Restore.fetchResult = function (upid, attempt = 0) {
 	failure: (msg, response) => {
 	    // tarefa pode ainda estar em execução quando o TaskViewer fecha
 	    if (response?.status === 503 && attempt < 30) {
-		Ext.defer(() => MM.Restore.fetchResult(upid, attempt + 1), 2000);
+		Ext.defer(() => MM.Restore.fetchResult(resultKey, attempt + 1), 2000);
 		return;
 	    }
 	    if (response?.status !== 404 && response?.status !== 403) {

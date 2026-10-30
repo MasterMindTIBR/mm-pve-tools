@@ -17,7 +17,8 @@ RestoreTest::setup();
 local $MMPve::Module::Restore::POLL_DELAY = 0;
 
 # ---------- resultado: dono + one-shot ----------
-my $key = 'UPID:pve1:0000012:0000AB:1:mmrestore:restore:100:root@pam:';
+my $upid = 'UPID:pve1:0000012:0000AB:1:mmrestore:restore:100:root@pam:';
+my $key = $R->result_key_for_upid($upid);
 $R->save_result($key, 'admin@pve', { unc => 'u', password => 'x' });
 my $f = "$ENV{MM_PVE_ROOT}/run/mm-pve-tools/results/$key.json";
 is((stat($f))[2] & 0777, 0600, 'resultado 0600');

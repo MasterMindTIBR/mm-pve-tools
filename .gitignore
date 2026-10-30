@@ -20,3 +20,4 @@ __pycache__/
 *.pyc
 .coverage
 t/*/tmp-*/
+t/lab/lab.env

@@ -41,7 +41,7 @@ __PACKAGE__->register_method({
     path => '',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Índice do mm-pve-tools (MasterMind).',
     parameters => {
         additionalProperties => 0,
@@ -76,7 +76,7 @@ __PACKAGE__->register_method({
     path => 'config',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Lê o estado desejado dos módulos MasterMind (/etc/pve/mm-tools/config.json).',
     protected => 1,
     parameters => {
@@ -105,8 +105,8 @@ __PACKAGE__->register_method({
     path => 'config/{section}',
     method => 'PUT',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Modify']] },
-    description => 'Salva uma seção do estado desejado; digest CAS é obrigatório.',
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
+    description => 'Salva uma seção do estado desejado; digest CAS é opcional na primeira gravação.',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -118,6 +118,7 @@ __PACKAGE__->register_method({
             },
             digest => {
                 type => 'string',
+                optional => 1,
                 description => 'sha256 do arquivo atual, lido no GET (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
             },
@@ -149,7 +150,7 @@ __PACKAGE__->register_method({
     path => 'apply',
     method => 'POST',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Modify']] },
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
     description => 'Aplica patches + módulos neste node (tarefa em worker; acompanhe no Task Log).',
     protected => 1,
     parameters => {
@@ -192,7 +193,7 @@ __PACKAGE__->register_method({
     path => 'status',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Diagnóstico do node: versões, patches, revisão aplicada, ntfs3g.',
     protected => 1,
     parameters => {
@@ -205,7 +206,11 @@ __PACKAGE__->register_method({
     code => sub {
         my ($param) = @_;
 
-        return MMPve::Core::Status->collect(skip_ntfs3g => 0);
+        my $rpcenv = PVE::RPCEnvironment->get();
+        my $authuser = $rpcenv->get_user();
+        my ($cfg) = MMPve::Core::Config->load;
+        return MMPve::Core::Status->collect(skip_ntfs3g => 0, config => $cfg,
+            authuser => $authuser);
     },
 });
 

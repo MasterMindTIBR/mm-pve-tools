@@ -325,8 +325,10 @@ sub _with_write_lock {
 
     # flock é somente fallback de testes; em um PVE a trava do pmxcfs cobre
     # todos os nodes do cluster.
-    if (eval { require PVE::Cluster; 1 }) {
-        return PVE::Cluster::cfs_lock_domain('mm-tools', 10, $code);
+    if (!$ENV{MM_PVE_DISABLE_CFS_LOCK} && eval { require PVE::Cluster; 1 }) {
+        my $out = PVE::Cluster::cfs_lock_domain('mm-tools', 10, $code);
+        die $@ if $@;
+        return $out;
     }
 
     my $lock = flock_ex($class->lock_path);
@@ -356,11 +358,19 @@ sub save_section {
     my ($class, $section, $value, %opt) = @_;
     my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding);
     die "seção inválida '$section'\n" unless $allowed{$section};
-    die "digest obrigatório para salvar seção\n" unless defined $opt{digest};
-
-    my ($cfg) = $class->load;
-    $cfg->{$section} = $value;
-    return $class->save($cfg, %opt);
+    my $saved = $class->_with_write_lock(sub {
+        my ($raw, $current_digest, $err) = $class->load_raw;
+        my $cfg;
+        if (defined $err) {
+            $cfg = $class->default;
+        } else {
+            $cfg = eval { decode_json($raw) };
+            die "config.json inválido durante a gravação: $@\n" if $@;
+        }
+        $cfg->{$section} = $value;
+        return [ $class->_write_locked($cfg, %opt) ];
+    });
+    return wantarray ? @{$saved} : $saved->[0];
 }
 
 1;

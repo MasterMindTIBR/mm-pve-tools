@@ -20,7 +20,7 @@ use parent qw(MMPve::Core::ModuleBase);
 
 use MMPve::Core::Runner;
 use MMPve::Core::Config;
-use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_dir now_iso);
+use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_dir now_iso flock_ex unlock random_uuid sha256_hex_of);
 use MMPve::Contract::Gateway;
 use MMPve::Journal;
 
@@ -185,18 +185,18 @@ sub gw_exec {
         $st = MMPve::Core::Runner->pvesh(get => "/nodes/$gw_node/qemu/$gwvmid/agent/exec-status",
             pid => $pid);
         last if $st->{exited};
-        die "timeout (${GW_TIMEOUT}s) esperando o gateway (pid $pid)\n"
+        die "timeout (" . ($opt{timeout} // $GW_TIMEOUT) . "s) esperando o gateway (pid $pid)\n"
             if time >= $deadline;
         sleep($POLL_DELAY);
     }
     if (defined $st->{exitcode} && $st->{exitcode} != 0) {
-        my $detail = $st->{err} // '';
+        my $detail = $st->{'err-data'} // $st->{err} // '';
         $detail =~ s/\s+$//;
         $detail = substr($detail, 0, 500) if length($detail) > 500;
         die "gw-restore falhou (exit " . $st->{exitcode} . ")"
             . (length($detail) ? ": $detail" : "") . "\n";
     }
-    return $st->{out} // '';
+    return $st->{'out-data'} // $st->{out} // '';
 }
 
 sub gateway_locate {
@@ -214,35 +214,124 @@ sub results_dir {
     return root_path('/run/mm-pve-tools/results');
 }
 
+sub results_lock_path {
+    my ($class) = @_;
+    return $class->results_dir . '/.lock';
+}
+
+sub result_key_for_upid {
+    my ($class, $upid) = @_;
+    die "UPID ausente para calcular result_key\n" unless defined $upid && length $upid;
+    return sha256_hex_of($upid);
+}
+
+sub _result_key_ok {
+    my ($key) = @_;
+    return defined($key) && $key =~ /^[A-Fa-f0-9]{64}$/;
+}
+
+sub register_pending_result {
+    my ($class, $key, $upid, $user) = @_;
+    die "result_key inválido\n" unless _result_key_ok($key);
+    die "UPID ausente\n" unless defined $upid && length $upid;
+    my $dir = $class->results_dir;
+    ensure_dir($dir, 0700);
+    my $lock = flock_ex($class->results_lock_path);
+    my $ok = eval {
+        if (!-f "$dir/$key.json") {
+            write_file_atomic("$dir/$key.pending", encode_json({
+                user => $user, upid => $upid, created => now_iso(),
+            }) . "\n", 0600);
+        }
+        1;
+    };
+    my $err = $@;
+    unlock($lock);
+    die $err unless $ok;
+    return 1;
+}
+
 # grava resultado com a senha — NUNCA em log/journal/Task Log
 sub save_result {
     my ($class, $key, $user, $data) = @_;
-    die "key inválida\n" unless $key =~ /^[A-Za-z0-9:._\@-]+$/;
+    die "result_key inválido\n" unless _result_key_ok($key);
     my $dir = $class->results_dir;
     ensure_dir($dir, 0700);
     chmod(0700, $dir);
     my $file = "$dir/$key.json";
-    write_file_atomic($file, encode_json({
-        user    => $user,
-        created => now_iso(),
-        data    => $data,
-    }) . "\n", 0600);
-    chmod(0600, $file);    # write_file_atomic respeita umask; garante
+    my $lock = flock_ex($class->results_lock_path);
+    my $ok = eval {
+        if (!-f $file) {
+            write_file_atomic($file, encode_json({
+                user    => $user,
+                created => now_iso(),
+                data    => $data,
+            }) . "\n", 0600);
+            chmod(0600, $file);    # write_file_atomic respeita umask; garante
+        }
+        unlink "$dir/$key.pending";
+        1;
+    };
+    my $err = $@;
+    unlock($lock);
+    die $err unless $ok;
     return $file;
 }
 
-# leitura única: apaga o arquivo; só o dono da tarefa (ou root@pam)
+# leitura única: verifica dono sob lock, renomeia para uma claim opaca e só
+# então lê; uma leitura não autorizada deixa o arquivo intacto.
 sub fetch_result {
-    my ($class, $key, $user) = @_;
-    die "key inválida\n" unless $key =~ /^[A-Za-z0-9:._\@-]+$/;
-    my $file = $class->results_dir . "/$key.json";
-    my $raw = eval { read_file($file) };
-    die "resultado não encontrado (não existe ou já foi lido — a leitura é única)\n" if $@;
-    my $res = decode_json($raw);
-    die "resultado pertence a '$res->{user}'; só o dono da tarefa pode lê-lo\n"
-        unless !defined $user || $user eq 'root@pam' || $user eq ($res->{user} // '');
-    unlink($file);
-    return $res->{data};
+    my ($class, $key, $user, %opt) = @_;
+    die "result_key inválido\n" unless _result_key_ok($key);
+    my $dir = $class->results_dir;
+    my $file = "$dir/$key.json";
+    my $lock = flock_ex($class->results_lock_path);
+    my ($data, $err);
+    eval {
+        if (!-f $file) {
+            $err = -f "$dir/$key.pending"
+                ? 'RESULT_UNFINISHED'
+                : 'RESULT_NOT_FOUND: resultado não encontrado (não existe ou já foi lido — a leitura é única)';
+            die "$err\n";
+        }
+        my $meta = decode_json(read_file($file));
+        my $allowed = !defined($user) || $opt{sys_modify}
+            || $user eq 'root@pam' || $user eq ($meta->{user} // '');
+        die "RESULT_FORBIDDEN: resultado pertence a outro requester; só o dono da tarefa ou Sys.Modify pode lê-lo\n"
+            unless $allowed;
+        my $claim = "$dir/$key.claim.$$";
+        rename($file, $claim) or die "RESULT_NOT_FOUND: resultado não encontrado\n";
+        my $claimed = eval { read_file($claim) };
+        my $read_err = $@;
+        unlink($claim);
+        die $read_err if $read_err;
+        $data = decode_json($claimed)->{data};
+        1;
+    } or do { $err = $@ unless defined($err) && length($err) };
+    unlock($lock);
+    die $err if defined $err && length $err;
+    return $data;
+}
+
+sub gc_results {
+    my ($class, %opt) = @_;
+    my $ttl = $opt{ttl} // 3600;
+    my $dir = $class->results_dir;
+    return 0 unless -d $dir;
+    my $lock = flock_ex($class->results_lock_path);
+    my $removed = 0;
+    if (opendir(my $dh, $dir)) {
+        while (my $name = readdir($dh)) {
+            next unless $name =~ /^[A-Fa-f0-9]{64}\.(?:json|pending)$/;
+            my $path = "$dir/$name";
+            my @st = stat($path);
+            next unless @st && time - $st[9] > $ttl;
+            $removed++ if unlink($path);
+        }
+        closedir($dh);
+    }
+    unlock($lock);
+    return $removed;
 }
 
 # ------------------------------------------------------------ tags da VM destino
@@ -357,8 +446,10 @@ sub publish {
     };
     my $resume_cmd;
 
-    my $jid = 'restore-publish-' . substr(
-        MMPve::Core::Util::sha256_hex_of(($spec->{backup} // '') . ($spec->{path_b64} // '')), 0, 12);
+    my %initial_vol = $class->parse_volid($spec->{backup});
+    my $target_vmid = $spec->{vmid} // $initial_vol{vmid};
+    my $jid = 'restore-publish-' . $target_vmid . '-' . substr(
+        sha256_hex_of(($spec->{backup} // '') . ($spec->{path_b64} // '')), 0, 12);
     my $j;
     if ($arg{resume}) {
         $j = eval { MMPve::Journal->open($jid) };
@@ -368,8 +459,7 @@ sub publish {
             $spec->{request_id} //= $m->{request_id};
         }
     }
-    $spec->{request_id} //= substr(MMPve::Core::Util::sha256_hex_of(
-        join(':', $$, time, rand(), $spec->{backup} // '', $spec->{path_b64} // '')), 0, 32);
+    $spec->{request_id} //= random_uuid();
     $j //= MMPve::Journal->create($jid, %{$spec});
     $resume_cmd = _resume_cmd($spec);
     my $fail = sub {
@@ -488,8 +578,10 @@ sub publish {
         $result = eval { decode_json($gw_out) };
         die "saída do gw-restore publish não é JSON\n" if $@;
         MMPve::Contract::Gateway->validate('publish_response', $result);
+        die "gateway devolveu request_id diferente\n"
+            unless ($result->{request_id} // '') eq $spec->{request_id};
         my $key = $arg{result_key}
-            || 'manual-' . $$ . '-' . substr(MMPve::Core::Util::sha256_hex_of($gw_out), 0, 10);
+            || sha256_hex_of($spec->{request_id});
         $class->save_result($key, $spec->{user}, $result);
         $spec->{result_key} = $key;
         $j->record('resultado', result_key => $key);    # SEM a senha

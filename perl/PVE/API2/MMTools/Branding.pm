@@ -2,7 +2,7 @@ package PVE::API2::MMTools::Branding;
 
 # Endpoints do módulo branding sob /nodes/{node}/mm-tools/branding/...
 #   GET  branding              config atual + estado aplicado (check)
-#   PUT  branding/set          campos de texto (digest p/ CAS)
+#   PUT  branding/set          campos de texto (digest p/ CAS; opcional no primeiro write)
 #   PUT  branding/upload       logo_b64/favicon_b64 (máx 200 KB; SVG sanitizado)
 
 use strict;
@@ -40,7 +40,7 @@ __PACKAGE__->register_method({
     path => '',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Branding: config atual e estado aplicado neste node.',
     protected => 0,
     parameters => {
@@ -67,7 +67,7 @@ __PACKAGE__->register_method({
     path => 'set',
     method => 'PUT',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Modify']] },
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
     description => 'Salva os textos do branding (título, topo, login). Imagens vão pelo upload.',
     protected => 1,
     parameters => {
@@ -76,6 +76,7 @@ __PACKAGE__->register_method({
             node => get_standard_option('pve-node'),
             digest => {
                 type => 'string',
+                optional => 1,
                 description => 'sha256 do config atual (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
             },
@@ -127,7 +128,7 @@ __PACKAGE__->register_method({
     path => 'upload',
     proxyto => 'node',
     method => 'PUT',
-    permissions => { check => ['/', ['Sys.Modify']] },
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
     description => 'Envia logo/favicon PNG em base64 (máx. 200 KB; assinatura PNG obrigatória).',
     protected => 1,
     parameters => {
@@ -136,6 +137,7 @@ __PACKAGE__->register_method({
             node => get_standard_option('pve-node'),
             digest => {
                 type => 'string',
+                optional => 1,
                 description => 'sha256 do config atual (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
             },

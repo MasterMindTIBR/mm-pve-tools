@@ -6,7 +6,7 @@ PROVE      = prove $(PERL_INC)
 JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js
 JS_OUT     = build/mm-tools.js
 
-.PHONY: all js test test-gateway lint build build-dir check-anchors clean
+.PHONY: all js test test-api test-gateway lint build build-dir check-anchors clean
 
 all: js
 
@@ -24,6 +24,9 @@ build-dir:
 
 test:
 	$(PROVE) -r t/core t/renumber t/restore t/branding t/contract
+
+test-api:
+	./scripts/test-pve-env.sh
 
 test-gateway:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s t/gateway -v

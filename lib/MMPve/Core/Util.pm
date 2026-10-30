@@ -10,7 +10,7 @@ use Sys::Hostname qw(hostname);
 
 our @EXPORT_OK = qw(
     root_path log_line now_iso sha256_hex_of read_file write_file_atomic
-    ensure_dir flock_ex unlock
+    ensure_dir flock_ex unlock random_uuid
 );
 
 our $VERSION = '@MM_PVE_VERSION@';
@@ -32,6 +32,20 @@ sub now_iso {
 sub sha256_hex_of {
     my ($data) = @_;
     return sha256_hex(ref $data ? $$data : $data);
+}
+
+sub random_uuid {
+    my $raw = '';
+    if (open(my $fh, '<:raw', '/dev/urandom')) {
+        my $read = read($fh, $raw, 16);
+        close($fh);
+        $raw = '' if !defined($read) || $read != 16;
+    }
+    $raw = pack('H*', sha256_hex(join(':', $$, time, rand(), {}))) if length($raw) != 16;
+    my @bytes = unpack('C16', $raw);
+    $bytes[6] = ($bytes[6] & 0x0f) | 0x40;
+    $bytes[8] = ($bytes[8] & 0x3f) | 0x80;
+    return sprintf('%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x', @bytes);
 }
 
 sub read_file {

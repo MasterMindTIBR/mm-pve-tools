@@ -27,7 +27,7 @@ __PACKAGE__->register_method({
     path => '',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Índice do módulo renumber.',
     parameters => {
         additionalProperties => 0,
@@ -51,7 +51,7 @@ __PACKAGE__->register_method({
     path => 'precheck',
     method => 'GET',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Audit']] },
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
     description => 'Pré-checagens da troca de VMID (somente leitura).',
     parameters => {
@@ -122,7 +122,7 @@ __PACKAGE__->register_method({
     path => 'run',
     method => 'POST',
     proxyto => 'node',
-    permissions => { check => ['/', ['Sys.Modify']] },
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
     protected => 1,
     description => 'Executa a troca de VMID (tarefa em worker; acompanhe no Task Log).',
     parameters => {

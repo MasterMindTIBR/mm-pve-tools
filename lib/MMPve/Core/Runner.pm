@@ -98,6 +98,32 @@ sub run_json {
     return decode_json($out);
 }
 
+sub extract_upid {
+    my ($class, $output) = @_;
+    for my $line (reverse split /\n/, $output // '') {
+        $line =~ s/^\s+|\s+$//g;
+        next unless length $line;
+        my $value = eval { decode_json($line) };
+        return $value if !$@ && defined($value) && !ref($value) && $value =~ /^UPID:/;
+        return $1 if $line =~ /^"?(UPID:[^"\r\n]+)"?,?$/;
+    }
+    die "saída do pvesh não contém UPID\n";
+}
+
+sub pvesh_task {
+    my ($class, $method, $path, %args) = @_;
+    my $timeout = delete $args{__timeout} // 300;
+    my @cmd = ('pvesh', $method, $path, '--output-format', 'json');
+    for my $k (sort keys %args) {
+        push @cmd, "--$k";
+        push @cmd, $args{$k} if defined $args{$k};
+    }
+    my $res = $class->run(\@cmd, timeout => $timeout);
+    die join(' ', @cmd) . ': ' . ($res->{error} || $res->{err} || "rc=$res->{rc}") . "\n"
+        unless $res->{ok};
+    return $class->extract_upid($res->{out});
+}
+
 # pvesh <method> <path> [args] --output-format json
 # args com __timeout controlam o timeout; o resto vira --chave valor.
 sub pvesh {
