@@ -10,11 +10,19 @@ case "$1" in
         install -d -m 0755 /srv/gw-restore/sessions /var/lib/gw-restore/sessions \
             /var/log/gw-restore /etc/samba/gw-restore.d /etc/gw-restore/keys
 
-        # Include do Samba: uma única linha no [global], arquivo gerado pelo gw-restore
+        # server min protocol = SMB3 dentro do [global] (idempotente).
+        # O include do gw-restore vai como ÚLTIMA linha do arquivo: o Samba
+        # aplica parâmetros ao último cabeçalho de seção visto até ali, e um
+        # include logo após "[global]" faria os parâmetros globais do
+        # smb.conf original (que vêm depois) caírem dentro do último share
+        # gerado pelo gw-restore.
         if [ -f /etc/samba/smb.conf ]; then
-            if ! grep -qE '^\s*include\s*=\s*/etc/samba/gw-restore\.conf' /etc/samba/smb.conf; then
-                sed -i '/^\[\s*global\s*\]/a include = /etc/samba/gw-restore.conf' \
+            if ! grep -qE '^\s*server min protocol\s*=\s*SMB3\s*$' /etc/samba/smb.conf; then
+                sed -i '/^\[\s*global\s*\]/a\  server min protocol = SMB3' \
                     /etc/samba/smb.conf
+            fi
+            if ! grep -qE '^\s*include\s*=\s*/etc/samba/gw-restore\.conf' /etc/samba/smb.conf; then
+                printf '\ninclude = /etc/samba/gw-restore.conf\n' >> /etc/samba/smb.conf
             fi
         fi
         [ -f /etc/samba/gw-restore.conf ] || : > /etc/samba/gw-restore.conf

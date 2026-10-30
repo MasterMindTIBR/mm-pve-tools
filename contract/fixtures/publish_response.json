@@ -1,0 +1,6 @@
+{
+  "unc": "\\\\10.20.120.250\\r-abc123",
+  "user": "gwr-abc123",
+  "password": "EXEMPLO-nao-use-em-producao-32chars",
+  "expires_at": "2026-10-28T10:00:00-03:00"
+}

@@ -25,7 +25,7 @@ build-dir:
 	mkdir -p build
 
 test:
-	$(PROVE) -r t/core t/renumber t/restore t/branding
+	$(PROVE) -r t/core t/renumber t/restore t/branding t/contract
 
 test-gateway:
 	python3 -m unittest discover -s t/gateway -v

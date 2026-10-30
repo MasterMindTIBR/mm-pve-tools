@@ -76,6 +76,32 @@ sub check {
     }
     return \%res;
 }
+sub _pve_manager_version {
+    my ($class) = @_;
+    my $res = MMPve::Core::Runner->run(
+        ['dpkg-query', '-W', '-f=${Version}', 'pve-manager'], timeout => 15);
+    return undef unless $res->{ok};
+    my $version = $res->{out} // '';
+    $version =~ s/\s+\z//;
+    return length($version) ? $version : undef;
+}
+
+sub _version_cache_path {
+    return root_path('/var/lib/mm-pve-tools/pve-manager.version');
+}
+
+sub _cached_version {
+    my ($class) = @_;
+    return eval { read_file($class->_version_cache_path) } // undef;
+}
+
+sub _write_version_cache {
+    my ($class, $version) = @_;
+    return unless defined $version;
+    ensure_dir(root_path('/var/lib/mm-pve-tools'));
+    write_file_atomic($class->_version_cache_path, "$version\n", 0644);
+}
+
 
 # ---------------------------------------------------------------- apply
 
@@ -85,8 +111,16 @@ sub apply {
     my %paths = $class->_target_paths;
     my %out;
     my $any_changed = 0;
+    my $version = $class->_pve_manager_version;
+    my $cached = $class->_cached_version;
+    $cached =~ s/\s+\z// if defined $cached;
 
     for my $k (sort keys %paths) {
+        my $status = $class->check->{$k}{status};
+        if ($status eq 'applied' && defined($version) && defined($cached) && $cached eq $version) {
+            $out{$k} = { status => 'version_current', changed => 0 };
+            next;
+        }
         $out{$k} = $class->_apply_one($k, $paths{$k}, \%opts, \$any_changed);
     }
 
@@ -103,6 +137,7 @@ sub apply {
         targets => \%out,
         ($restart ? (restart => $restart) : ()),
     };
+    $class->_write_version_cache($version) if $res->{ok};
     log_line('patch apply: ok=' . $res->{ok} . ' changed=' . $res->{changed} . ' '
         . join(' ', map { "$_=" . $out{$_}{status} } sort keys %out));
     return $res;
@@ -227,7 +262,9 @@ sub _perl_c {
 sub _restart_and_verify {
     my ($class) = @_;
     my $restart = MMPve::Core::Runner->run(
-        ['systemctl', 'restart', 'pveproxy.service', 'pvedaemon.service'], timeout => 120);
+        ['systemd-run', '--wait', '--collect', '--unit=mm-pve-patch-reload',
+         'systemctl', 'reload-or-restart', 'pveproxy.service', 'pvedaemon.service'],
+        timeout => 120);
     my $v = { restart_rc => $restart->{rc}, ok => 0 };
     for my $svc (qw(pveproxy pvedaemon)) {
         my $a = MMPve::Core::Runner->run(['systemctl', 'is-active', "$svc.service"], timeout => 30);

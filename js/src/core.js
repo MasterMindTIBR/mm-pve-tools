@@ -119,12 +119,12 @@ Ext.define('MM.panel.General', {
 	    MM.Api.request({
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
-		    // endpoint: {config, digest, absent}
-		    let mods = (res.config || {}).modules || {};
+		    let data = res.data || {};
+		    let mods = (data.config || {}).modules || {};
 		    moduleGrid.getStore().setData(
 			Object.keys(mods).map((k) => ({ name: k, enabled: !!mods[k] })),
 		    );
-		    me.digest = res.digest || '';
+		    me.digest = data.digest || '';
 		},
 	    });
 	};
@@ -171,21 +171,22 @@ MM.fillDiag = function (grid) {
 	    MM.Api.request({
 		url: `/nodes/${n.name}/mm-tools/status`,
 		success: (res) => {
-		    let ap = res.applied || {};
+		    let data = res.data || {};
+		    let ap = data.applied || {};
 		    let patches = ap.patches || {};
 		    store.add({
-			node: res.node || n.name,
-			pkg: res.package_version,
-			pve: res.pve_version,
+			node: data.node || n.name,
+			pkg: data.package_version,
+			pve: data.pve_version,
 			patch_tpl: patches.index_tpl?.status,
 			patch_pm: patches.nodes_pm?.status,
 			state: ap.state,
 			applied: ap.applied_revision,
 			cfgrev: ap.config_revision,
-			ntfs3g_ok: !!res.ntfs3g?.ok,
-			ntfs3g: res.ntfs3g?.ok === undefined
+			ntfs3g_ok: !!data.ntfs3g?.ok,
+			ntfs3g: data.ntfs3g?.ok === undefined
 			    ? gettext('skipped')
-			    : (res.ntfs3g.ok ? 'ok' : (res.ntfs3g.error || 'fail')),
+			    : (data.ntfs3g.ok ? 'ok' : (data.ntfs3g.error || 'fail')),
 		    });
 		},
 		failure: (msg) => {

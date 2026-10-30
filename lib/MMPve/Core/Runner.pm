@@ -10,6 +10,7 @@ package MMPve::Core::Runner;
 use strict;
 use warnings;
 use IPC::Open3 qw(open3);
+use IO::Select;
 use Symbol qw(gensym);
 use JSON::PP qw(decode_json);
 
@@ -49,10 +50,20 @@ sub run {
             print {$infh} $opts{stdin};
         }
         close($infh);
-        while (defined(my $l = <$outfh>)) { $out .= $l }
-        while (defined(my $l = <$errfh>)) { $err .= $l }
-        close($outfh);
-        close($errfh);
+        my $ready = IO::Select->new($outfh, $errfh);
+        while ($ready->count) {
+            for my $fh ($ready->can_read) {
+                my $chunk = '';
+                my $read = sysread($fh, $chunk, 8192);
+                if (!defined($read) || $read == 0) {
+                    $ready->remove($fh);
+                    close($fh);
+                    next;
+                }
+                if ($fh == $outfh) { $out .= $chunk }
+                else               { $err .= $chunk }
+            }
+        }
         alarm(0);
         1;
     } or do { $died = 1 };

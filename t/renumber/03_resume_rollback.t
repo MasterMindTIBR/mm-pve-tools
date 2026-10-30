@@ -7,11 +7,12 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Path qw(make_path);
 
-use lib "$Bin", "$Bin/../../lib";
+use lib "$Bin", "$Bin/../../lib", "$Bin/../lib-stubs";
 use MockPve;
 use MMPve::Module::Renumber;
 use MMPve::Core::Runner;
 use MMPve::Journal;
+require PVE::Storage;    # stub (ver t/lib-stubs/PVE/Storage.pm) — R2.6 #9
 
 my $tmp = "$Bin/tmp-res";
 system("rm -rf $tmp") == 0 or die;
@@ -80,7 +81,10 @@ subtest 'rollback em ordem inversa' => sub {
     # último: apagar a VM nova vazia
     my ($delnew) = grep { $_->{op} eq 'delete' && $_->{path} eq '/nodes/n1/qemu/1100' } @after;
     ok($delnew, 'VM nova apagada');
+    ok(!exists $delnew->{args}{purge}, 'sem --purge na VM nova (R2.6 #5)');
     is($delnew->{args}{'destroy-unreferenced-disks'}, 0, 'sem destruir discos (já devolvidos)');
+    # protection: tinha sido limpa na antiga antes do move; volta a 1 no rollback (R2.6 #7 / acceptance B)
+    is($MockPve::S{vm_config}{protection}, 1, 'protection restaurada na VM antiga após rollback');
     # ordem: primeiro move_disk, por último delete da nova
     my @seq = grep { $_->{op} eq 'create' || $_->{op} eq 'delete' } @after;
     is($seq[0]{path}, '/nodes/n1/qemu/1100/move_disk', 'começa devolvendo disco');
@@ -138,6 +142,122 @@ subtest 'CLI: flags e caminhos de erro' => sub {
     $rc = MMPve::Module::Renumber->cli([qw(--from 100 --to 1100)]);
     is($rc, 1, 'precheck falho → rc 1');
     is_deeply([MockPve::ops()], [], 'nada mutado pela CLI');
+};
+
+subtest 'rollback após processo morto no meio do move_disks não perde disco — R2.6 #5 (acceptance A)' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    # simula "mata o processo" depois de mover 1 de 3 discos: a próxima
+    # chamada de move_disk falha, mas a 1ª já moveu de verdade (saiu da
+    # antiga, está na nova) — journal não marca 'done' nem 'failed' num
+    # kill de verdade, mas um 'failed' no meio é o mesmo cenário pro
+    # rollback: ele não pode confiar que "não done" == "nada mudou".
+    $MockPve::S{fail_after_moves} = 1;
+    my $err = eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
+    ok($@, 'run morre no meio do move_disks');
+
+    my $j = MMPve::Journal->open('renumber-100-1100');
+    is_deeply([ $j->done_steps ], [qw(reserve)], 'reserve done; move_disks não chegou a done');
+    is($j->step_info('move_disks')->{status}, 'failed', 'move_disks falhou (não done)');
+
+    # estado real: exatamente 1 disco migrou de verdade antes da queda
+    my @moved_to_new = keys %{ $MockPve::S{new_vm_config} };
+    is(scalar @moved_to_new, 1, 'exatamente 1 disco migrou de verdade antes da queda');
+    my $moved_key = $moved_to_new[0];
+    ok(!exists $MockPve::S{vm_config}{$moved_key}, "$moved_key saiu da antiga de verdade");
+    my @still_old_volumes = grep { /^(?:scsi|efidisk)/ } keys %{ $MockPve::S{vm_config} };
+    ok(scalar(@still_old_volumes) >= 1, 'pelo menos 1 outro disco nunca saiu da antiga');
+
+    my $n = scalar MockPve::ops();
+    my $res = MMPve::Module::Renumber->rollback(from => 100, to => 1100);
+    ok($res->{ok}, 'rollback ok mesmo com move_disks não-done') or diag explain $res;
+    is_deeply($res->{undone}, [qw(move_disks reserve)], 'desfaz move_disks (ao vivo) e reserve');
+
+    # os discos terminam de volta na config real da antiga; a nova fica vazia
+    ok(exists $MockPve::S{vm_config}{$moved_key}, "$moved_key devolvido à antiga");
+    is(scalar(keys %{ $MockPve::S{new_vm_config} }), 0, 'VM nova fica sem nenhum disco');
+
+    my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
+    my @moveback = grep { $_->{op} eq 'create' && $_->{path} eq '/nodes/n1/qemu/1100/move_disk' } @after;
+    is(scalar @moveback, 1, 'só 1 disco precisou ser movido de volta');
+    is($moveback[0]{args}{disk}, $moved_key, 'o disco devolvido é o que realmente tinha sido movido');
+
+    my ($delnew) = grep { $_->{op} eq 'delete' && $_->{path} eq '/nodes/n1/qemu/1100' } @after;
+    ok($delnew, 'VM nova apagada');
+    ok(!exists $delnew->{args}{purge}, 'sem --purge');
+    is($delnew->{args}{'destroy-unreferenced-disks'}, 0, 'sem destroy-unreferenced-disks=1');
+};
+
+subtest 'resume após processo morto no meio do move_disks só move o que falta — R2.6 #6' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    $MockPve::S{fail_after_moves} = 1;
+    eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
+    my $moved_key = (keys %{ $MockPve::S{new_vm_config} })[0];
+
+    # conserta a causa e retoma
+    $MockPve::S{fail_after_moves} = undef;
+    my $n = scalar MockPve::ops();
+    my $res = MMPve::Module::Renumber->resume(from => 100, to => 1100);
+    ok($res->{ok}, 'resume completa') or diag explain $res;
+
+    my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
+    my @moves = grep { $_->{op} eq 'create' && $_->{path} eq '/nodes/n1/qemu/100/move_disk' } @after;
+    ok(!(grep { $_->{args}{disk} eq $moved_key } @moves), 'disco já movido não é remexido no resume');
+    is(scalar @moves, 2, 'os 2 discos restantes são movidos no resume');
+};
+
+subtest 'rollback com refs: HA/replicação voltam pro vmid antigo — R2.6 #10' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
+    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2', type => 'local' }];
+    $MockPve::S{fail_at} = 'destroy';   # refs roda inteiro antes de falhar
+    my $err = eval {
+        MMPve::Module::Renumber->run(from => 100, to => 1100,
+            handle_ha => 1, handle_replication => 1);
+    };
+    ok($@, 'run falha no destroy (refs já concluiu)');
+    my $j = MMPve::Journal->open('renumber-100-1100');
+    is_deeply([ $j->done_steps ], [qw(reserve move_disks config firewall refs verify)],
+        'refs concluído antes da falha');
+
+    my $n = scalar MockPve::ops();
+    my $res = MMPve::Module::Renumber->rollback(from => 100, to => 1100);
+    ok($res->{ok}, 'rollback ok') or diag explain $res;
+    my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
+
+    my ($ha_del_new) = grep { $_->{op} eq 'delete' && $_->{path} eq '/cluster/ha/resources/vmid:1100' } @after;
+    ok($ha_del_new, 'HA novo removido no rollback');
+    my ($ha_new_old) = grep { $_->{op} eq 'create' && $_->{path} eq '/cluster/ha/resources' } @after;
+    is($ha_new_old->{args}{sid}, 'vmid:100', 'HA antigo recriado no rollback');
+
+    my @rep_del = grep { $_->{op} eq 'delete' && $_->{path} =~ m{^/cluster/replication/1100-} } @after;
+    ok(scalar(@rep_del) >= 1, 'job de replicação novo removido no rollback');
+    my ($rep_new_old) = grep { $_->{op} eq 'create' && $_->{path} eq '/cluster/replication' } @after;
+    is($rep_new_old->{args}{id}, 'rep1', 'job antigo (rep1) recriado no rollback');
+};
+
+subtest 'wait_task: segue running->stopped e morre limpo no timeout — R2.6 #3 (acceptance H)' => sub {
+    MockPve->reset;
+    local $MMPve::Core::Runner::OVERRIDE = \&MockPve::handler;   ## no critic
+    local $MMPve::Module::Renumber::TASK_POLL = 0;
+
+    my $upid_ok = 'UPID:n1:00000001:00000002:00000003:test:1:jung@pam:';
+    $MockPve::S{task_status}{$upid_ok} = {
+        sequence => [qw(running running stopped)], exitstatus => 'OK',
+    };
+    my $ok = eval { MMPve::Module::Renumber->wait_task($upid_ok) };
+    ok($ok, 'completou depois de 2 "running"') or diag $@;
+
+    my $upid_timeout = 'UPID:n1:00000004:00000005:00000006:test:2:jung@pam:';
+    $MockPve::S{task_status}{$upid_timeout} = {
+        sequence => [('running') x 5], exitstatus => 'OK',
+    };
+    my $err = eval { MMPve::Module::Renumber->wait_task($upid_timeout, timeout => 0) };
+    ok($@, 'timeout morre (nunca chega a stopped)');
+    like($@, qr/timeout/i, 'mensagem de timeout clara');
+    like($@, qr/\Q$upid_timeout\E/, 'UPID aparece na mensagem');
 };
 
 done_testing();

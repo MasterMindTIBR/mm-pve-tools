@@ -25,18 +25,14 @@ use MMPve::Module::Restore;
 
 use base qw(PVE::RESTHandler);
 
-my $node_guard = sub {
-    my ($node) = @_;
-    my $local = PVE::INOTIFY::nodename();
-    return if $node eq $local || $node eq 'localhost';
-    die "requisição para '$node' chegou no node '$local'\n";
-};
+
 
 __PACKAGE__->register_method({
     name => 'index',
     path => '',
     method => 'GET',
-    permissions => { user => 'all' },
+    proxyto => 'node',
+    permissions => { check => ['/', ['Sys.Audit']] },
     description => 'Índice do módulo restore.',
     parameters => {
         additionalProperties => 0,
@@ -74,6 +70,7 @@ __PACKAGE__->register_method({
     name => 'publish',
     path => 'publish',
     method => 'POST',
+    proxyto => 'node',
     permissions => { user => 'all' },    # checagem fina no código (volid/VM)
     protected => 1,
     description => 'Publica uma pasta de backup PBS via VM gateway (tarefa em worker; '
@@ -130,7 +127,7 @@ __PACKAGE__->register_method({
     returns => { type => 'string' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         my $rpcenv = PVE::RPCEnvironment->get();
         $publish_perms->($param, $rpcenv);
         my $authuser = $rpcenv->get_user();
@@ -141,16 +138,16 @@ __PACKAGE__->register_method({
         $p{resume} = 1 if $param->{resume};
 
         my $realcmd = sub {
-            # dentro do worker, fork_worker define $0 = UPID da tarefa
-            my $res = MMPve::Module::Restore->publish(%p,
-                result_key => MMPve::Module::Restore->current_task_key);
+            my ($upid) = @_;
+            my $res = MMPve::Module::Restore->publish(%p, result_key => $upid);
             print "publicação criada (VM $res->{vmid}, VLAN $res->{vlan}, "
                 . "expira $res->{expires_at})\n";
             print "busque o acesso (UNC/usuário/senha) na GUI — a senha não "
                 . "aparece no Task Log\n";
             return $res;
         };
-        return $rpcenv->fork_worker('mmrestore', "restore:$param->{vmid}", $authuser, $realcmd);
+        my $task_vmid = $param->{vmid} // 'owner';
+        return $rpcenv->fork_worker('mmrestore', "restore-$task_vmid", $authuser, $realcmd);
     },
 });
 
@@ -158,6 +155,7 @@ __PACKAGE__->register_method({
     name => 'result',
     path => 'result/{upid}',
     method => 'GET',
+    proxyto => 'node',
     permissions => { user => 'all' },    # dono verificado contra o arquivo
     protected => 1,                      # lê /run (root)
     description => 'Resultado da publicação (UNC/usuário/senha). Leitura ÚNICA: '
@@ -177,7 +175,7 @@ __PACKAGE__->register_method({
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         my $rpcenv = PVE::RPCEnvironment->get();
         my $data = MMPve::Module::Restore->fetch_result(
             $param->{upid}, $rpcenv->get_user());
@@ -189,6 +187,7 @@ __PACKAGE__->register_method({
     name => 'sessions',
     path => 'sessions',
     method => 'GET',
+    proxyto => 'node',
     permissions => { user => 'all' },
     protected => 1,
     description => 'Sessões de restore ativas no gateway (gw-restore list).',
@@ -201,8 +200,13 @@ __PACKAGE__->register_method({
     returns => { type => 'array' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
-        return [ MMPve::Module::Restore->sessions ];
+        my $rpcenv = PVE::RPCEnvironment->get();
+        my @sessions = MMPve::Module::Restore->sessions;
+        return [ grep {
+            my $vmid = $_->{target_vmid};
+            $vmid = $_->{vmid} unless defined $vmid;
+            defined($vmid) && eval { $rpcenv->check("/vms/$vmid", ['VM.Audit']); 1 };
+        } @sessions ];
     },
 });
 
@@ -210,6 +214,7 @@ __PACKAGE__->register_method({
     name => 'revoke',
     path => 'revoke',
     method => 'POST',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Modify']] },
     protected => 1,
     description => 'Revoga uma sessão de restore (worker; remove a tag restore-ativo na última).',
@@ -227,7 +232,7 @@ __PACKAGE__->register_method({
     returns => { type => 'string' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         my $rpcenv = PVE::RPCEnvironment->get();
         my $authuser = $rpcenv->get_user();
         my $id = $param->{id};
@@ -235,7 +240,7 @@ __PACKAGE__->register_method({
             MMPve::Module::Restore->revoke($id);
             print "sessão $id revogada\n";
         };
-        return $rpcenv->fork_worker('mmrestore', "restore-revoke:$id", $authuser, $realcmd);
+        return $rpcenv->fork_worker('mmrestore', "restore-revoke-$id", $authuser, $realcmd);
     },
 });
 
@@ -243,6 +248,7 @@ __PACKAGE__->register_method({
     name => 'test_gateway',
     path => 'test-gateway',
     method => 'GET',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Audit']] },
     protected => 1,
     description => 'Selfcheck do gateway por item (✔/✘).',
@@ -255,7 +261,7 @@ __PACKAGE__->register_method({
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         return MMPve::Module::Restore->test_gateway;
     },
 });

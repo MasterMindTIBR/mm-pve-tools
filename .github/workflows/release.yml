@@ -17,11 +17,8 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: deps
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential debhelper
+      - name: dependências de build
+        uses: ./.github/actions/debian-build-deps
       - name: versão
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -57,9 +54,25 @@ jobs:
           owner: MasterMindTIBR
           repositories: apt
       - name: repository_dispatch
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
+          set -eu
+          python3 - <<'PY' > payload.json
+          import json
+          import os
+
+          print(json.dumps({
+              "event_type": "apt-publish",
+              "client_payload": {
+                  "repo": "mm-pve-tools",
+                  "version": os.environ["VERSION"],
+              },
+          }))
+          PY
           curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ steps.app.outputs.token }}" \
+            -H "Authorization: Bearer $APP_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/MasterMindTIBR/apt/dispatches \
-            -d '{"event_type":"apt-publish","client_payload":{"repo":"mm-pve-tools","version":"${{ needs.build.outputs.version }}"}}'
+            --data-binary @payload.json

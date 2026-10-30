@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mm-pve-tools gw-restore contract v1",
+  "definitions": {
+    "contract": {"type": "integer", "const": 1},
+    "snapshot": {"type": "string", "pattern": "^vm/[0-9]{1,10}/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z$"},
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "ipv4": {"type": "string", "pattern": "^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$"},
+    "publish_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "snapshot", "datastore", "namespace", "archive", "partition", "subpath", "vlan", "gw_ip", "prefix", "vm_ip", "hours", "requester", "source_vmid", "target_vmid", "ticket"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/contract"},
+        "snapshot": {"$ref": "#/definitions/snapshot"},
+        "datastore": {"$ref": "#/definitions/name"},
+        "namespace": {"type": "string", "maxLength": 255},
+        "archive": {"$ref": "#/definitions/name"},
+        "partition": {"type": "integer", "minimum": 1, "maximum": 255},
+        "subpath": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "vlan": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "gw_ip": {"$ref": "#/definitions/ipv4"},
+        "prefix": {"type": "integer", "minimum": 1, "maximum": 32},
+        "vm_ip": {"$ref": "#/definitions/ipv4"},
+        "hours": {"type": "integer", "minimum": 1, "maximum": 168},
+        "requester": {"type": "string", "minLength": 1, "maxLength": 128},
+        "source_vmid": {"type": "integer", "minimum": 100, "maximum": 9999999},
+        "target_vmid": {"type": "integer", "minimum": 100, "maximum": 9999999},
+        "ticket": {"type": "string", "maxLength": 128}
+      }
+    },
+    "publish_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unc", "user", "password", "expires_at"],
+      "properties": {
+        "unc": {"type": "string", "minLength": 1},
+        "user": {"type": "string", "minLength": 1},
+        "password": {"type": "string", "minLength": 1},
+        "expires_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "revoke_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "id"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/contract"},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"}
+      }
+    },
+    "revoke_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "revoked"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/contract"},
+        "revoked": {"type": "string", "minLength": 1}
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "target_vmid", "source_vmid", "vlan", "vm_ip", "expires_at"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "target_vmid": {"type": "integer", "minimum": 100, "maximum": 9999999},
+        "source_vmid": {"type": "integer", "minimum": 100, "maximum": 9999999},
+        "vlan": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "vm_ip": {"$ref": "#/definitions/ipv4"},
+        "expires_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "list_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "sessions"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/contract"},
+        "sessions": {"type": "array", "items": {"$ref": "#/definitions/session"}}
+      }
+    },
+    "selfcheck_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "ok", "checks"],
+      "properties": {
+        "contract": {"$ref": "#/definitions/contract"},
+        "ok": {"type": "boolean"},
+        "checks": {"type": "array"}
+      }
+    }
+  }
+}

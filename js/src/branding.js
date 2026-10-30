@@ -69,7 +69,7 @@ Ext.define('MM.Branding', {
 		    let cur = c.getValue ? c.getValue() : (c.getHtml?.() ?? '');
 	    let m = String(cur ?? '').match(/\d[\w.-]*/);    // versão
 		    let txt = cfg.header_text + (m ? ` ${m[0]}` : '');
-		    if (c.setValue) { c.setValue(txt); } else { c.setHtml(txt); }
+		    if (c.setValue) { c.setValue(txt); } else { c.setHtml(Ext.String.htmlEncode(txt)); }
 		});
 	    };
 	    setHeader();
@@ -144,9 +144,9 @@ Ext.define('MM.panel.Branding', {
 	};
 
 	let logoField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Logo') + ' (SVG/PNG, 200 KB)',
+	    fieldLabel: gettext('Logo') + ' (PNG, 200 KB)',
 	    name: 'logo',
-	    accept: '.svg,.png',
+	    accept: '.png',
 	    listeners: {
 		change: (f, v) => {
 		    me.pendingLogoName = f.fileInputEl.dom.files[0]?.name;
@@ -156,9 +156,9 @@ Ext.define('MM.panel.Branding', {
 	    },
 	});
 	let faviconField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Favicon') + ' (SVG/PNG, 200 KB)',
+	    fieldLabel: gettext('Favicon') + ' (PNG, 200 KB)',
 	    name: 'favicon',
-	    accept: '.svg,.png',
+	    accept: '.png',
 	    listeners: {
 		change: (f) => {
 		    me.pendingFaviconName = f.fileInputEl.dom.files[0]?.name;
@@ -185,8 +185,7 @@ Ext.define('MM.panel.Branding', {
 	me.preview = function () {
 	    let src = null;
 	    if (me.pendingLogo) {
-		let ext = (me.pendingLogoName || 'x.svg').split('.').pop().toLowerCase();
-		src = `data:image/${ext === 'png' ? 'png' : 'svg+xml'};base64,${me.pendingLogo}`;
+		src = `data:image/png;base64,${me.pendingLogo}`;
 	    } else if (me.state?.branding?.logo) {
 		src = `/pve2/images/mm-branding/${me.state.branding.logo}?v=${me.state.state?.config_hash || '0'}`;
 	    }
@@ -197,14 +196,16 @@ Ext.define('MM.panel.Branding', {
 
 	me.reload = function () {
 	    MM.Api.request({
+		method: 'GET',
 		url: '/nodes/localhost/mm-tools/branding',
 		success: (res) => {
-		    me.state = res;
-		    let b = res.branding || {};
+		    let data = res.data || {};
+		    me.state = data;
+		    let b = data.branding || {};
 		    titleField.setValue(b.title || '');
 		    headerField.setValue(b.header_text || '');
 		    loginField.setValue(b.login_text || '');
-		    me.digest = res.digest;
+		    me.digest = data.digest;
 		    me.preview();
 		},
 	    });
@@ -224,7 +225,7 @@ Ext.define('MM.panel.Branding', {
 	    MM.Api.request({
 		method: 'PUT',
 		url: '/nodes/localhost/mm-tools/branding/upload',
-		data: data,
+		params: data,
 		success: () => cb(),
 		failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 	    });
@@ -258,10 +259,11 @@ Ext.define('MM.panel.Branding', {
 			    MM.Api.request({
 				method: 'PUT',
 				url: '/nodes/localhost/mm-tools/branding/set',
-				data: {
+				params: {
 				    title: titleField.getValue(),
 				    header_text: headerField.getValue(),
 				    login_text: loginField.getValue(),
+				    digest: me.digest,
 				},
 				success: () => {
 				    me.pendingLogo = me.pendingFavicon = null;
@@ -289,7 +291,7 @@ Ext.define('MM.panel.Branding', {
 			MM.Api.request({
 			    method: 'PUT',
 			    url: '/nodes/localhost/mm-tools/branding/set',
-			    data: { digest: me.digest, clear: true },
+			    params: { digest: me.digest, clear: true },
 			    success: () => {
 				me.pendingLogo = me.pendingFavicon = null;
 				MM.Branding.clear();

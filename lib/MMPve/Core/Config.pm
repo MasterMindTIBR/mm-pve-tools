@@ -1,9 +1,8 @@
 package MMPve::Core::Config;
 
 # Estado desejado do cluster em /etc/pve/mm-tools/config.json (pmxcfs).
-# Regras do plano: escrita só pela API/CLI; flock local; conferência de
-# digest (SHA-256 do arquivo) contra escrita concorrente; revision sobe a
-# cada mudança; validação estrita antes de gravar; limite de 1 MiB do pmxcfs.
+# Escritas passam por cfs_lock_domain; digest (SHA-256) evita sobrescrever
+# edição concorrente e revision é sempre calculada no servidor.
 
 use strict;
 use warnings;
@@ -38,7 +37,7 @@ sub default {
             gateway_vmid => undef,
             vlans => {},
             session_default_hours => 24,
-            session_max_hours => 72,
+            session_max_hours => 168,
             max_sessions => 10,
         },
         branding => {
@@ -76,6 +75,23 @@ sub _is_bool {
 }
 
 sub validate {
+    my ($class, $data) = @_;
+    my @e = $class->validate_structure($data);
+    return @e if @e;    # chaves/tipos quebrados: nem tenta validar módulo
+
+    # validação por módulo (assets em disco, consistência local). É estado
+    # do node, não corrupção do config: só barra GRAVAÇÃO (save/_write_locked),
+    # nunca a LEITURA (load usa validate_structure sozinho — ver load()).
+    require MMPve::Core::Modules;
+    for my $m (MMPve::Core::Modules->all) {
+        my $name = $m->name;
+        my @me = $m->validate_section($data);
+        _err(\@e, "[$name] $_") for @me;
+    }
+    return @e;
+}
+
+sub validate_structure {
     my ($class, $data) = @_;
     my @e;
     return ('config não é um objeto') unless ref $data eq 'HASH';
@@ -190,8 +206,8 @@ sub validate {
             _err(\@e, 'restore.session_default_hours > session_max_hours')
                 if _is_int($r->{session_default_hours}) && _is_int($r->{session_max_hours})
                     && $r->{session_default_hours} > $r->{session_max_hours};
-            _err(\@e, 'restore.session_max_hours > 720 (30 dias)')
-                if _is_int($r->{session_max_hours}) && $r->{session_max_hours} > 720;
+            _err(\@e, 'restore.session_max_hours > 168 (7 dias)')
+                if _is_int($r->{session_max_hours}) && $r->{session_max_hours} > 168;
             _err(\@e, 'restore.max_sessions > 100')
                 if _is_int($r->{max_sessions}) && $r->{max_sessions} > 100;
         }
@@ -228,14 +244,6 @@ sub validate {
         }
     }
 
-    # validação por módulo (seções são irrestritas acima; módulo decide o que usa)
-    require MMPve::Core::Modules;
-    for my $m (MMPve::Core::Modules->all) {
-        my $name = $m->name;
-        my @me = $m->validate_section($data);
-        _err(\@e, "[$name] $_") for @me;
-    }
-
     return @e;
 }
 
@@ -265,33 +273,30 @@ sub load {
     }
     my $data = eval { decode_json($raw) };
     die "config.json inválido: $@\n" if $@;
-    my @e = $class->validate($data);
-    die "config.json rejeitado pela validação:\n" . join("\n", @e) . "\n" if @e;
+    my @e = $class->validate_structure($data);
+    die "config.json inválido:\n" . join("\n", @e) . "\n" if @e;
     return wantarray ? ($data, $digest, 0) : $data;
 }
 
-sub save {
+sub _write_locked {
     my ($class, $data, %opt) = @_;
-    die 'save precisa de hashref' unless ref $data eq 'HASH';
-
-    ensure_dir($class->config_dir);
-    my $lk = flock_ex($class->lock_path);
-
     my $raw_prev = eval { read_file($class->config_path) };
+    my $previous;
     if (defined $raw_prev) {
         my $cur = $class->digest_of($raw_prev);
         if (defined $opt{digest} && $opt{digest} ne $cur) {
             die "DIGEST_MISMATCH: config mudou desde a leitura (atual $cur). Releia e salve de novo.\n";
         }
-        $data->{revision} //= do {
-            my $prev = eval { decode_json($raw_prev) };
-            ($prev && $prev->{revision}) ? $prev->{revision} : 1;
-        };
+        $previous = eval { decode_json($raw_prev) };
+        die "config.json inválido durante a gravação: $@\n" if $@;
     } else {
-        $data->{revision} //= 1;
+        $previous = $class->default;
     }
 
-    # merge com default para seções ausentes
+    # O consumidor nunca escolhe a revisão. Ela vem do estado protegido pela
+    # mesma trava da leitura e escrita.
+    delete $data->{revision};
+
     my $def = $class->default;
     for my $k (qw(modules vmid_scheme restore branding)) {
         if (!exists $data->{$k}) {
@@ -302,21 +307,60 @@ sub save {
             }
         }
     }
+    $data->{revision} = ($previous->{revision} // 0) + 1;
 
     my @e = $class->validate($data);
-    if (@e) {
-        unlock($lk);
-        die "config rejeitado:\n" . join("\n", @e) . "\n";
-    }
+    die "config rejeitado:\n" . join("\n", @e) . "\n" if @e;
 
-    $data->{revision} += 1;
     my $json = JSON::PP->new->canonical->pretty->utf8->encode($data);
     die "config excede 1 MiB (limite do pmxcfs)\n" if length($json) > MAX_BYTES;
-
     write_file_atomic($class->config_path, $json . "\n", 0644);
-    unlock($lk);
     log_line("config salvo revision $data->{revision}");
     return ($data, $class->digest_of($json . "\n"));
+}
+
+sub _with_write_lock {
+    my ($class, $code) = @_;
+    ensure_dir($class->config_dir);
+
+    # flock é somente fallback de testes; em um PVE a trava do pmxcfs cobre
+    # todos os nodes do cluster.
+    if (eval { require PVE::Cluster; 1 }) {
+        return PVE::Cluster::cfs_lock_domain('mm-tools', 10, $code);
+    }
+
+    my $lock = flock_ex($class->lock_path);
+    my (@out, $out, $want) = ((), undef, wantarray);
+    my $ok = eval {
+        if ($want) { @out = $code->() } else { $out = $code->() }
+        1;
+    };
+    my $err = $@;
+    unlock($lock);
+    die $err unless $ok;
+    return $want ? @out : $out;
+}
+
+sub save {
+    my ($class, $data, %opt) = @_;
+    die 'save precisa de hashref' unless ref $data eq 'HASH';
+    # cfs_lock_domain propagates scalar returns only. Keep the data/digest
+    # pair in one reference so callers have the same contract on PVE and tests.
+    my $saved = $class->_with_write_lock(sub {
+        return [ $class->_write_locked($data, %opt) ];
+    });
+    return wantarray ? @{$saved} : $saved->[0];
+}
+
+sub save_section {
+    my ($class, $section, $value, %opt) = @_;
+    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding);
+    die "seção inválida '$section'\n" unless $allowed{$section};
+    die "digest obrigatório para salvar seção\n" unless defined $opt{digest};
+
+    my ($cfg) = $class->load;
+    $cfg->{$section} = $value;
+    return $class->save($cfg, %opt);
 }
 
 1;

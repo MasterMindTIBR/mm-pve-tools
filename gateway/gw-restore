@@ -15,11 +15,10 @@ import os
 import re
 import secrets
 import socket
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-
+from pathlib import Path
 VERSION = "1.0"
 
 # --------------------------------------------------------------------------
@@ -39,6 +38,7 @@ REAL_PATHS = {
     "keys_dir": "/etc/gw-restore/keys",
     "sysctl_conf": "/usr/lib/sysctl.d/90-gw-restore.conf",
     "nft_table": "gw_restore",
+    "boot_id_file": "/proc/sys/kernel/random/boot_id",
     "ntfs_plugin_candidates": (
         "/usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so",
         "/usr/lib/ntfs-3g/ntfs-plugin-80000013.so",
@@ -57,114 +57,123 @@ class GwError(Exception):
 # --------------------------------------------------------------------------
 # Funções puras: validação e geração
 # --------------------------------------------------------------------------
-RE_SNAPSHOT = re.compile(r"^backup/\d{1,10}/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-RE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-RE_NS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}[A-Za-z0-9]$|^[A-Za-z0-9]$")
-RE_IPV4 = re.compile(
-    r"^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$"
-)
-RE_FREE_TEXT = re.compile(r"^[\w .:@/+,-]{1,128}$")
+CONTRACT_VERSION = 1
 
-REQUIRED_FIELDS = (
-    "snapshot", "datastore", "arquivo", "particao", "subpasta", "vlan",
-    "gw_ip", "prefix", "vm_ip", "horas", "solicitante", "vmid_origem",
-    "chamado",
-)
+
+def _contract_path():
+    configured = os.environ.get("MM_PVE_CONTRACT_DIR")
+    if configured:
+        return Path(configured) / "gw-restore.v1.schema.json"
+    return Path(__file__).resolve().parent.parent / "contract" / "gw-restore.v1.schema.json"
+
+
+_CONTRACT_SCHEMA = None
+
+
+def _contract_schema():
+    global _CONTRACT_SCHEMA
+    if _CONTRACT_SCHEMA is None:
+        with _contract_path().open(encoding="utf-8") as handle:
+            _CONTRACT_SCHEMA = json.load(handle)
+    return _CONTRACT_SCHEMA
+
+
+def _resolve_schema(schema, node):
+    ref = node.get("$ref")
+    if not ref:
+        return node
+    prefix = "#/definitions/"
+    if not ref.startswith(prefix):
+        raise RuntimeError("referência de schema inválida: %s" % ref)
+    return schema["definitions"][ref[len(prefix):]]
+
+
+def _schema_validate(node, value, where, schema):
+    node = _resolve_schema(schema, node)
+    typ = node.get("type")
+    valid_type = {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": isinstance(value, int) and not isinstance(value, bool),
+        "boolean": isinstance(value, bool),
+    }
+    if typ and not valid_type.get(typ, True):
+        raise GwError("%s: esperado %s" % (where, typ))
+    if "const" in node and value != node["const"]:
+        raise GwError("%s: esperado valor %s" % (where, node["const"]))
+    if "pattern" in node and not re.fullmatch(node["pattern"], value):
+        raise GwError("%s: formato inválido" % where)
+    if "minLength" in node and len(value) < node["minLength"]:
+        raise GwError("%s: curto demais" % where)
+    if "maxLength" in node and len(value) > node["maxLength"]:
+        raise GwError("%s: longo demais" % where)
+    if "minimum" in node and value < node["minimum"]:
+        raise GwError("%s: menor que %s" % (where, node["minimum"]))
+    if "maximum" in node and value > node["maximum"]:
+        raise GwError("%s: maior que %s" % (where, node["maximum"]))
+    if typ == "object":
+        for key in node.get("required", []):
+            if key not in value:
+                raise GwError("%s.%s: obrigatório" % (where, key))
+        if node.get("additionalProperties") is False:
+            unknown = set(value) - set(node.get("properties", {}))
+            if unknown:
+                raise GwError("%s.%s: campo desconhecido" % (where, sorted(unknown)[0]))
+        for key, child in node.get("properties", {}).items():
+            if key in value:
+                _schema_validate(child, value[key], where + "." + key, schema)
+    if typ == "array" and "items" in node:
+        for index, item in enumerate(value):
+            _schema_validate(node["items"], item, "%s[%d]" % (where, index), schema)
+    return value
+
+
+def validate_contract(definition, value):
+    schema = _contract_schema()
+    try:
+        node = schema["definitions"][definition]
+    except KeyError:
+        raise RuntimeError("definição de contrato desconhecida: %s" % definition)
+    return _schema_validate(node, value, "contract." + definition, schema)
 
 
 def validate_payload(payload):
-    """Valida o JSON de entrada do publish com regex estrita por campo.
-
-    Retorna payload normalizado (tipos corretos). Levanta GwError no
-    primeiro problema.
-    """
+    """Valida o publish contra o schema compartilhado e normaliza internamente."""
     if not isinstance(payload, dict):
         raise GwError("entrada: objeto JSON esperado no stdin")
-    for field in REQUIRED_FIELDS:
-        if field not in payload or payload[field] in (None, ""):
-            raise GwError(f"campo obrigatório ausente: {field}")
-
-    snap = payload["snapshot"]
-    if not isinstance(snap, str) or not RE_SNAPSHOT.match(snap):
-        raise GwError(
-            "snapshot inválido (esperado backup/<vmid>/<data-hora>Z): %r" % (snap,)
-        )
-
-    datastore = payload["datastore"]
-    if not isinstance(datastore, str) or not RE_NAME.match(datastore):
-        raise GwError("datastore inválido: %r" % (datastore,))
-
-    ns = payload.get("ns")
-    if ns is not None and (not isinstance(ns, str) or not RE_NS.match(ns)):
-        raise GwError("ns inválido: %r" % (ns,))
-
-    arquivo = payload["arquivo"]
-    if not isinstance(arquivo, str) or not RE_NAME.match(arquivo):
-        raise GwError("arquivo inválido: %r" % (arquivo,))
-
-    try:
-        particao = int(payload["particao"])
-    except (TypeError, ValueError):
-        raise GwError("particao deve ser inteiro")
-    if not 1 <= particao <= 255:
-        raise GwError("particao fora da faixa 1..255")
-
-    subpasta = payload["subpasta"]
-    if not isinstance(subpasta, str) or not subpasta:
-        raise GwError("subpasta obrigatória")
-    parts = subpasta.split("/")
-    if any(p in ("", ".", "..") for p in parts) or subpasta.startswith("/"):
-        raise GwError("subpasta inválida (sem caminho absoluto, '.', '..'): %r"
-                      % (subpasta,))
-    if any(not RE_NAME.match(p) for p in parts):
-        raise GwError("subpasta contém caracteres não permitidos: %r" % (subpasta,))
-
-    try:
-        vlan = int(payload["vlan"])
-    except (TypeError, ValueError):
-        raise GwError("vlan deve ser inteiro")
-    if not 1 <= vlan <= 4094:
-        raise GwError("vlan fora da faixa 1..4094")
-
-    for field in ("gw_ip", "vm_ip"):
-        value = payload[field]
-        if not isinstance(value, str) or not RE_IPV4.match(value):
-            raise GwError(f"{field} inválido: %r" % (value,))
-
-    try:
-        prefix = int(payload["prefix"])
-    except (TypeError, ValueError):
-        raise GwError("prefix deve ser inteiro")
-    if not 1 <= prefix <= 32:
-        raise GwError("prefix fora da faixa 1..32")
-
-    try:
-        horas = int(payload["horas"])
-    except (TypeError, ValueError):
-        raise GwError("horas deve ser inteiro")
-    if not 1 <= horas <= 168:
-        raise GwError("horas fora da faixa 1..168")
-
-    for field in ("solicitante", "vmid_origem", "chamado"):
-        value = payload[field]
-        if not isinstance(value, str) or not RE_FREE_TEXT.match(value):
-            raise GwError(f"{field} inválido: %r" % (value,))
-
+    if payload.get("contract") != CONTRACT_VERSION:
+        raise GwError("contrato incompatível: esperado contract=1")
+    payload = validate_contract("publish_request", payload)
+    namespace = payload["namespace"]
+    namespace_parts = namespace.split("/") if namespace else []
+    if (namespace.startswith("/") or
+            any(part in ("", ".", "..") for part in namespace_parts) or
+            any(ord(char) < 32 or ord(char) == 127 for char in namespace)):
+        raise GwError("contract.publish_request.namespace: caminho inválido")
+    subpath = payload["subpath"]
+    parts = subpath.split("/")
+    if any(part in ("", ".", "..") for part in parts) or subpath.startswith("/"):
+        raise GwError("contract.publish_request.subpath: caminho inválido")
+    if any(ord(char) < 32 or ord(char) == 127 for char in subpath):
+        raise GwError("contract.publish_request.subpath: caractere de controle")
     return {
-        "snapshot": snap,
-        "datastore": datastore,
-        "ns": ns,
-        "arquivo": arquivo,
-        "particao": particao,
-        "subpasta": subpasta,
-        "vlan": vlan,
+        "contract": CONTRACT_VERSION,
+        "snapshot": payload["snapshot"],
+        "datastore": payload["datastore"],
+        "ns": payload["namespace"],
+        "arquivo": payload["archive"],
+        "particao": payload["partition"],
+        "subpasta": subpath,
+        "vlan": payload["vlan"],
         "gw_ip": payload["gw_ip"],
-        "prefix": prefix,
+        "prefix": payload["prefix"],
         "vm_ip": payload["vm_ip"],
-        "horas": horas,
-        "solicitante": payload["solicitante"],
-        "vmid_origem": str(payload["vmid_origem"]),
-        "chamado": payload["chamado"],
+        "horas": payload["hours"],
+        "solicitante": payload["requester"],
+        "vmid_origem": payload["source_vmid"],
+        "target_vmid": payload["target_vmid"],
+        "chamado": payload["ticket"],
     }
 
 
@@ -214,10 +223,11 @@ def aggregate_includes(session_confs):
 
 
 def parse_loop_device(output):
-    """Extrai loopN da saída do `proxmox-backup-client map`."""
+    """Extrai loopN ou /dev/loopN da saída real do backup-client map."""
     for token in reversed(output.split()):
-        if re.fullmatch(r"loop\d+", token):
-            return token
+        match = re.fullmatch(r"(?:/dev/)?(loop\d+)", token)
+        if match:
+            return match.group(1)
     return None
 
 
@@ -266,10 +276,11 @@ def expected_sysctls(text):
 class RealOps:
     TIMEOUT = 180
 
-    def run(self, argv, stdin=None, timeout=None):
+    def run(self, argv, stdin=None, timeout=None, env=None):
         proc = subprocess.run(
             argv, input=stdin, capture_output=True, text=True,
             timeout=timeout or self.TIMEOUT,
+            env={**os.environ, **(env or {})},
         )
         return {"rc": proc.returncode, "out": proc.stdout, "err": proc.stderr}
 
@@ -342,14 +353,27 @@ class GwRestore:
             json.dump(state, handle, indent=1, sort_keys=True)
         os.replace(tmp, path)
 
+    def _boot_id(self):
+        try:
+            return self.ops.read_file(self.ctx["boot_id_file"]).strip()
+        except OSError:
+            return ""
+
     def _load_refcounts(self):
         try:
             with open(self.ctx["refcounts_file"], "r", encoding="utf-8") as fh:
-                return json.load(fh)
+                counts = json.load(fh)
         except (OSError, ValueError):
-            return {"maps": {}, "vlans": {}}
+            counts = {}
+        boot_id = self._boot_id()
+        if counts.get("boot_id") != boot_id:
+            return {"boot_id": boot_id, "maps": {}, "vlans": {}}
+        return counts
 
     def _save_refcounts(self, counts):
+        counts["boot_id"] = self._boot_id()
+        counts.setdefault("maps", {})
+        counts.setdefault("vlans", {})
         os.makedirs(os.path.dirname(self.ctx["refcounts_file"]), exist_ok=True)
         tmp = self.ctx["refcounts_file"] + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -382,6 +406,10 @@ class GwRestore:
             )
         return env
 
+    @staticmethod
+    def _pbs_subprocess_env(pbs_env):
+        return {key: value for key, value in pbs_env.items() if key.startswith("PBS_")}
+
     def _fail(self, step, detail):
         raise GwError(
             "falha no passo '%s': %s. "
@@ -399,6 +427,7 @@ class GwRestore:
         mnt = os.path.join(session_dir, "mnt")
         pbs_env = self._load_pbs_env()
         repository = pbs_env["PBS_REPOSITORY"]
+        pbs_subprocess_env = self._pbs_subprocess_env(pbs_env)
         trunk = pbs_env.get("TRUNK")
 
         counts = self._load_refcounts()
@@ -426,7 +455,7 @@ class GwRestore:
                     argv += ["--keyfile", keyfile]
                 elif pbs_env.get("PBS_KEYFILE"):
                     argv += ["--keyfile", pbs_env["PBS_KEYFILE"]]
-                res = self.ops.run(argv)
+                res = self.ops.run(argv, env=pbs_subprocess_env)
                 if res["rc"] != 0:
                     self._fail("map", (res["err"] or res["out"]).strip())
                 loop = parse_loop_device(res["out"])
@@ -492,33 +521,33 @@ class GwRestore:
                 if res["rc"] != 0:
                     self._fail("vlan", res["err"].strip())
                 created_vlan = True
+            res = self.ops.run(["ip", "link", "set", vid, "up"])
+            if res["rc"] != 0:
+                self._fail("vlan-up", res["err"].strip())
             res = self.ops.run(
                 ["arping", "-D", "-I", vid, "-c", "3", payload["gw_ip"]])
-            if res["rc"] != 0:
+            if res["rc"] == 1:
                 raise GwError(
-                    "IP do gateway %s já em uso na VLAN %d — publish "
-                    "abortado antes de configurar o IP. "
-                    "Escolha outro IP e reexecute: gw-restore publish "
-                    "(mesmo JSON no stdin)"
+                    "IP do gateway %s já em uso na VLAN %d — escolha outro IP e reexecute: "
+                    "gw-restore publish (mesmo JSON no stdin)"
                     % (payload["gw_ip"], payload["vlan"])
                 )
+            if res["rc"] != 0:
+                self._fail("arping", "a interface VLAN não respondeu: " + (res["err"] or "rc=%d" % res["rc"]))
             res = self.ops.run(
                 ["ip", "addr", "add",
                  "%s/%d" % (payload["gw_ip"], payload["prefix"]), "dev", vid])
             if res["rc"] != 0 and "File exists" not in res["err"]:
                 self._fail("vlan-ip", res["err"].strip())
-            res = self.ops.run(["ip", "link", "set", vid, "up"])
-            if res["rc"] != 0:
-                self._fail("vlan-up", res["err"].strip())
             counts["vlans"][str(payload["vlan"])] = (
                 counts["vlans"].get(str(payload["vlan"]), 0) + 1)
 
             # 7. regra nft
             res = self.ops.run(
                 ["nft", "-a", "insert", "rule", "inet", self.ctx["nft_table"],
-                 "vl_policy", "ip", "saddr", payload["vm_ip"],
-                 "ip", "daddr", payload["gw_ip"],
-                 "tcp", "dport", "445", "accept"])
+                "vl_policy", "iifname", vid, "ip", "saddr", payload["vm_ip"],
+                "ip", "daddr", payload["gw_ip"],
+                "tcp", "dport", "445", "accept"])
             if res["rc"] != 0:
                 self._fail("nft", res["err"].strip())
             nft_handle = parse_nft_handle(res["out"])
@@ -532,6 +561,7 @@ class GwRestore:
             now = datetime.now(timezone.utc)
             expires = now + timedelta(hours=payload["horas"])
             state = {
+                "contract": CONTRACT_VERSION,
                 "id": session_id,
                 "unc": "\\\\%s\\r-%s" % (payload["gw_ip"], session_id),
                 "user": user,
@@ -544,17 +574,18 @@ class GwRestore:
                 "nft_handle": nft_handle,
                 "mnt": mnt,
                 "share_path": share_path,
-                "solicitante": payload["solicitante"],
-                "vmid_origem": payload["vmid_origem"],
-                "chamado": payload["chamado"],
+                "requester": payload["solicitante"],
+                "source_vmid": payload["vmid_origem"],
+                "target_vmid": payload["target_vmid"],
+                "ticket": payload["chamado"],
                 "backup": {
                     "datastore": payload["datastore"],
-                    "ns": payload.get("ns"),
+                    "namespace": payload.get("ns"),
                     "snapshot": payload["snapshot"],
-                    "arquivo": payload["arquivo"],
-                    "particao": payload["particao"],
+                    "archive": payload["arquivo"],
+                    "partition": payload["particao"],
                 },
-                "subpasta": payload["subpasta"],
+                "subpath": payload["subpasta"],
                 "gw_ip": payload["gw_ip"],
                 "vm_ip": payload["vm_ip"],
             }
@@ -581,13 +612,13 @@ class GwRestore:
             if res["rc"] != 0:
                 self._fail("samba-reload", res["err"].strip())
 
-            # 10. saída estável
-            return {
+            result = {
                 "unc": state["unc"],
                 "user": user,
                 "password": password,
                 "expires_at": state["expires_at"],
             }
+            return validate_contract("publish_response", result)
         except Exception:
             self._rollback_partial(
                 repository=repository, payload=payload, loop=loop, mnt=mnt,
@@ -616,11 +647,8 @@ class GwRestore:
             if created_vlan:
                 self.ops.run(["ip", "link", "del", "vl%d" % vlan])
             if map_created and loop:
-                argv = ["proxmox-backup-client", "unmap", payload["arquivo"],
-                        "--repository", repository]
-                if payload.get("ns"):
-                    argv += ["--ns", payload["ns"]]
-                self.ops.run(argv)
+                self.ops.run(["proxmox-backup-client", "unmap", "/dev/" + loop],
+                             env=self._pbs_subprocess_env(self._load_pbs_env()))
         except Exception:
             pass
 
@@ -692,12 +720,10 @@ class GwRestore:
                     "/dev/" + str(state.get("loop", "")))
                 if loop_exists:
                     pbs_env = self._load_pbs_env()
-                    arquivo = state["backup"]["arquivo"]
-                    argv = ["proxmox-backup-client", "unmap", arquivo,
-                            "--repository", pbs_env["PBS_REPOSITORY"]]
-                    if state["backup"].get("ns"):
-                        argv += ["--ns", state["backup"]["ns"]]
-                    self.ops.run(argv)
+                    self.ops.run(
+                        ["proxmox-backup-client", "unmap", "/dev/" + state["loop"]],
+                        env=self._pbs_subprocess_env(pbs_env),
+                    )
                 del counts["maps"][key]
         vlan = str(state["vlan"])
         if vlan in counts["vlans"]:
@@ -721,12 +747,15 @@ class GwRestore:
             pass
         self._audit("revoke", {
             "sessao": session_id,
-            "solicitante": state.get("solicitante"),
-            "vmid_origem": state.get("vmid_origem"),
-            "chamado": state.get("chamado"),
+            "solicitante": state.get("requester"),
+            "vmid_origem": state.get("source_vmid"),
+            "chamado": state.get("ticket"),
             "gw_ip": state.get("gw_ip"),
         })
-        return {"revoked": session_id}
+        return validate_contract("revoke_response", {
+            "contract": CONTRACT_VERSION,
+            "revoked": session_id,
+        })
 
     # -- gc ----------------------------------------------------------------
     def gc(self, boot=False):
@@ -734,10 +763,8 @@ class GwRestore:
         revoked = []
         for session_id, state in sorted(self._load_states().items()):
             if boot:
-                # depois de um reboot os maps sumiram: /dev/loopN não existe
-                loop = state.get("loop")
-                if loop and self.ops.path_exists("/dev/" + str(loop)):
-                    continue  # map vivo, sessão ainda faz sentido
+                # Loops são efêmeros; após boot toda sessão remanescente é
+                # inválida e será revogada sem reutilizar mapeamentos antigos.
                 expired = True
             else:
                 try:
@@ -754,14 +781,16 @@ class GwRestore:
     def list(self, as_json=False):
         states = self._load_states()
         items = [states[k] for k in sorted(states)]
+        response = {"contract": CONTRACT_VERSION, "sessions": items}
         if as_json:
-            return json.dumps({"sessions": items}, indent=1, sort_keys=True)
+            return json.dumps(validate_contract("list_response", response),
+                              indent=1, sort_keys=True)
         lines = []
         for state in items:
             lines.append(
                 "%s  expira %s  %s -> %s  (chamado %s)"
-                % (state["id"], state["expires_at"], state["backup"]["arquivo"],
-                   state["subpasta"], state.get("chamado", "-")))
+                % (state["id"], state["expires_at"], state["backup"]["archive"],
+                   state["subpath"], state.get("ticket", "-")))
         return "\n".join(lines) if lines else "nenhuma sessão ativa"
 
     # -- selfcheck ---------------------------------------------------------
@@ -796,9 +825,9 @@ class GwRestore:
         if repo:
             res = self.ops.run(
                 ["proxmox-backup-client", "list", "--repository", repo],
-                timeout=15)
+                timeout=15, env=self._pbs_subprocess_env(pbs_env))
             record("pbs-token", res["rc"] == 0,
-                   (res["err"] or res["out"]).strip()[:200])
+                   res["err"].strip()[:200])
         else:
             record("pbs-token", False, "PBS_REPOSITORY ausente")
 
@@ -841,9 +870,13 @@ class GwRestore:
                "smb.conf sem 'include = %s'" % self.ctx["samba_conf"])
 
         if as_json:
-            return json.dumps(
-                {"ok": all(c["ok"] for c in checks), "checks": checks},
-                indent=1, sort_keys=True)
+            response = {
+                "contract": CONTRACT_VERSION,
+                "ok": all(check["ok"] for check in checks),
+                "checks": checks,
+            }
+            return json.dumps(validate_contract("selfcheck_response", response),
+                              indent=1, sort_keys=True)
         lines = []
         for check in checks:
             mark = "\u2714" if check["ok"] else "\u2718"
@@ -924,10 +957,16 @@ def main(argv=None):
                       "(veja: gw-restore list --json)", file=sys.stderr)
                 return 2
             try:
-                gw.revoke(args.session)
+                validate_contract("revoke_request", {
+                    "contract": CONTRACT_VERSION,
+                    "id": args.session,
+                })
+                result = gw.revoke(args.session)
             except GwError as exc:
                 print("gw-restore: %s" % exc, file=sys.stderr)
                 return 1
+            json.dump(result, sys.stdout, indent=1, sort_keys=True)
+            sys.stdout.write("\n")
             return 0
         if args.cmd == "list":
             print(gw.list(as_json=args.json))

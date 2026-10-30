@@ -27,7 +27,7 @@ sub setup {
             200 => { gw_ip => '10.20.200.250', prefix => 24 },
         },
         session_default_hours => 24,
-        session_max_hours     => 72,
+        session_max_hours     => 168,
         max_sessions          => 3,
     };
     MMPve::Core::Config->save($cfg);
@@ -79,7 +79,10 @@ sub make_override {
                     expires_at => '2026-10-28T10:00:00-03:00',
                 });
             } elsif ($c[1] && $c[1] eq 'list') {
-                $out = encode_json($opt{sessions} // []);
+                $out = encode_json({
+                    contract => 1,
+                    sessions => $opt{sessions} // [],
+                });
             } else {
                 $out = $opt{gw_out} // "\x{2714} plugin ntfs3g ok\n\x{2714} PBS alcancavel\n";
             }

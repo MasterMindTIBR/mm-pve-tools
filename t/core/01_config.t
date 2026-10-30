@@ -55,7 +55,7 @@ subtest 'validacao rejeita ruim' => sub {
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.999', prefix => 24 } } } }, qr/IPv4/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.1', prefix => 40 } } } },   qr/8\.\.32/ ],
         [ { restore => { session_default_hours => 100, session_max_hours => 50 } },       qr/default_hours/ ],
-        [ { restore => { session_max_hours => 99999 } },                                  qr/720/ ],
+        [ { restore => { session_max_hours => 99999 } },                                  qr/168/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.1', prefix => 24 },
                                       200 => { gw_ip => '10.0.0.1', prefix => 24 } } } }, qr/repetido/ ],
         [ { branding => { logo => '../../etc/passwd' } },     qr/nome de arquivo/ ],

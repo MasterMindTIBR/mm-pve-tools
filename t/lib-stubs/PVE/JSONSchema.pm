@@ -1,3 +1,4 @@
+# Stub de compilação. Fonte upstream: pve-common/src/PVE/JSONSchema.pm:1.
 package PVE::JSONSchema;
 use strict;
 use warnings;

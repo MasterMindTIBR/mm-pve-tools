@@ -16,8 +16,7 @@ package PVE::API2::MMTools;
 use strict;
 use warnings;
 
-use PVE::Exception qw(raise_param_exc);
-use PVE::INOTIFY;
+use JSON::PP qw(decode_json);
 use PVE::JSONSchema qw(get_standard_option);
 use PVE::RESTHandler;
 use PVE::RPCEnvironment;
@@ -27,15 +26,11 @@ use MMPve::Core::Config;
 use MMPve::Core::Apply;
 use MMPve::Core::Status;
 use MMPve::Core::Patch;
+use MMPve::Core::Runner;
 
 use base qw(PVE::RESTHandler);
 
-my $node_guard = sub {
-    my ($node) = @_;
-    my $local = PVE::INOTIFY::nodename();
-    return if $node eq $local || $node eq 'localhost';
-    raise_param_exc({ node => "requisição para '$node' chegou no node '$local'" });
-};
+
 
 sub mm_version {
     return $MMPve::Core::Config::VERSION;
@@ -45,7 +40,8 @@ __PACKAGE__->register_method({
     name => 'index',
     path => '',
     method => 'GET',
-    permissions => { user => 'all' },
+    proxyto => 'node',
+    permissions => { check => ['/', ['Sys.Audit']] },
     description => 'Índice do mm-pve-tools (MasterMind).',
     parameters => {
         additionalProperties => 0,
@@ -63,7 +59,7 @@ __PACKAGE__->register_method({
     },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
         return {
             version => mm_version(),
@@ -79,9 +75,10 @@ __PACKAGE__->register_method({
     name => 'get_config',
     path => 'config',
     method => 'GET',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Audit']] },
     description => 'Lê o estado desejado dos módulos MasterMind (/etc/pve/mm-tools/config.json).',
-    protected => 0,
+    protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -97,43 +94,53 @@ __PACKAGE__->register_method({
     },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
         return { config => $cfg, digest => $digest // '', absent => $absent ? 1 : 0 };
     },
 });
 
 __PACKAGE__->register_method({
-    name => 'set_config',
-    path => 'config',
+    name => 'set_config_section',
+    path => 'config/{section}',
     method => 'PUT',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Modify']] },
-    description => 'Salva o estado desejado (validação estrita; digest para não sobrescrever edição concorrente).',
+    description => 'Salva uma seção do estado desejado; digest CAS é obrigatório.',
     protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
+            section => {
+                type => 'string',
+                pattern => '^(modules|vmid_scheme|restore|branding)$',
+            },
             digest => {
                 type => 'string',
                 description => 'sha256 do arquivo atual, lido no GET (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
-                optional => 1,
             },
-            config => {
-                type => 'object',
-                description => 'config completo (substitui).',
+            value => {
+                type => 'string',
+                description => 'JSON serializado somente da seção alterada.',
+                maxLength => 1024 * 1024,
             },
         },
     },
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
-        my %save_opt;
-        $save_opt{digest} = $param->{digest} if defined $param->{digest};
-        my ($saved, $digest) = MMPve::Core::Config->save($param->{config}, %save_opt);
-        return { revision => $saved->{revision}, digest => $digest };
+        my $value = eval { decode_json($param->{value}) };
+        die "value precisa conter JSON válido: $@\n" if $@;
+        my ($saved, $digest) = MMPve::Core::Config->save_section(
+            $param->{section}, $value, digest => $param->{digest});
+        return {
+            revision => $saved->{revision},
+            digest => $digest,
+            section => $param->{section},
+            value => $saved->{ $param->{section} },
+        };
     },
 });
 
@@ -141,6 +148,7 @@ __PACKAGE__->register_method({
     name => 'apply',
     path => 'apply',
     method => 'POST',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Modify']] },
     description => 'Aplica patches + módulos neste node (tarefa em worker; acompanhe no Task Log).',
     protected => 1,
@@ -159,28 +167,23 @@ __PACKAGE__->register_method({
     returns => { type => 'string' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
         my $rpcenv = PVE::RPCEnvironment->get();
         my $authuser = $rpcenv->get_user();
-        my $patches = $param->{patches} // 1;
+        my $node = $param->{node};
         my $realcmd = sub {
-            my $res = MMPve::Core::Apply->apply_all(
-                $patches ? (patches => 1) : (patches => 0));
-            for my $n (sort keys %{ $res->{modules} // {} }) {
-                my $m = $res->{modules}{$n};
-                printf "%-9s %-8s %s\n", $n,
-                    ($m->{enabled} ? 'ligado' : 'desligado'),
-                    ($m->{ok} ? 'ok' : 'ERRO: ' . ($m->{error} // '?'));
-            }
-            my $p = $res->{patches};
-            if ($p) {
-                printf "patch %-10s %s\n", $_, $p->{targets}{$_}{status}
-                    for sort keys %{ $p->{targets} // {} };
-            }
-            print 'resultado: ', ($res->{ok} ? 'OK' : 'COM ERROS'), "\n";
-            die "apply concluído com erros\n" unless $res->{ok};
+            my ($upid) = @_;
+            my $unit = 'mm-pve-apply-' . $node . '-' . substr($upid, -12);
+            $unit =~ s/[^A-Za-z0-9_.-]/-/g;
+            my $res = MMPve::Core::Runner->run([
+                'systemd-run', '--no-block', "--unit=$unit",
+                '/usr/sbin/mm-pve', 'apply',
+            ], timeout => 30);
+            die "não consegui agendar apply fora do pvedaemon: "
+                . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n"
+                unless $res->{ok};
+            print "apply agendado na unit $unit\n";
         };
-        return $rpcenv->fork_worker('mmapply', "node:$param->{node}", $authuser, $realcmd);
+        return $rpcenv->fork_worker('mmapply', "apply-$node", $authuser, $realcmd);
     },
 });
 
@@ -188,9 +191,10 @@ __PACKAGE__->register_method({
     name => 'status',
     path => 'status',
     method => 'GET',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Audit']] },
     description => 'Diagnóstico do node: versões, patches, revisão aplicada, ntfs3g.',
-    protected => 0,
+    protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -200,7 +204,7 @@ __PACKAGE__->register_method({
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
-        $node_guard->($param->{node});
+
         return MMPve::Core::Status->collect(skip_ntfs3g => 0);
     },
 });

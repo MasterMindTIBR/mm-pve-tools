@@ -1,0 +1,12 @@
+name: Debian build dependencies
+description: Instala dependências reproduzíveis para build, lint e testes Debian.
+runs:
+  using: composite
+  steps:
+    - name: Instalar dependências
+      shell: sh
+      run: |
+        set -eu
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          build-essential debhelper lintian perl make libperl-critic-perl python3

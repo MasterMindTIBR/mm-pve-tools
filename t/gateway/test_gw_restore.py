@@ -17,20 +17,22 @@ spec.loader.exec_module(gw)
 
 def base_payload(**overrides):
     payload = {
-        "snapshot": "backup/101/2026-10-27T10:00:00Z",
+        "contract": 1,
+        "snapshot": "vm/101/2026-10-27T10:00:00Z",
         "datastore": "bkp01",
-        "ns": "cliente/a",
-        "arquivo": "drive-scsi1.img",
-        "particao": 2,
-        "subpasta": "Dados/Users/joao",
+        "namespace": "cliente/a",
+        "archive": "drive-scsi1.img",
+        "partition": 2,
+        "subpath": "Dados/Users/joao",
         "vlan": 120,
         "gw_ip": "10.1.20.250",
         "prefix": 24,
         "vm_ip": "10.1.20.23",
-        "horas": 4,
-        "solicitante": "root@pve",
-        "vmid_origem": "101",
-        "chamado": "CH-9981",
+        "hours": 4,
+        "requester": "root@pve",
+        "source_vmid": 101,
+        "target_vmid": 101,
+        "ticket": "GLPI-9981",
     }
     payload.update(overrides)
     return payload
@@ -44,7 +46,7 @@ class FakeOps(gw.RealOps):
         self.escape = escape
         self.calls = []
 
-    def run(self, argv, stdin=None, timeout=None):
+    def run(self, argv, stdin=None, timeout=None, env=None):
         self.calls.append((list(argv), stdin))
         prog = argv[0]
         if prog == "proxmox-backup-client" and argv[1] == "map":
@@ -123,25 +125,25 @@ class TestValidation(GatewayCase):
 
     def test_campos_invalidos(self):
         cases = [
-            {"snapshot": "evil/../x"},            # snapshot fora do formato
-            {"snapshot": "backup/101/nao-data"},
-            {"datastore": "a b"},                 # espaço
-            {"ns": "../etc"},
-            {"arquivo": "../../etc/passwd"},
-            {"particao": 0},
-            {"particao": 256},
-            {"subpasta": "../etc"},
-            {"subpasta": "/abs"},
-            {"subpasta": "a//b"},
+            {"snapshot": "evil/../x"},
+            {"snapshot": "vm/101/nao-data"},
+            {"datastore": "a b"},
+            {"namespace": "../etc"},
+            {"archive": "../../etc/passwd"},
+            {"partition": 0},
+            {"partition": 256},
+            {"subpath": "../etc"},
+            {"subpath": "/abs"},
+            {"subpath": "a//b"},
             {"vlan": 0},
             {"vlan": 5000},
             {"gw_ip": "10.1.20.999"},
             {"vm_ip": "abc"},
             {"prefix": 33},
-            {"horas": 0},
-            {"horas": 300},
-            {"solicitante": "user; rm -rf /"},
-            {"chamado": "x" * 200},
+            {"hours": 0},
+            {"hours": 300},
+            {"requester": ""},
+            {"ticket": "x" * 200},
         ]
         for overrides in cases:
             with self.assertRaises(
@@ -150,7 +152,7 @@ class TestValidation(GatewayCase):
 
     def test_campo_obrigatorio_ausente(self):
         payload = base_payload()
-        del payload["chamado"]
+        del payload["ticket"]
         with self.assertRaises(gw.GwError):
             gw.validate_payload(payload)
 
@@ -215,7 +217,7 @@ class TestPublish(GatewayCase):
 
     def test_duas_sessoes_mesmo_disco_um_map(self):
         self.gwr.publish(base_payload())
-        self.gwr.publish(base_payload(subpasta="Dados/Outra",
+        self.gwr.publish(base_payload(subpath="Dados/Outra",
                                       vm_ip="10.1.20.24"))
         map_calls = [a for (a, _s) in self.ops.calls
                      if a[:2] == ["proxmox-backup-client", "map"]]
@@ -248,11 +250,11 @@ class TestPublish(GatewayCase):
     def test_path_traversal_recusado(self):
         # ".." já é recusado na validação do payload
         with self.assertRaises(gw.GwError):
-            self.gwr.publish(base_payload(subpasta="Dados/../../etc"))
+            self.gwr.publish(base_payload(subpath="Dados/../../etc"))
         # escape no realpath (symlink p/ fora) também aborta
         self.ops.escape = True
         with self.assertRaises(gw.GwError) as cm:
-            self.gwr.publish(base_payload(subpasta="Dados/Users/joao"))
+            self.gwr.publish(base_payload(subpath="Dados/Users/joao"))
         self.assertIn("escapa", str(cm.exception))
         self.assertFalse(os.path.isdir(self.ctx["state_dir"])
                          and os.listdir(self.ctx["state_dir"]))
@@ -261,7 +263,7 @@ class TestPublish(GatewayCase):
 class TestRevokeGc(GatewayCase):
     def publish_two(self):
         first = self.gwr.publish(base_payload())
-        second = self.gwr.publish(base_payload(subpasta="Dados/Outra",
+        second = self.gwr.publish(base_payload(subpath="Dados/Outra",
                                                vm_ip="10.1.20.24"))
         return first, second
 
@@ -323,10 +325,10 @@ class TestRevokeGc(GatewayCase):
         self.assertTrue(any(a[:1] == ["userdel"] for (a, _s)
                             in self.ops.calls))
 
-    def test_boot_gc_mantem_com_map_vivo(self):
+    def test_boot_gc_revoga_sessoes_ativas(self):
         self.gwr.publish(base_payload())
         out = self.gwr.gc(boot=True)
-        self.assertEqual(out["revoked"], [])
+        self.assertEqual(len(out["revoked"]), 1)
 
     def test_list_json(self):
         self.gwr.publish(base_payload())
@@ -358,6 +360,31 @@ class TestEnvParsing(GatewayCase):
     def test_expected_sysctls(self):
         expected = gw.expected_sysctls("# h\nnet.ipv4.ip_forward = 0\n")
         self.assertEqual(expected, {"net.ipv4.ip_forward": "0"})
+
+
+class TestContractFixtures(unittest.TestCase):
+    """Fixtures compartilhadas contract/fixtures/*.json: o nome do arquivo
+    (sem extensão) é a definição do schema. O MESMO arquivo é validado em
+    t/contract/01_fixtures.t (Perl, lado node) contra o MESMO
+    contract/gw-restore.v1.schema.json. Renomear um campo de um lado sem
+    atualizar o schema/fixture quebra os dois testes."""
+
+    FIXTURES_DIR = os.path.join(HERE, "..", "..", "contract", "fixtures")
+
+    def test_fixtures_presentes(self):
+        files = [f for f in os.listdir(self.FIXTURES_DIR) if f.endswith(".json")]
+        self.assertGreaterEqual(len(files), 6)
+
+    def test_cada_fixture_valida_contra_o_schema(self):
+        for filename in sorted(os.listdir(self.FIXTURES_DIR)):
+            if not filename.endswith(".json"):
+                continue
+            definition = filename[: -len(".json")]
+            with open(os.path.join(self.FIXTURES_DIR, filename),
+                      encoding="utf-8") as handle:
+                value = json.load(handle)
+            with self.subTest(fixture=filename):
+                gw.validate_contract(definition, value)
 
 
 if __name__ == "__main__":

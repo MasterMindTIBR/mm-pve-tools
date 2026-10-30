@@ -55,10 +55,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: shellcheck nos .sh
+      - name: shellcheck nos maintainer scripts e scripts shell
         run: |
-          find . -path ./.git -prune -o -name '*.sh' -print0 \
-            | xargs -0 -r shellcheck
+          find debian -type f \( -name '*.postinst' -o -name '*.prerm' -o -name '*.postrm' \) -print0 \
+            | xargs -0 -r shellcheck --shell=sh
+          find lib gateway -type f -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck --shell=sh
 
   eslint:
     name: JS lint
@@ -77,16 +79,13 @@ jobs:
       image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: deps
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential debhelper lintian python3
+      - name: dependências de build
+        uses: ./.github/actions/debian-build-deps
       - name: build
         run: |
-          # root é exigido pelo maintscripts do pacote
           dpkg-buildpackage -us -uc -b
-          mkdir -p dist && mv ../*.deb ../*.changes dist/ 2>/dev/null || true
+          mkdir -p dist
+          mv ../*.deb ../*.changes ../*.buildinfo dist/
       - name: lintian
         run: lintian --fail-on error,warning --pedantic dist/*.changes
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -99,37 +98,55 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: baixa pve-manager mais recente e testa apply-patches
+      - name: baixa os pacotes mais recentes e aplica os patches
         run: |
-          set -e
-          BASE=http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64
-          PKGS=$(curl -fsSL "$BASE/Packages")
-          VER=$(printf '%s\n' "$PKGS" | python3 -c '
+          set -euo pipefail
+          MIRROR=http://download.proxmox.com/debian/pve
+          BASE="$MIRROR/dists/trixie/pve-no-subscription/binary-amd64"
+          curl -fsSL "$BASE/Packages" -o Packages
+          python3 - <<'PY' > packages.tsv
           import re
-          import sys
-          match = re.search(r"(?ms)^Package: pve-manager\n.*?^Version: (\S+)$", sys.stdin.read())
-          if not match:
-              raise SystemExit("pve-manager não encontrado em Packages")
-          print(match.group(1))
-          ')
-          echo "pve-manager $VER"
-          curl -fsSL -o pm.deb "$BASE/pve-manager_${VER}_all.deb"
-          rm -rf /tmp/root && mkdir -p /tmp/root
-          dpkg-deb -x pm.deb /tmp/root
-          # fixture do repo também precisa passar
+          import subprocess
+
+          source = open("Packages", encoding="utf-8").read()
+          wanted = ("pve-manager", "proxmox-widget-toolkit")
+          latest = {}
+          for stanza in re.split(r"\n\s*\n", source):
+              fields = dict(
+                  line.split(": ", 1)
+                  for line in stanza.splitlines()
+                  if ": " in line and not line.startswith((" ", "\t"))
+              )
+              package = fields.get("Package")
+              if package not in wanted or "Version" not in fields or "Filename" not in fields:
+                  continue
+              current = latest.get(package)
+              if current is None or subprocess.run(
+                  ["dpkg", "--compare-versions", fields["Version"], "gt", current["Version"]],
+                  check=False,
+              ).returncode == 0:
+                  latest[package] = fields
+          missing = [package for package in wanted if package not in latest]
+          if missing:
+              raise SystemExit("pacote(s) ausente(s): " + ", ".join(missing))
+          for package in wanted:
+              item = latest[package]
+              print(f"{package}\t{item['Version']}\t{item['Filename']}")
+          PY
+          while IFS=$'\t' read -r package version filename; do
+            echo "$package $version"
+            curl -fsSL -o "$package.deb" "$MIRROR/$filename"
+            case "$package" in
+              pve-manager) dpkg-deb -x "$package.deb" /tmp/root ;;
+              proxmox-widget-toolkit) dpkg-deb -x "$package.deb" /tmp/widget ;;
+            esac
+          done < packages.tsv
           make -s js >/dev/null
-          rc=0
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --check --root /tmp/root || rc=$?
-          case "$rc" in
-            0|3) ;;
-            *) exit "$rc" ;;
-          esac
-      - name: âncora do branding (Logo.js do widget-toolkit)
-        run: |
-          curl -fsSL -o Logo.js \
-            'https://git.proxmox.com/?p=proxmox-widget-toolkit.git;a=blob_plain;f=src/Logo.js;hb=HEAD'
-          grep -q "Ext.define('PMX.image.LogoSVG'" Logo.js
-          grep -q 'proxmox_logo.svg' Logo.js
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root /tmp/root
+          perl -I/tmp/root/usr/share/perl5 -Ilib -Iperl -It/lib-stubs -c \
+            /tmp/root/usr/share/perl5/PVE/API2/Nodes.pm
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" /tmp/widget
+          grep -R -q 'proxmox_logo.svg' /tmp/widget
 
   ntfs3g-compat:
     name: Compatibilidade com releases do ntfs3g (APT MasterMind)

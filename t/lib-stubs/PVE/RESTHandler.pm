@@ -1,5 +1,5 @@
-# Stub mínimo de lint/CI (sem PVE instalado). Comportamento real: pve-manager.
-# register_method aceita lista de pares (estilo PVE) OU hashref único (subclass).
+# Stub de compilação. Fonte upstream: pve-common/src/PVE/RESTHandler.pm:1.
+# register_method aceita lista de pares (estilo PVE) ou hashref de subclass.
 package PVE::RESTHandler;
 use strict;
 use warnings;

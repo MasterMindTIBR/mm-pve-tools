@@ -8,11 +8,12 @@ use FindBin qw($Bin);
 use File::Path qw(make_path);
 use JSON::PP;
 
-use lib "$Bin", "$Bin/../../lib";
+use lib "$Bin", "$Bin/../../lib", "$Bin/../lib-stubs";
 use MockPve;
 use MMPve::Module::Renumber;
 use MMPve::Core::Runner;
 use MMPve::Journal;
+require PVE::Storage;    # stub (ver t/lib-stubs/PVE/Storage.pm) — R2.6 #9
 
 my $tmp = "$Bin/tmp-run";
 system("rm -rf $tmp") == 0 or die;
@@ -98,6 +99,22 @@ subtest 'run completo' => sub {
     is($prot->{args}{protection}, 1, 'protection sozinho na chamada');
     is($prot + 0, $cfgs[-1] + 0, 'protection é a última chamada de config');
 
+    # protection da VM ANTIGA é limpa (protection=>0) antes de qualquer
+    # move_disk — senão destroy_vm/remoção de drive recusam mais na frente
+    # (PVE::QemuConfig::check_protection) — R2.6 #7 / acceptance B.
+    my @all_ops = MockPve::ops();
+    my ($prot_clear_idx) = grep {
+        $all_ops[$_]{op} eq 'set' && $all_ops[$_]{path} eq '/nodes/n1/qemu/100/config'
+            && exists $all_ops[$_]{args}{protection} && $all_ops[$_]{args}{protection} == 0
+    } 0 .. $#all_ops;
+    my ($first_move_idx) = grep {
+        $all_ops[$_]{op} eq 'create' && $all_ops[$_]{path} eq '/nodes/n1/qemu/100/move_disk'
+    } 0 .. $#all_ops;
+    ok(defined $prot_clear_idx, 'protection da antiga foi limpa (protection=>0)');
+    ok(defined $first_move_idx && $prot_clear_idx < $first_move_idx,
+        'limpeza da protection acontece antes do primeiro move_disk');
+    is($MockPve::S{new_vm_config}{protection}, 1, 'protection=1 fica na VM nova no fim (sucesso)');
+
     # firewall copiado
     ok(-f "$tmp/etc/pve/firewall/1100.fw", 'firewall novo criado');
 
@@ -149,6 +166,78 @@ subtest 'falha no meio: journal registra ANTES/DEPOIS e comando para continuar' 
     like($j->step_info('refs')->{error}, qr/backup set falhou/, 'erro registrado');
     my @del = MockPve::ops('delete', '/nodes/n1/qemu/100');
     is(scalar @del, 0, 'destroy não rodou');
+};
+
+subtest 'verify: aceita volids reais (hífen no storage, subpasta por vmid) — R2.6 #4' => sub {
+    MockPve->reset;
+    local $MMPve::Core::Runner::OVERRIDE = \&MockPve::handler;   ## no critic
+    $MockPve::S{vm_config} = {
+        scsi0 => 'local-zfs:vm-150-disk-0,size=20G',
+        scsi1 => 'rbd1:vm-150-disk-1,size=10G',
+        scsi2 => 'nfs-bkp:150/vm-150-disk-0.qcow2,size=5G',
+    };
+    my $meta = { node => 'n1', from => 100 };
+    my $err = eval { MMPve::Module::Renumber::_step_verify('MMPve::Module::Renumber', undef, $meta) };
+    ok($@, 'verify detecta os 3 volumes deixados pra trás');
+    like($@, qr/local-zfs:vm-150-disk-0/, 'reconhece storage com hífen');
+    like($@, qr/rbd1:vm-150-disk-1/, 'reconhece storage sem hífen (rbd)');
+    like($@, qr{nfs-bkp:150/vm-150-disk-0\.qcow2}, 'reconhece subpasta por vmid (nfs/dir)');
+};
+
+subtest 'refs: ACL token continua token, não vira group — R2.6 #11' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    push @{ $MockPve::S{acls} }, {
+        path => '/vms/100', ugid => 'jung@pam!automacao', type => 'token',
+        roleid => 'PVEVMUser', propagate => 0,
+    };
+    my $res = MMPve::Module::Renumber->run(from => 100, to => 1100);
+    ok($res->{ok}, 'run ok') or diag explain $res;
+
+    my @acl_sets = MockPve::ops('set', '/access/acl');
+    my ($token_set) = grep { exists $_->{args}{tokens} } @acl_sets;
+    ok($token_set, 'ACL com tokens= foi enviada');
+    is($token_set->{args}{tokens}, 'jung@pam!automacao', 'token preservado, não virou group');
+    ok(!exists $token_set->{args}{groups}, 'não foi parar em groups');
+    is($token_set->{args}{roles}, 'PVEVMUser', 'roleid preservado');
+    is($token_set->{args}{propagate}, 0, 'propagate preservado');
+
+    my ($user_set) = grep { exists $_->{args}{users} } @acl_sets;
+    ok($user_set, 'ACL de user original continua indo em users=');
+};
+
+subtest 'refs: HA e replicação removem o antigo e recriam com ID novo — R2.6 #10' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
+    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2', type => 'local' }];
+    my $res = MMPve::Module::Renumber->run(from => 100, to => 1100,
+        handle_ha => 1, handle_replication => 1);
+    ok($res->{ok}, 'run ok com HA/replicação') or diag explain $res;
+
+    my ($ha_del) = MockPve::ops('delete', '/cluster/ha/resources/vmid:100');
+    ok($ha_del, 'HA antigo (vmid:100) removido');
+    my ($ha_new) = MockPve::ops('create', '/cluster/ha/resources');
+    is($ha_new->{args}{sid}, 'vmid:1100', 'HA novo criado com o ID novo');
+
+    my ($rep_del) = MockPve::ops('delete', '/cluster/replication/rep1');
+    ok($rep_del, 'job de replicação antigo (rep1) removido');
+    my ($rep_new) = MockPve::ops('create', '/cluster/replication');
+    is($rep_new->{args}{id}, '1100-0', 'job novo usa a convenção <novo-vmid>-n (pvesr(1))');
+    is($rep_new->{args}{target}, 'n2', 'mesmo destino');
+    is($rep_new->{args}{type}, 'local', 'mesmo tipo de plugin');
+};
+
+subtest 'wait_task: tarefa concluída com exitstatus != OK morre com a mensagem real — R2.6 #3' => sub {
+    MockPve->reset;
+    system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
+    $MockPve::S{fail_at} = 'task';
+    my $err = eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
+    ok($@, 'run morre no move_disks');
+    like($@, qr/tarefa falhou/, 'mensagem de tarefa falhou');
+    like($@, qr/command error/, 'exitstatus real na mensagem');
+    my $j = MMPve::Journal->open('renumber-100-1100');
+    is($j->step_info('move_disks')->{status}, 'failed', 'move_disks falhou');
 };
 
 done_testing();

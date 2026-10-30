@@ -22,7 +22,7 @@ my $b64_field = sub {
     my ($param, $field, $namefield, $kind) = @_;
     return unless defined $param->{$field};
     my $name = $param->{$namefield}
-        // ($kind eq 'logo' ? 'logo.svg' : 'favicon.png');
+        // ($kind eq 'logo' ? 'logo.png' : 'favicon.png');
     my $data = decode_base64($param->{$field});
     my $st = eval {
         MMPve::Module::Branding->store_asset(kind => $kind, filename => $name, data => \$data);
@@ -39,6 +39,7 @@ __PACKAGE__->register_method({
     name => 'index',
     path => '',
     method => 'GET',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Audit']] },
     description => 'Branding: config atual e estado aplicado neste node.',
     protected => 0,
@@ -65,6 +66,7 @@ __PACKAGE__->register_method({
     name => 'set',
     path => 'set',
     method => 'PUT',
+    proxyto => 'node',
     permissions => { check => ['/', ['Sys.Modify']] },
     description => 'Salva os textos do branding (título, topo, login). Imagens vão pelo upload.',
     protected => 1,
@@ -76,7 +78,6 @@ __PACKAGE__->register_method({
                 type => 'string',
                 description => 'sha256 do config atual (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
-                optional => 1,
             },
             title => {
                 type => 'string', maxLength => 100, optional => 1,
@@ -124,9 +125,10 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'upload',
     path => 'upload',
+    proxyto => 'node',
     method => 'PUT',
     permissions => { check => ['/', ['Sys.Modify']] },
-    description => 'Envia logo/favicon (base64, máx 200 KB, só .svg/.png; SVG ativo é recusado).',
+    description => 'Envia logo/favicon PNG em base64 (máx. 200 KB; assinatura PNG obrigatória).',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -136,23 +138,22 @@ __PACKAGE__->register_method({
                 type => 'string',
                 description => 'sha256 do config atual (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
-                optional => 1,
             },
             logo_b64 => {
                 type => 'string', optional => 1,
-                description => 'Logo (SVG/PNG) em base64.',
+                description => 'Logo PNG em base64.',
             },
             logo_name => {
                 type => 'string', optional => 1,
-                description => 'Nome do arquivo do logo (padrão logo.svg).',
+                description => 'Nome .png do logo.',
             },
             favicon_b64 => {
                 type => 'string', optional => 1,
-                description => 'Favicon (SVG/PNG) em base64.',
+                description => 'Favicon PNG em base64.',
             },
             favicon_name => {
                 type => 'string', optional => 1,
-                description => 'Nome do arquivo do favicon (padrão favicon.png).',
+                description => 'Nome .png do favicon.',
             },
         },
     },

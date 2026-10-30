@@ -12,21 +12,25 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   promote:
     name: Tira o pre-release (stable)
     runs-on: ubuntu-24.04
     environment: production # aprovação obrigatória do Jung
+    permissions:
+      contents: write
     steps:
       - name: confere que a release existe e é pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
         run: |
-          set -e
-          TAG="v${{ inputs.version }}"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,assets -q '.' > rel.json
+          set -eu
+          TAG="v$VERSION"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isPrerelease,assets > rel.json
           python3 - <<'EOF'
           import json, sys
           rel = json.load(open('rel.json'))
@@ -41,7 +45,10 @@ jobs:
       - name: gh release edit --prerelease=false
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "v${{ inputs.version }}" --repo "$GITHUB_REPOSITORY" --prerelease=false
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --prerelease=false
 
   dispatch-apt:
     name: Avisa o repositório APT
@@ -57,9 +64,25 @@ jobs:
           owner: MasterMindTIBR
           repositories: apt
       - name: repository_dispatch
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ inputs.version }}
         run: |
+          set -eu
+          python3 - <<'PY' > payload.json
+          import json
+          import os
+
+          print(json.dumps({
+              "event_type": "apt-publish",
+              "client_payload": {
+                  "repo": "mm-pve-tools",
+                  "version": os.environ["VERSION"],
+              },
+          }))
+          PY
           curl -fsS -X POST \
-            -H "Authorization: Bearer ${{ steps.app.outputs.token }}" \
+            -H "Authorization: Bearer $APP_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/MasterMindTIBR/apt/dispatches \
-            -d '{"event_type":"apt-publish","client_payload":{"repo":"mm-pve-tools","version":"${{ inputs.version }}"}}'
+            --data-binary @payload.json

@@ -64,58 +64,26 @@ sub _short {
     return substr($hash, 0, 10);
 }
 
-# Decodifica entidades numéricas/nomeadas comuns repetidamente (máx. 10
-# rodadas) para pegar ofuscação tipo &lt;script&gt; ou &#x3C;script&#x3E;.
-sub _decode_entities {
-    my ($s) = @_;
-    for (1 .. 10) {
-        my $prev = $s;
-        $s =~ s/&#x([0-9a-f]+);/chr(hex($1))/gie;
-        $s =~ s/&#(\d+);/chr($1)/ge;
-        $s =~ s/&lt;/</gi;
-        $s =~ s/&gt;/>/gi;
-        $s =~ s/&quot;/"/gi;
-        $s =~ s/&amp;/&/gi;
-        last if $s eq $prev;
-    }
-    return $s;
-}
 
-# Retorna () se o SVG é limpo; senão a razão (pt-BR).
-sub svg_problem {
-    my ($data) = @_;
-    my $dec = _decode_entities($data);
-    return 'SVG contém <script>'   if $dec =~ /<\s*script\b/i;
-    return 'SVG contém </script>'  if $dec =~ /<\s*\/\s*script/i;
-    return 'SVG contém handler on* (ex.: onclick)' if $dec =~ /\bon[a-z]+\s*=/i;
-    return 'SVG contém URL javascript:' if $dec =~ /javascript\s*:/i;
-    return 'SVG referencia recursos externos' if $dec =~ /\b(?:href|src)\s*=\s*["']?\s*(?:https?|data):/i;
-    return '';
-}
-
-# Guarda um asset na branding_dir (pmxcfs). Valida extensão, tamanho e
-# sanitização de SVG. Retorna {filename, size, sha256}. Die com mensagem
-# pt-BR em erro.
+# Guarda um PNG canônico no branding_dir. A extensão declarada nunca é
+# suficiente: a assinatura PNG é conferida antes de qualquer gravação.
 sub store_asset {
     my ($class, %opt) = @_;
     my $kind = $opt{kind} // die "kind obrigatório (logo|favicon)\n";
     die "kind inválido '$kind'\n" unless $kind =~ /^(logo|favicon)$/;
-    my $name = basename($opt{filename} // '');
+    my $submitted = basename($opt{filename} // '');
     die "nome de arquivo inválido para $kind (use [A-Za-z0-9._-])\n"
-        unless $name =~ /^[A-Za-z0-9._-]+$/ && $name !~ /^\./;
-    die "$name: só .svg ou .png\n" unless $name =~ /\.(svg|png)$/i;
-    my $ext = lc($1);
+        unless $submitted =~ /^[A-Za-z0-9._-]+$/ && $submitted !~ /^\./;
+    die "$submitted: apenas PNG é aceito\n" unless $submitted =~ /\.png$/i;
+    my $name = "$kind.png";
 
     my $data = $opt{data};
-    die "$name: conteúdo ausente\n" unless defined $data && length $data;
+    die "$submitted: conteúdo ausente\n" unless defined $data && length $data;
     my $len = length $$data;
-    die sprintf("%s: %d bytes excede o limite de %d bytes\n", $name, $len, $MAX_BYTES->())
+    die sprintf("%s: %d bytes excede o limite de %d bytes\n", $submitted, $len, $MAX_BYTES->())
         if $len > $MAX_BYTES->();
-    if ($ext eq 'svg') {
-        my $prob = svg_problem($$data);
-        die "$name recusado: $prob (remova o conteúdo ativo e tente de novo; para CLI: mm-pve branding set --$kind $name)\n"
-            if $prob;
-    }
+    die "$submitted: conteúdo não é um PNG válido\n"
+        unless substr($$data, 0, 8) eq "\x89PNG\r\n\x1a\n";
 
     ensure_dir(branding_dir());
     my $dest = branding_dir() . '/' . $name;

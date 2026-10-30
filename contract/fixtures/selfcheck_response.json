@@ -1,0 +1,12 @@
+{
+  "contract": 1,
+  "ok": true,
+  "checks": [
+    { "name": "plugin-ntfs-dedup", "ok": true, "detail": "" },
+    { "name": "pbs-reachability", "ok": true, "detail": "" },
+    { "name": "pbs-token", "ok": true, "detail": "" },
+    { "name": "sysctls", "ok": true, "detail": "" },
+    { "name": "nft-table", "ok": true, "detail": "" },
+    { "name": "samba-include", "ok": true, "detail": "" }
+  ]
+}

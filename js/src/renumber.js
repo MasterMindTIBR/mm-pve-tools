@@ -62,41 +62,34 @@ Ext.define('MM.panel.Vmid', {
 	    MM.Api.request({
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
-		    store.setData((res.config || {}).vmid_scheme || []);
-		    me.digest = res.digest || '';
+		    let data = res.data || {};
+		    store.setData((data.config || {}).vmid_scheme || []);
+		    me.digest = data.digest || '';
 		},
 	    });
 	};
 
-	// grava vmid_scheme no config do mm-tools (PUT com digest CAS)
+	// grava vmid_scheme como seção isolada (digest CAS da seção lida no reload)
 	me.saveScheme = function () {
 	    let ranges = [];
 	    store.each((r) => {
 		ranges.push({ label: r.get('label'), from: r.get('from'), to: r.get('to') });
 	    });
 	    MM.Api.request({
-		url: '/nodes/localhost/mm-tools/config',
-		method: 'GET',
-		success: (res) => {
-		    let cfg = res.config || {};
-		    cfg.vmid_scheme = ranges;
-		    MM.Api.request({
-			method: 'PUT',
-			url: '/nodes/localhost/mm-tools/config',
-			params: { digest: res.digest },
-			data: { config: cfg, digest: res.digest },
-			success: () => {
-			    me.digest = undefined;
-			    me.reload();
-			    Ext.Msg.alert('MasterMind', gettext('Saved'));
-			},
-		    });
+		method: 'PUT',
+		url: '/nodes/localhost/mm-tools/config/vmid_scheme',
+		params: { digest: me.digest, value: JSON.stringify(ranges) },
+		success: () => {
+		    me.digest = undefined;
+		    me.reload();
+		    Ext.Msg.alert('MasterMind', gettext('Saved'));
 		},
 	    });
 	};
 
 	// grava a primeira faixa como next-id do datacenter (datacenter.cfg),
 	// igual ao editor "Next Free VMID Range" do PVE (PUT /cluster/options).
+	// next-id é uma property-string do PVE: "lower=N,upper=M".
 	me.saveNextId = function () {
 	    let first = store.getAt(0);
 	    if (!first || !first.get('from') || !first.get('to')) {
@@ -106,13 +99,14 @@ Ext.define('MM.panel.Vmid', {
 	    MM.Api.request({
 		method: 'PUT',
 		url: '/cluster/options',
-		data: { 'next-id': { lower: first.get('from'), upper: first.get('to') } },
+		params: { 'next-id': `lower=${first.get('from')},upper=${first.get('to')}` },
 		success: () => Ext.Msg.alert(
 		    'MasterMind',
 		    `next-id do datacenter gravado: ${first.get('from')}–${first.get('to')}`,
 		),
 	    });
 	};
+
 
 	Ext.apply(me, {
 	    items: [
@@ -235,7 +229,8 @@ Ext.define('MM.window.Renumber', {
 			url: `/nodes/${me.nodename}/mm-tools/renumber/precheck`,
 			params: { from, to },
 			success: (res) => {
-			    st.setData((res.checks || []).map((c) => ({
+			    let data = res.data || {};
+			    st.setData((data.checks || []).map((c) => ({
 				check: c.check, ok: !!c.ok,
 				warning: !!c.warning, detail: c.detail,
 			    })));
@@ -316,7 +311,8 @@ Ext.define('MM.VmidSchemeCache', {
 	MM.Api.request({
 	    url: '/nodes/localhost/mm-tools/config',
 	    success: (res) => {
-		MM.VmidSchemeCache.ranges = (res.config || {}).vmid_scheme || [];
+		let data = res.data || {};
+		MM.VmidSchemeCache.ranges = (data.config || {}).vmid_scheme || [];
 		MM.VmidSchemeCache.loaded = true;
 		cb(MM.VmidSchemeCache.ranges);
 	    },

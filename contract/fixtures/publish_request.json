@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "snapshot": "vm/100/2026-10-26T02:00:03Z",
+  "datastore": "bkp01",
+  "namespace": "cliente-exemplo",
+  "archive": "drive-scsi1.img",
+  "partition": 2,
+  "subpath": "Dados/Financeiro",
+  "vlan": 120,
+  "gw_ip": "10.20.120.250",
+  "prefix": 24,
+  "vm_ip": "10.20.120.77",
+  "hours": 24,
+  "requester": "root@pam",
+  "source_vmid": 100,
+  "target_vmid": 100,
+  "ticket": "GLPI-1234"
+}

@@ -21,6 +21,7 @@ use parent qw(MMPve::Core::ModuleBase);
 use MMPve::Core::Runner;
 use MMPve::Core::Config;
 use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_dir now_iso);
+use MMPve::Contract::Gateway;
 use MMPve::Journal;
 
 our $VERSION = '0.1.0';
@@ -43,19 +44,18 @@ sub parse_volid {
     return (storage => $1, vmid => $2 + 0, timestamp => $3);
 }
 
-# decodifica o caminho vindo do File Restore (base64) e valida caracteres
+# Decodifica o caminho vindo do File Restore (base64). Espaços e Unicode são
+# aceitos; somente controles e traversal são proibidos.
 sub decode_path_b64 {
     my ($class, $b64) = @_;
     die "caminho em base64 ausente\n" unless defined $b64 && length $b64;
     my $path = eval { decode_base64($b64) };
     die "caminho base64 inválido\n" if $@ || !defined $path;
-    $path =~ s/\s+$//;
     utf8::decode($path) unless utf8::is_utf8($path);
     die "caminho precisa começar com '/' (ex.: /drive-scsi1.img.fidx/part/2/Dados)\n"
         unless $path =~ m{^/};
-    die "caminho contém caracteres não permitidos\n"
-        unless $path =~ m{^[A-Za-z0-9 ._/\-]*$};
-    die "caminho não pode conter '..'\n" if $path =~ m{/(?:\.\.|\.)/|(?:^\.\.)};
+    die "caminho contém caracteres de controle\n" if $path =~ /[\x00-\x1F\x7F]/;
+    die "caminho não pode conter '..'\n" if $path =~ m{(?:^|/)\.\.(?:/|$)};
     die "caminho vazio\n" if $path eq '/';
     $path =~ s{/+$}{};
     return $path;
@@ -190,10 +190,11 @@ sub gw_exec {
         sleep($POLL_DELAY);
     }
     if (defined $st->{exitcode} && $st->{exitcode} != 0) {
-        my $msg = ($st->{err} || $st->{out} || '');
-        $msg =~ s/\s+$//;
-        $msg = substr($msg, 0, 500) . '…' if length($msg) > 500;
-        die "gw-restore falhou (exit " . $st->{exitcode} . "): $msg\n";
+        my $detail = $st->{err} // '';
+        $detail =~ s/\s+$//;
+        $detail = substr($detail, 0, 500) if length($detail) > 500;
+        die "gw-restore falhou (exit " . $st->{exitcode} . ")"
+            . (length($detail) ? ": $detail" : "") . "\n";
     }
     return $st->{out} // '';
 }
@@ -285,9 +286,10 @@ sub sessions {
     my ($gwn, $gwvmid) = $class->gateway_locate($cfg);
     my $out = $class->gw_exec($gwn, $gwvmid, ['gw-restore', 'list', '--json'],
         timeout => $opt{timeout} // $GW_TIMEOUT);
-    my $list = eval { decode_json($out) };
-    die "saída do gw-restore list não é JSON: " . substr($out, 0, 200) . "\n" if $@;
-    $list = [$list] unless ref $list eq 'ARRAY';
+    my $response = eval { decode_json($out) };
+    die "saída do gw-restore list não é JSON\n" if $@;
+    MMPve::Contract::Gateway->validate('list_response', $response);
+    my $list = $response->{sessions};
     return wantarray ? @{$list} : $list;
 }
 
@@ -302,13 +304,8 @@ sub revoke {
     # tag sai na última revogação daquela VM
     my @after = eval { $class->sessions(config => $cfg) };
     @after = () if $@;
-    my $vmid;
-    if ($sess) {
-        $vmid = $sess->{vmid};
-    } else {
-        ($vmid) = map { $_->{vmid} } grep { ($_->{id} // '') eq $sid } @before;
-    }
-    if (defined $vmid && !grep { ($_->{vmid} // '') == $vmid } @after) {
+    my $vmid = $sess ? $sess->{target_vmid} : undef;
+    if (defined $vmid && !grep { ($_->{target_vmid} // '') == $vmid } @after) {
         my $node = $class->find_node_of_vmid($vmid);
         $class->set_tag($node, $vmid, 0);
     }
@@ -405,7 +402,6 @@ sub publish {
     eval {
         $j->mark_running('limites');
         my @sess = $class->sessions(config => $cfg);
-        my $n = scalar grep { !defined($_->{expires_at}) || $_->{expires_at} gt '' } @sess;
         die "limite de sessões atingido (max_sessions="
             . $r->{max_sessions} . ", ativas=" . scalar(@sess) . ")\n"
             if scalar(@sess) >= $r->{max_sessions};
@@ -444,22 +440,38 @@ sub publish {
         $j->mark_running('gateway');
         my ($gwn, $gwvmid) = $class->gateway_locate($cfg);
         $spec->{gw_node} = $gwn;
+        my $storage_cfg = $arg{storage_config};
+        if (!$storage_cfg) {
+            $storage_cfg = eval {
+                require PVE::Storage;
+                PVE::Storage::config();
+            };
+            die "não consegui ler storage.cfg: $@\n" if $@;
+        }
+        my $storage = $storage_cfg->{ids}{ $spec->{storage} }
+            or die "storage '$spec->{storage}' não encontrado no storage.cfg\n";
+        die "o caminho selecionado não contém uma partição\n"
+            unless defined $spec->{xlate}{part};
         my $payload = {
-            %{$spec}{qw(storage timestamp)},
+            contract => 1,
             snapshot => 'vm/' . $spec->{owner_vmid} . '/' . $spec->{timestamp},
-            backup   => $spec->{backup},
-            drive    => $spec->{xlate}{drive},
-            part     => $spec->{xlate}{part},
-            subpath  => $spec->{xlate}{subpath},
-            vlan     => $spec->{vlan} + 0,
-            gw_ip    => $spec->{gw_ip},
-            prefix   => $spec->{prefix} + 0,
-            vm_ip    => $spec->{vm_ip},
-            hours    => $spec->{hours} + 0,
-            vmid     => $spec->{vmid} + 0,
-            ticket   => $spec->{ticket},
+            datastore => $storage->{datastore} // $spec->{storage},
+            namespace => $storage->{namespace} // '',
+            archive => $spec->{xlate}{drive},
+            partition => $spec->{xlate}{part},
+            subpath => $spec->{xlate}{subpath},
+            vlan => $spec->{vlan} + 0,
+            gw_ip => $spec->{gw_ip},
+            prefix => $spec->{prefix} + 0,
+            vm_ip => $spec->{vm_ip},
+            hours => $spec->{hours} + 0,
+            requester => $spec->{user},
+            source_vmid => $spec->{owner_vmid} + 0,
+            target_vmid => $spec->{vmid} + 0,
+            ticket => $spec->{ticket} // '',
         };
-        $j->record('gateway', payload_sent => 1);    # sem segredo no journal
+        MMPve::Contract::Gateway->validate('publish_request', $payload);
+        $j->record('gateway', payload_sent => 1);
         $gw_out = $class->gw_exec($gwn, $gwvmid,
             ['gw-restore', 'publish'], input_data => $payload);
         $j->mark_done('gateway');
@@ -470,11 +482,8 @@ sub publish {
     eval {
         $j->mark_running('resultado');
         $result = eval { decode_json($gw_out) };
-        die "saída do gw-restore publish não é JSON: " . substr($gw_out, 0, 200) . "\n" if $@;
-        for my $f (qw(unc user password expires_at)) {
-            die "resultado do gateway sem campo '$f'\n"
-                unless defined $result->{$f} && length $result->{$f};
-        }
+        die "saída do gw-restore publish não é JSON\n" if $@;
+        MMPve::Contract::Gateway->validate('publish_response', $result);
         my $key = $arg{result_key}
             || 'manual-' . $$ . '-' . substr(MMPve::Core::Util::sha256_hex_of($gw_out), 0, 10);
         $class->save_result($key, $spec->{user}, $result);
@@ -488,7 +497,11 @@ sub publish {
         $j->mark_running('tag');
         $class->set_tag($spec->{dest_node}, $spec->{vmid}, 1);
         $j->mark_done('tag');
-    } or $fail->('tag', $@);
+    } or do {
+        chomp(my $warning = $@);
+        $j->record('tag', warning => $warning);
+        log_line("restore publish: sessão criada, mas tag não aplicada: $warning");
+    };
 
     $j->finish('publicado');
     log_line("restore publish ok vm=$spec->{vmid} vlan=$spec->{vlan} horas=$spec->{hours}"
@@ -505,14 +518,6 @@ sub publish {
     };
 }
 
-# chave de resultado no contexto de worker pvedaemon: fork_worker define $0
-# como o UPID da tarefa. Fora de worker (CLI), cai no fallback do publish.
-sub current_task_key {
-    my ($class) = @_;
-    my $upid = $0;
-    return $1 if $upid =~ /^(UPID:.+)$/;
-    return undef;
-}
 
 # ------------------------------------------------------------ ModuleBase
 
