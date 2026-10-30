@@ -1,0 +1,3 @@
+400 Parameter verification failed.
+vmid: VM 9000 already exists
+pvesh get <api_path> [OPTIONS] [FORMAT_OPTIONS]

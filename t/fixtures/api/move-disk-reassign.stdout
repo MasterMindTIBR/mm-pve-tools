@@ -1,0 +1,5 @@
+reassign disk 'scsi0' from VM '9000' as 'scsi0' to VM '9001'
+removing disk 'scsi0' from boot order config
+removing disk 'scsi0' from VM '9000' config
+update VM 9001: -scsi0 local-zfs:vm-9001-disk-0,size=1G
+"UPID:node1:0002FC33:00556E41:6AE4E513:qmmove:9000-scsi0>9001-scsi0:root@pam:"

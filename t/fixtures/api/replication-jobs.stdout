@@ -1,0 +1,1 @@
+[{"comment":"mm fixture","disable":1,"guest":9001,"id":"9001-0","jobnum":0,"rate":10,"schedule":"*/30","source":"node1","target":"node2","type":"local"}]

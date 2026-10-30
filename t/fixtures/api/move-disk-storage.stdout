@@ -1,0 +1,7 @@
+copying volume 'local-dir:9000/vm-9000-disk-0.qcow2' from current storage 'local-dir' to target storage 'local-zfs'
+create full clone of drive scsi1 (local-dir:9000/vm-9000-disk-0.qcow2)
+allocated target volume 'local-zfs:vm-9000-disk-1'
+transferred 0.0 B of 1.0 GiB (0.00%)
+transferred 1.0 GiB of 1.0 GiB (100.00%)
+removing source volume 'local-dir:9000/vm-9000-disk-0.qcow2' after successful copy
+"UPID:node1:0002FC0D:00556D6B:6AE4E511:qmmove:9000:root@pam:"

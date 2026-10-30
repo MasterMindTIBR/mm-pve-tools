@@ -1,0 +1,1 @@
+[{"affinity":"positive","digest":"420fc4d465250c7174d18c87a908a59eb74d5f84","nodes":"node1","order":1,"resources":"vm:9001","rule":"mm-fixture","type":"node-affinity"}]
