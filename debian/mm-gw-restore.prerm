@@ -13,11 +13,14 @@ case "$1" in
             gw-restore gc --boot >/dev/null 2>&1 || true
         fi
         if [ -f /etc/samba/smb.conf ]; then
-            sed -i -e '/^\s*include\s*=\s*\/etc\/samba\/gw-restore\.conf/d' \
+            sed -i -e '/^[[:space:]]*include[[:space:]]*=[[:space:]]*\/etc\/samba\/gw-restore\.conf/d' \
                 /etc/samba/smb.conf || true
         fi
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet gw_restore >/dev/null 2>&1 || true
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable gw-restore-nft.service gw-restore-gc-boot.service >/dev/null 2>&1 || true
         fi
         ;;
 esac

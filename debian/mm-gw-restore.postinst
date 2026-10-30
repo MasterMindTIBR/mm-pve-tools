@@ -7,8 +7,32 @@ set -e
 
 case "$1" in
     configure)
-        install -d -m 0755 /srv/gw-restore/sessions /var/lib/gw-restore/sessions \
-            /var/log/gw-restore /etc/samba/gw-restore.d /etc/gw-restore/keys
+        install -d -m 0755 /srv/gw-restore/sessions /srv/gw-restore/mounts \
+            /var/lib/gw-restore/sessions /var/lib/gw-restore/archive \
+            /var/lib/gw-restore/intents /var/log/gw-restore \
+            /etc/samba/gw-restore.d /etc/gw-restore/keys
+        install -d -m 0700 /etc/gw-restore
+        if [ ! -e /etc/gw-restore/pbs.env ]; then
+            install -m 0600 /dev/null /etc/gw-restore/pbs.env
+        else
+            chmod 0600 /etc/gw-restore/pbs.env
+        fi
+
+        # Os blocos de exemplo do Debian abrem shares que não pertencem ao
+        # gateway. Remova somente essas seções, preservando o restante.
+        if [ -f /etc/samba/smb.conf ]; then
+            tmp_smb=/etc/samba/smb.conf.mm-gw-restore.tmp
+            awk '
+                /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+                    name = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", name)
+                    low = tolower(name)
+                    skip = (low == "homes" || low == "printers" || low == "print$")
+                }
+                !skip { print }
+            ' /etc/samba/smb.conf > "$tmp_smb"
+            chmod --reference=/etc/samba/smb.conf "$tmp_smb" 2>/dev/null || true
+            mv "$tmp_smb" /etc/samba/smb.conf
+        fi
 
         # server min protocol = SMB3 dentro do [global] (idempotente).
         # O include do gw-restore vai como ÚLTIMA linha do arquivo: o Samba
@@ -17,7 +41,7 @@ case "$1" in
         # smb.conf original (que vêm depois) caírem dentro do último share
         # gerado pelo gw-restore.
         if [ -f /etc/samba/smb.conf ]; then
-            if ! grep -qE '^\s*server min protocol\s*=\s*SMB3\s*$' /etc/samba/smb.conf; then
+            if ! grep -qE '^[[:space:]]*server min protocol[[:space:]]*=[[:space:]]*SMB3[[:space:]]*$' /etc/samba/smb.conf; then
                 sed -i '/^\[\s*global\s*\]/a\  server min protocol = SMB3' \
                     /etc/samba/smb.conf
             fi
@@ -25,14 +49,28 @@ case "$1" in
                 printf '\ninclude = /etc/samba/gw-restore.conf\n' >> /etc/samba/smb.conf
             fi
         fi
-        [ -f /etc/samba/gw-restore.conf ] || : > /etc/samba/gw-restore.conf
+        if [ ! -f /etc/samba/gw-restore.conf ]; then
+            cat > /etc/samba/gw-restore.conf <<'EOF'
+# gerado por gw-restore — não edite
+[global]
+  interfaces = lo
+  bind interfaces only = yes
+  hosts deny = ALL
+  server min protocol = SMB3
+  load printers = no
+  disable spoolss = yes
+  access based share enum = yes
+EOF
+        fi
 
         # sysctl de hardening (não rotear, não responder ARP cruzado)
         sysctl -p /etc/sysctl.d/90-gw-restore.conf >/dev/null 2>&1 || true
 
         # Tabela base do nftables (política drop nas vl*)
-        if command -v nft >/dev/null 2>&1; then
-            nft -f /etc/gw-restore/gw-restore.conf >/dev/null 2>&1 || true
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable gw-restore-nft.service gw-restore-gc-boot.service >/dev/null 2>&1 || true
+            systemctl start gw-restore-nft.service >/dev/null 2>&1 || true
         fi
         ;;
 esac

@@ -73,6 +73,7 @@ sub make_override {
                 $out = $opt{gw_out} // '';
             } elsif ($c[1] && $c[1] eq 'publish') {
                 $out = encode_json($opt{gw_result} // {
+                    request_id => 'mock-request-id',
                     unc => '\\\\10.20.120.250\\r-abc123',
                     user => 'gwr-abc123',
                     password => 'SECRETA-xyz',

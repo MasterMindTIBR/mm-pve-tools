@@ -365,8 +365,11 @@ sub publish {
         if ($j) {
             my $m = $j->meta;
             $spec->{$_} //= $m->{$_} for qw(backup path_b64 vmid hours ticket vm_ip user);
+            $spec->{request_id} //= $m->{request_id};
         }
     }
+    $spec->{request_id} //= substr(MMPve::Core::Util::sha256_hex_of(
+        join(':', $$, time, rand(), $spec->{backup} // '', $spec->{path_b64} // '')), 0, 32);
     $j //= MMPve::Journal->create($jid, %{$spec});
     $resume_cmd = _resume_cmd($spec);
     my $fail = sub {
@@ -469,6 +472,7 @@ sub publish {
             source_vmid => $spec->{owner_vmid} + 0,
             target_vmid => $spec->{vmid} + 0,
             ticket => $spec->{ticket} // '',
+            request_id => $spec->{request_id},
         };
         MMPve::Contract::Gateway->validate('publish_request', $payload);
         $j->record('gateway', payload_sent => 1);

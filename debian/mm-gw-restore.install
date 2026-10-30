@@ -2,6 +2,8 @@ gateway/gw-restore usr/sbin
 contract/gw-restore.v1.schema.json usr/share/mm-gw-restore/contract
 gateway/systemd/gw-restore-gc.service usr/lib/systemd/system
 gateway/systemd/gw-restore-gc.timer usr/lib/systemd/system
+gateway/systemd/gw-restore-nft.service usr/lib/systemd/system
+gateway/systemd/gw-restore-gc-boot.service usr/lib/systemd/system
 gateway/sysctl/90-gw-restore.conf etc/sysctl.d
 gateway/nftables/gw-restore.conf etc/gw-restore
 gateway/samba/gw-restore.conf.example etc/gw-restore

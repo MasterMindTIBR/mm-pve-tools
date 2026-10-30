@@ -10,7 +10,7 @@
 #   [r-8f3a2c]
 #     path = /srv/gw-restore/sessions/8f3a2c/mnt/<subpasta>
 #     read only = yes
-#     browseable = no
+#     browseable = yes
 #     valid users = gwr-8f3a2c
 #     hosts allow = 10.1.20.23
 #     hosts deny = ALL

@@ -26,7 +26,7 @@ test:
 	$(PROVE) -r t/core t/renumber t/restore t/branding t/contract
 
 test-gateway:
-	python3 -m unittest discover -s t/gateway -v
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s t/gateway -v
 
 lint:
 	@rc=0; \

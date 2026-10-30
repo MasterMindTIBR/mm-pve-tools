@@ -71,6 +71,9 @@ sub _validate {
     if (defined $node->{maximum} && $value > $node->{maximum}) {
         die "$where: maior que $node->{maximum}\n";
     }
+    if ($node->{enum} && !grep { defined($value) && $_ eq $value } @{ $node->{enum} }) {
+        die "$where: valor inválido\n";
+    }
     if ($node->{type} && $node->{type} eq 'object') {
         for my $key (@{ $node->{required} // [] }) {
             die "$where.$key: obrigatório\n" unless exists $value->{$key};

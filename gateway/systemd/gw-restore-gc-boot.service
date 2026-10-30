@@ -1,0 +1,11 @@
+[Unit]
+Description=MasterMind gw-restore: limpeza de sessões após boot
+After=network-online.target gw-restore-nft.service smbd.service
+Wants=network-online.target gw-restore-nft.service smbd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/gw-restore gc --boot
+
+[Install]
+WantedBy=multi-user.target

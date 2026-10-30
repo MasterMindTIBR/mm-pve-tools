@@ -1,0 +1,6 @@
+{
+  "contract": 1,
+  "request_id": "4f7f8c4b-0b3d-4e66-9cf4-restore01",
+  "error": "busy",
+  "message": "uma tentativa para este request_id j\u00e1 est\u00e1 em andamento"
+}

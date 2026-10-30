@@ -136,7 +136,7 @@ unlike($err, qr/SECRETA/, 'sem senha no erro do gateway');
 like($err, qr/timeou?t \(1s\) esperando o gateway/, 'timeout do poll');
 
 # resultado sem campo obrigatório
-($res, $err) = run_publish(gw_result => { unc => 'x', user => 'u', password => 'p' });
+($res, $err) = run_publish(gw_result => { request_id => 'mock-request-id', unc => 'x', user => 'u', password => 'p' });
 like($err, qr/contract\.publish_response\.expires_at:/, 'resultado incompleto recusado');
 unlike($err, qr/\bp\b.*password/xs, 'senha não vazada no erro');    # campo nomeado apenas
 

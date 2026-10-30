@@ -10,11 +10,13 @@ Ops (subprocess/ip/realpath) — mockável nos testes.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -28,15 +30,18 @@ REAL_PATHS = {
     "lock_file": "/run/gw-restore.lock",
     "state_dir": "/var/lib/gw-restore/sessions",
     "state_archive_dir": "/var/lib/gw-restore/archive",
+    "intent_dir": "/var/lib/gw-restore/intents",
+    "request_locks_dir": "/run/gw-restore/requests",
     "refcounts_file": "/var/lib/gw-restore/refcounts.json",
     "audit_log": "/var/log/gw-restore/audit.log",
     "sessions_root": "/srv/gw-restore/sessions",
+    "mounts_root": "/srv/gw-restore/mounts",
     "samba_d_dir": "/etc/samba/gw-restore.d",
     "samba_conf": "/etc/samba/gw-restore.conf",
     "smb_conf": "/etc/samba/smb.conf",
     "pbs_env": "/etc/gw-restore/pbs.env",
     "keys_dir": "/etc/gw-restore/keys",
-    "sysctl_conf": "/usr/lib/sysctl.d/90-gw-restore.conf",
+    "sysctl_conf": "/etc/sysctl.d/90-gw-restore.conf",
     "nft_table": "gw_restore",
     "boot_id_file": "/proc/sys/kernel/random/boot_id",
     "ntfs_plugin_candidates": (
@@ -51,7 +56,15 @@ PASSWORD_ALPHABET = (
 
 
 class GwError(Exception):
-    """Erro de negócio; a mensagem vai para stderr com o comando de saída."""
+    """Erro de negócio; ``code`` é reservado para erros de contrato."""
+
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+class CrashInjected(Exception):
+    """Falha controlada de teste, sem executar o rollback do publish."""
 
 
 # --------------------------------------------------------------------------
@@ -115,6 +128,8 @@ def _schema_validate(node, value, where, schema):
         raise GwError("%s: menor que %s" % (where, node["minimum"]))
     if "maximum" in node and value > node["maximum"]:
         raise GwError("%s: maior que %s" % (where, node["maximum"]))
+    if "enum" in node and value not in node["enum"]:
+        raise GwError("%s: valor inválido" % where)
     if typ == "object":
         for key in node.get("required", []):
             if key not in value:
@@ -162,6 +177,7 @@ def validate_payload(payload):
         raise GwError("contract.publish_request.subpath: caractere de controle")
     return {
         "contract": CONTRACT_VERSION,
+        "request_id": payload["request_id"],
         "snapshot": payload["snapshot"],
         "datastore": payload["datastore"],
         "ns": payload["namespace"],
@@ -181,12 +197,13 @@ def validate_payload(payload):
 
 
 def map_key(payload):
-    """Chave de refcount do map: <datastore>/<ns?>/<snapshot>/<arquivo>."""
+    """Chave de refcount do map: inclui a partição montada."""
     if payload.get("ns"):
         return "/".join((payload["datastore"], payload["ns"],
-                         payload["snapshot"], payload["arquivo"]))
+                         payload["snapshot"], payload["arquivo"],
+                         str(payload["particao"])))
     return "/".join((payload["datastore"], payload["snapshot"],
-                     payload["arquivo"]))
+                     payload["arquivo"], str(payload["particao"])))
 
 
 def confine_path(mnt_real, resolved):
@@ -200,11 +217,13 @@ def confine_path(mnt_real, resolved):
 
 def render_share_conf(session_id, share_path, vm_ip):
     """Gera o /etc/samba/gw-restore.d/<id>.conf da sessão."""
+    # Samba interpreta '%' como expansão de variável mesmo em caminhos.
+    share_path = share_path.replace("%", "%%")
     return (
         "[r-%s]\n"
         "  path = %s\n"
         "  read only = yes\n"
-        "  browseable = no\n"
+        "  browseable = yes\n"
         "  valid users = gwr-%s\n"
         "  hosts allow = %s\n"
         "  hosts deny = ALL\n"
@@ -246,7 +265,9 @@ def generate_password(length=32):
 
 
 def new_session_id():
-    return secrets.token_hex(3)
+    # 80 bits de entropia; o prefixo gwr- mantém o usuário Unix abaixo dos
+    # 32 caracteres aceitos pelo Debian.
+    return secrets.token_hex(10)
 
 
 def parse_env_file(text):
@@ -259,6 +280,34 @@ def parse_env_file(text):
         key, value = line.split("=", 1)
         env[key.strip()] = value.strip()
     return env
+
+
+def parse_pbs_server(value):
+    """Devolve (host, port) para PBS_SERVER, com 8007 como padrão."""
+    value = (value or "").strip()
+    if not value:
+        return None, None
+    if value.startswith("["):
+        end = value.find("]")
+        if end < 0:
+            return None, None
+        host = value[1:end]
+        suffix = value[end + 1:]
+        if suffix and not suffix.startswith(":"):
+            return None, None
+        port_text = suffix[1:] if suffix else "8007"
+    elif value.count(":") == 0:
+        host, port_text = value, "8007"
+    elif value.count(":") == 1:
+        host, port_text = value.rsplit(":", 1)
+    else:
+        return None, None
+    if not host or not port_text.isdigit():
+        return None, None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None, None
+    return host, port
 
 
 def expected_sysctls(text):
@@ -349,12 +398,33 @@ class GwRestore:
         return states
 
     def _save_state(self, session_id, state):
-        os.makedirs(self.ctx["state_dir"], exist_ok=True)
-        path = self._state_path(session_id)
-        tmp = path + ".tmp"
+        self._durable_json(self._state_path(session_id), state, 0o600)
+
+    @staticmethod
+    def _fsync_dir(path):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            # Mock roots and some FUSE filesystems do not expose a fsyncable
+            # directory; the installed Debian path does.
+            pass
+
+    def _durable_json(self, path, value, mode=0o600):
+        parent = os.path.dirname(path)
+        os.makedirs(parent, exist_ok=True)
+        tmp = "%s.tmp.%s" % (path, os.getpid())
         with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=1, sort_keys=True)
+            json.dump(value, handle, indent=1, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
         os.replace(tmp, path)
+        self._fsync_dir(parent)
 
     def _boot_id(self):
         try:
@@ -378,10 +448,64 @@ class GwRestore:
         counts.setdefault("maps", {})
         counts.setdefault("vlans", {})
         os.makedirs(os.path.dirname(self.ctx["refcounts_file"]), exist_ok=True)
-        tmp = self.ctx["refcounts_file"] + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(counts, handle, indent=1, sort_keys=True)
-        os.replace(tmp, self.ctx["refcounts_file"])
+        self._durable_json(self.ctx["refcounts_file"], counts, 0o600)
+
+    def _intent_path(self, request_id):
+        return os.path.join(self.ctx["intent_dir"], request_id + ".json")
+
+    def _write_intent(self, intent):
+        self._durable_json(self._intent_path(intent["request_id"]), intent,
+                           0o600)
+
+    def _load_intent(self, request_id):
+        try:
+            with open(self._intent_path(request_id), "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
+
+    def _delete_intent(self, request_id):
+        try:
+            os.remove(self._intent_path(request_id))
+        except OSError:
+            return
+        self._fsync_dir(self.ctx["intent_dir"])
+
+    def _side_effect(self, intent, step, action, record=None):
+        """Durably announce, execute and record one irreversible operation."""
+        intent["current_step"] = step
+        self._write_intent(intent)
+        result = action()
+        if record:
+            record(result)
+            self._write_intent(intent)
+        if step not in intent["completed"]:
+            intent["completed"].append(step)
+        intent["current_step"] = None
+        self._write_intent(intent)
+        fail_after = os.environ.get("GW_RESTORE_FAIL_AFTER", "")
+        if fail_after and step in {item.strip() for item in fail_after.split(",")}:
+            raise CrashInjected("falha injetada depois de %s" % step)
+        return result
+
+    def _request_lock(self, request_id):
+        path = os.path.join(self.ctx["request_locks_dir"], request_id + ".lock")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a+")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            raise GwError(
+                "uma tentativa para este request_id já está em andamento",
+                code="busy")
+        return handle
+
+    def _global_state_lock(self):
+        os.makedirs(os.path.dirname(self.ctx["lock_file"]), exist_ok=True)
+        handle = open(self.ctx["lock_file"], "a+")
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        return handle
 
     def _audit(self, action, record):
         os.makedirs(os.path.dirname(self.ctx["audit_log"]), exist_ok=True)
@@ -401,17 +525,42 @@ class GwRestore:
                 "(mesmo JSON no stdin)" % self.ctx["pbs_env"]
             )
         env = parse_env_file(text)
-        if "PBS_REPOSITORY" not in env:
+        required = ("PBS_SERVER", "PBS_USER", "PBS_PASSWORD",
+                    "PBS_FINGERPRINT", "PBS_DATASTORES")
+        missing = [key for key in required if not env.get(key)]
+        if missing:
             raise GwError(
-                "PBS_REPOSITORY ausente em %s — corrija e reexecute: "
+                "%s ausente em %s — corrija e reexecute: "
                 "gw-restore publish (mesmo JSON no stdin)"
-                % self.ctx["pbs_env"]
+                % (", ".join(missing), self.ctx["pbs_env"])
             )
         return env
 
     @staticmethod
     def _pbs_subprocess_env(pbs_env):
         return {key: value for key, value in pbs_env.items() if key.startswith("PBS_")}
+
+    def _pbs_config(self, payload, pbs_env):
+        allowed = {item.strip() for item in pbs_env.get("PBS_DATASTORES", "").split(",")
+                   if item.strip()}
+        if payload["datastore"] not in allowed:
+            raise GwError(
+                "datastore '%s' não está na allowlist PBS_DATASTORES — "
+                "corrija a configuração e reexecute: gw-restore publish "
+                "(mesmo JSON no stdin)" % payload["datastore"])
+        host, _port = parse_pbs_server(pbs_env.get("PBS_SERVER"))
+        if not host:
+            raise GwError(
+                "PBS_SERVER inválido — use host[:port] (IPv6 entre colchetes) "
+                "e reexecute: gw-restore publish (mesmo JSON no stdin)"
+            )
+        repository = "%s@%s:%s" % (
+            pbs_env["PBS_USER"], pbs_env["PBS_SERVER"], payload["datastore"])
+        keyfile = os.path.join(self.ctx["keys_dir"],
+                               payload["datastore"] + ".key")
+        if not self.ops.path_exists(keyfile):
+            keyfile = pbs_env.get("PBS_KEYFILE")
+        return repository, keyfile
 
     def _fail(self, step, detail):
         raise GwError(
@@ -421,239 +570,319 @@ class GwRestore:
         )
 
     # -- publish -----------------------------------------------------------
-    def publish(self, payload):
-        payload = validate_payload(payload)
+    @staticmethod
+    def _expired(state):
+        try:
+            return datetime.fromisoformat(state["expires_at"]) < datetime.now(timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            return True
+
+    def _find_request(self, request_id):
+        for session_id, state in self._load_states().items():
+            if state.get("request_id") == request_id:
+                return session_id, state, False
+        archive_dir = self.ctx["state_archive_dir"]
+        for path in sorted(__import__("glob").glob(os.path.join(archive_dir, "*.json"))):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    state = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if state.get("request_id") == request_id:
+                return os.path.basename(path)[:-5], state, True
+        return None, None, False
+
+    def _mount_path(self, key):
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        return os.path.join(self.ctx["mounts_root"], digest)
+
+    def _reset_password(self, state, request_id):
+        password = generate_password(32)
+        res = self.ops.run(["smbpasswd", "-s", state["user"]],
+                           stdin="%s\n%s\n" % (password, password))
+        if res["rc"] != 0:
+            self._fail("smbpasswd", res["err"].strip())
+        return validate_contract("publish_response", {
+            "request_id": request_id,
+            "unc": state["unc"],
+            "user": state["user"],
+            "password": password,
+            "expires_at": state["expires_at"],
+        })
+
+    def _cleanup_intent(self, intent):
+        """Undo an incomplete publish; intent contains no password."""
+        session_id = intent.get("session_id")
+        user = intent.get("user")
+        try:
+            if intent.get("nft_handle") is not None:
+                self.ops.run(["nft", "delete", "rule", "inet", self.ctx["nft_table"],
+                              "vl_policy", "handle", str(intent["nft_handle"])])
+            if session_id:
+                self._remove_share_conf(session_id)
+                self._regenerate_samba_conf()
+            if intent.get("mount_created") and intent.get("mount_path"):
+                self.ops.run(["umount", "-l", intent["mount_path"]])
+            if user:
+                self.ops.run(["smbpasswd", "-x", user])
+                self.ops.run(["userdel", user])
+            if intent.get("created_vlan"):
+                self.ops.run(["ip", "link", "del", intent.get("vlan_iface")])
+            if intent.get("map_created") and intent.get("loop"):
+                pbs_env = self._load_pbs_env()
+                self.ops.run(["proxmox-backup-client", "unmap",
+                              "/dev/" + intent["loop"]],
+                             env=self._pbs_subprocess_env(pbs_env))
+            if intent.get("session_dir"):
+                import shutil
+                shutil.rmtree(intent["session_dir"], ignore_errors=True)
+        finally:
+            self._delete_intent(intent["request_id"])
+
+    def _reconcile_request(self, request_id):
+        session_id, state, archived = self._find_request(request_id)
+        if state:
+            if self._load_intent(request_id):
+                self._delete_intent(request_id)
+            if archived or self._expired(state):
+                if not archived:
+                    self._revoke_locked(session_id, boot=False)
+                raise GwError(
+                    "a sessão deste request_id já terminou; inicie um novo publish",
+                    code="session_gone")
+            return state
+        intent = self._load_intent(request_id)
+        if intent:
+            self._cleanup_intent(intent)
+        return None
+
+    def _publish_locked(self, payload):
+        request_id = payload["request_id"]
+        existing = self._reconcile_request(request_id)
+        if existing:
+            return self._reset_password(existing, request_id)
+
         key = map_key(payload)
+        pbs_env = self._load_pbs_env()
+        repository, keyfile = self._pbs_config(payload, pbs_env)
+        trunk = pbs_env.get("TRUNK")
+        counts = self._load_refcounts()
         session_id = new_session_id()
         user = "gwr-" + session_id
-        session_dir = os.path.join(self.ctx["sessions_root"], "sessions", session_id)
-        mnt = os.path.join(session_dir, "mnt")
-        pbs_env = self._load_pbs_env()
-        repository = pbs_env["PBS_REPOSITORY"]
-        pbs_subprocess_env = self._pbs_subprocess_env(pbs_env)
-        trunk = pbs_env.get("TRUNK")
-
-        counts = self._load_refcounts()
-        map_created = counts["maps"].get(key) is None
-        created_vlan = False
-        mounted = False
-        user_created = False
-        nft_handle = None
-        loop = None
-
+        session_dir = os.path.join(self.ctx["sessions_root"], session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        mapinfo = counts["maps"].get(key)
+        map_created = mapinfo is None
+        mount_path = mapinfo.get("mount") if mapinfo else self._mount_path(key)
+        intent = {
+            "contract": CONTRACT_VERSION,
+            "request_id": request_id,
+            "payload": payload,
+            "session_id": session_id,
+            "session_dir": session_dir,
+            "user": user,
+            "map_key": key,
+            "map_created": map_created,
+            "mount_created": False,
+            "created_vlan": False,
+            "vlan_iface": "vl%d" % payload["vlan"],
+            "loop": mapinfo.get("loop") if mapinfo else None,
+            "mount_path": mount_path,
+            "nft_handle": None,
+            "completed": [],
+            "current_step": None,
+        }
+        self._write_intent(intent)
+        state = None
         try:
-            # 1. map (refcount)
-            mapinfo = counts["maps"].get(key)
+            # 1. PBS map, shared by all sessions of the same partition.
             if mapinfo:
                 loop = mapinfo["loop"]
             else:
-                argv = ["proxmox-backup-client", "map",
-                        payload["snapshot"], payload["arquivo"],
-                        "--repository", repository]
+                argv = ["proxmox-backup-client", "map", payload["snapshot"],
+                        payload["arquivo"], "--repository", repository]
                 if payload.get("ns"):
                     argv += ["--ns", payload["ns"]]
-                keyfile = os.path.join(self.ctx["keys_dir"],
-                                       payload["datastore"] + ".enc")
-                if self.ops.path_exists(keyfile):
+                if keyfile:
                     argv += ["--keyfile", keyfile]
-                elif pbs_env.get("PBS_KEYFILE"):
-                    argv += ["--keyfile", pbs_env["PBS_KEYFILE"]]
-                res = self.ops.run(argv, env=pbs_subprocess_env)
+                res = self._side_effect(
+                    intent, "map",
+                    lambda: self.ops.run(argv, env=self._pbs_subprocess_env(pbs_env)),
+                    record=lambda result: intent.update(
+                        loop=parse_loop_device(result["out"])))
                 if res["rc"] != 0:
                     self._fail("map", (res["err"] or res["out"]).strip())
                 loop = parse_loop_device(res["out"])
                 if not loop:
                     self._fail("map", "saída do map sem dispositivo loop")
+                intent["loop"] = loop
             part_dev = "/dev/%sp%d" % (loop, payload["particao"])
             if not self.ops.path_exists(part_dev):
-                res = self.ops.run(["partx", "-a", "/dev/" + loop])
+                res = self._side_effect(intent, "partition", lambda: self.ops.run(
+                    ["partx", "-a", "/dev/" + loop]))
                 if res["rc"] != 0 or not self.ops.path_exists(part_dev):
-                    self._fail("particao",
-                               "%s não apareceu após partx" % part_dev)
+                    self._fail("particao", "%s não apareceu após partx" % part_dev)
 
-            # 2. usuário da sessão (uid/gid para o mount)
-            res = self.ops.run(
-                ["useradd", "-M", "-s", "/usr/sbin/nologin", user])
-            if res["rc"] != 0 and "already exists" not in res["err"]:
-                self._fail("usuario", res["err"].strip())
-            user_created = True
-            res = self.ops.run(["id", "-u", user])
-            uid = res["out"].strip() if res["rc"] == 0 else "0"
-            res = self.ops.run(["id", "-g", user])
-            gid = res["out"].strip() if res["rc"] == 0 else "0"
-
-            # 3. mount ro ntfs-3g
-            os.makedirs(mnt, exist_ok=True)
-            res = self.ops.run(
-                ["mount", "-t", "ntfs-3g",
-                 "-o", "ro,uid=%s,gid=%s,umask=0277" % (uid, gid),
-                 part_dev, mnt])
-            if res["rc"] != 0:
-                self._fail("mount", res["err"].strip())
-            mounted = True
-
-            # 4. subpasta confinada
-            mnt_real = self.ops.realpath(mnt)
-            resolved = self.ops.realpath(os.path.join(mnt, payload["subpasta"]))
+            # 2. One root-owned, read-only mount per map key.
+            if map_created:
+                os.makedirs(mount_path, exist_ok=True)
+                def do_mount():
+                    return self.ops.run(["mount", "-t", "ntfs-3g", "-o",
+                                         "ro,umask=0222", part_dev, mount_path])
+                res = self._side_effect(
+                    intent, "mount", do_mount,
+                    record=lambda _result: intent.update(mount_created=True))
+                if res["rc"] != 0:
+                    self._fail("mount", res["err"].strip())
+            mnt_real = self.ops.realpath(mount_path)
+            resolved = self.ops.realpath(os.path.join(mount_path, payload["subpasta"]))
             if not confine_path(mnt_real, resolved):
-                self._fail("subpasta",
-                           "caminho %r escapa da raiz do mount"
-                           % payload["subpasta"])
+                self._fail("subpasta", "caminho %r escapa da raiz do mount" % payload["subpasta"])
             share_path = resolved
 
-            # 5. senha
+            # 3. Samba account. The password is only in this process/stdin.
+            os.makedirs(self.ctx["samba_d_dir"], exist_ok=True)
             password = generate_password(32)
-            res = self.ops.run(["smbpasswd", "-a", "-s", user],
-                               stdin="%s\n%s\n" % (password, password))
+            def create_account():
+                self.ops.run(["useradd", "-M", "-s", "/usr/sbin/nologin", user])
+                return self.ops.run(["smbpasswd", "-a", "-s", user],
+                                    stdin="%s\n%s\n" % (password, password))
+            res = self._side_effect(intent, "account", create_account)
             if res["rc"] != 0:
                 self._fail("smbpasswd", res["err"].strip())
 
-            # 6. VLAN (refcount)
-            vid = "vl%d" % payload["vlan"]
-            vlan_existing = counts["vlans"].get(str(payload["vlan"]), 0) > 0
+            # 4. Session VLAN, shared by sessions on the same customer VLAN.
+            vid = intent["vlan_iface"]
+            vlan_key = str(payload["vlan"])
+            vlan_existing = counts["vlans"].get(vlan_key, 0) > 0
             if not vlan_existing:
                 res = self.ops.run(["ip", "link", "show", vid])
                 vlan_existing = res["rc"] == 0
             if not vlan_existing:
                 if not trunk:
-                    self._fail("vlan", "TRUNK ausente em %s"
-                               % self.ctx["pbs_env"])
-                res = self.ops.run(
-                    ["ip", "link", "add", "link", trunk, "name", vid,
-                     "type", "vlan", "id", str(payload["vlan"])])
+                    self._fail("vlan", "TRUNK ausente em %s" % self.ctx["pbs_env"])
+                def create_vlan():
+                    return self.ops.run(["ip", "link", "add", "link", trunk,
+                                         "name", vid, "type", "vlan", "id",
+                                         str(payload["vlan"])])
+                res = self._side_effect(
+                    intent, "vlan", create_vlan,
+                    record=lambda _result: intent.update(created_vlan=True))
                 if res["rc"] != 0:
                     self._fail("vlan", res["err"].strip())
-                created_vlan = True
             res = self.ops.run(["ip", "link", "set", vid, "up"])
             if res["rc"] != 0:
                 self._fail("vlan-up", res["err"].strip())
-            res = self.ops.run(
-                ["arping", "-D", "-I", vid, "-c", "3", payload["gw_ip"]])
-            if res["rc"] == 1:
-                raise GwError(
-                    "IP do gateway %s já em uso na VLAN %d — escolha outro IP e reexecute: "
-                    "gw-restore publish (mesmo JSON no stdin)"
-                    % (payload["gw_ip"], payload["vlan"])
-                )
-            if res["rc"] != 0:
-                self._fail("arping", "a interface VLAN não respondeu: " + (res["err"] or "rc=%d" % res["rc"]))
-            res = self.ops.run(
-                ["ip", "addr", "add",
-                 "%s/%d" % (payload["gw_ip"], payload["prefix"]), "dev", vid])
-            if res["rc"] != 0 and "File exists" not in res["err"]:
-                self._fail("vlan-ip", res["err"].strip())
-            counts["vlans"][str(payload["vlan"])] = (
-                counts["vlans"].get(str(payload["vlan"]), 0) + 1)
+            # Another session in this VLAN already put the gateway IP on the
+            # interface: duplicate detection would find ourselves, so reuse it.
+            gw_cidr = "%s/%d" % (payload["gw_ip"], payload["prefix"])
+            res = self.ops.run(["ip", "-o", "-4", "addr", "show", "dev", vid])
+            has_gw_ip = res["rc"] == 0 and ("inet %s " % gw_cidr) in res["out"]
+            if not has_gw_ip:
+                res = self.ops.run(["arping", "-D", "-I", vid, "-c", "3", payload["gw_ip"]])
+                if res["rc"] == 1:
+                    raise GwError("IP do gateway %s já em uso na VLAN %d — escolha outro IP e reexecute: gw-restore publish (mesmo JSON no stdin)" % (payload["gw_ip"], payload["vlan"]))
+                if res["rc"] != 0:
+                    self._fail("arping", "a interface VLAN não respondeu: " + (res["err"] or "rc=%d" % res["rc"]))
+                res = self.ops.run(["ip", "addr", "add", gw_cidr, "dev", vid])
+                if res["rc"] != 0 and "File exists" not in res["err"] \
+                        and "already assigned" not in res["err"]:
+                    self._fail("vlan-ip", res["err"].strip())
+            counts["vlans"][vlan_key] = counts["vlans"].get(vlan_key, 0) + 1
 
-            # 7. regra nft
-            res = self.ops.run(
-                ["nft", "-a", "insert", "rule", "inet", self.ctx["nft_table"],
-                "vl_policy", "iifname", vid, "ip", "saddr", payload["vm_ip"],
-                "ip", "daddr", payload["gw_ip"],
-                "tcp", "dport", "445", "accept"])
+            # 5. Per-session nft rule; its handle is durable for revoke.
+            def add_nft():
+                return self.ops.run(["nft", "--echo", "--handle", "insert", "rule", "inet",
+                    self.ctx["nft_table"], "vl_policy", "iifname", vid,
+                    "ip", "saddr", payload["vm_ip"], "ip", "daddr",
+                    payload["gw_ip"], "tcp", "dport", "445", "accept"])
+            res = self._side_effect(
+                intent, "nft", add_nft,
+                record=lambda result: intent.update(
+                    nft_handle=parse_nft_handle(result["out"])))
             if res["rc"] != 0:
                 self._fail("nft", res["err"].strip())
-            nft_handle = parse_nft_handle(res["out"])
 
-            # 8. Samba
+            # 6. Share file plus Samba reload; global and share access lists.
             conf = render_share_conf(session_id, share_path, payload["vm_ip"])
-            self._write_share_conf(session_id, conf)
-            self._regenerate_samba_conf()
-
-            # 9. estado + auditoria (sem senha)
-            now = datetime.now(timezone.utc)
-            expires = now + timedelta(hours=payload["horas"])
-            state = {
-                "contract": CONTRACT_VERSION,
-                "id": session_id,
-                "unc": "\\\\%s\\r-%s" % (payload["gw_ip"], session_id),
-                "user": user,
-                "expires_at": expires.isoformat(),
-                "created_at": now.isoformat(),
-                "map_key": key,
-                "loop": loop,
-                "vlan": payload["vlan"],
-                "vlan_iface": vid,
-                "nft_handle": nft_handle,
-                "mnt": mnt,
-                "share_path": share_path,
-                "requester": payload["solicitante"],
-                "source_vmid": payload["vmid_origem"],
-                "target_vmid": payload["target_vmid"],
-                "ticket": payload["chamado"],
-                "backup": {
-                    "datastore": payload["datastore"],
-                    "namespace": payload.get("ns"),
-                    "snapshot": payload["snapshot"],
-                    "archive": payload["arquivo"],
-                    "partition": payload["particao"],
-                },
-                "subpath": payload["subpasta"],
-                "gw_ip": payload["gw_ip"],
-                "vm_ip": payload["vm_ip"],
-            }
-            self._save_state(session_id, state)
-            counts["maps"][key] = {
-                "count": counts["maps"].get(key, {}).get("count", 0) + 1,
-                "loop": loop,
-            }
-            self._save_refcounts(counts)
-            self._audit("publish", {
-                "sessao": session_id,
-                "solicitante": payload["solicitante"],
-                "vmid_origem": payload["vmid_origem"],
-                "backup": "%s/%s" % (key, payload["snapshot"]),
-                "caminho": payload["subpasta"],
-                "vm_ip": payload["vm_ip"],
-                "gw_ip": payload["gw_ip"],
-                "vlan": payload["vlan"],
-                "criacao": now.isoformat(),
-                "expiracao": expires.isoformat(),
-                "chamado": payload["chamado"],
-            })
-            res = self.ops.run(["smbcontrol", "smbd", "reload-config"])
+            def write_samba():
+                self._write_share_conf(session_id, conf)
+                self._regenerate_samba_conf([payload["vm_ip"]])
+                return self.ops.run(["smbcontrol", "smbd", "reload-config"])
+            res = self._side_effect(intent, "samba", write_samba)
             if res["rc"] != 0:
                 self._fail("samba-reload", res["err"].strip())
 
-            result = {
-                "unc": state["unc"],
-                "user": user,
-                "password": password,
-                "expires_at": state["expires_at"],
+            now = datetime.now(timezone.utc)
+            expires = now + timedelta(hours=payload["horas"])
+            state = {
+                "contract": CONTRACT_VERSION, "id": session_id,
+                "request_id": request_id,
+                "unc": "\\\\%s\\r-%s" % (payload["gw_ip"], session_id),
+                "user": user, "expires_at": expires.isoformat(),
+                "created_at": now.isoformat(), "map_key": key, "loop": loop,
+                "mount_path": mount_path, "vlan": payload["vlan"],
+                "vlan_iface": vid, "nft_handle": intent["nft_handle"],
+                "mnt": mount_path, "session_dir": session_dir,
+                "share_path": share_path, "requester": payload["solicitante"],
+                "source_vmid": payload["vmid_origem"], "target_vmid": payload["target_vmid"],
+                "ticket": payload["chamado"],
+                "backup": {"datastore": payload["datastore"], "namespace": payload.get("ns"),
+                           "snapshot": payload["snapshot"], "archive": payload["arquivo"],
+                           "partition": payload["particao"]},
+                "subpath": payload["subpasta"], "gw_ip": payload["gw_ip"],
+                "vm_ip": payload["vm_ip"],
             }
-            return validate_contract("publish_response", result)
+            intent["state"] = state
+            def save_state_and_refs():
+                self._save_state(session_id, state)
+                counts["maps"][key] = {
+                    "count": counts["maps"].get(key, {}).get("count", 0) + 1,
+                    "loop": loop, "mount": mount_path,
+                }
+                self._save_refcounts(counts)
+                return {"rc": 0, "out": "", "err": ""}
+            self._side_effect(intent, "state", save_state_and_refs)
+            self._audit("publish", {
+                "sessao": session_id, "request_id": request_id,
+                "solicitante": payload["solicitante"], "vmid_origem": payload["vmid_origem"],
+                "backup": "%s/%s" % (key, payload["snapshot"]),
+                "caminho": payload["subpasta"], "vm_ip": payload["vm_ip"],
+                "gw_ip": payload["gw_ip"], "vlan": payload["vlan"],
+                "criacao": now.isoformat(), "expiracao": expires.isoformat(),
+                "chamado": payload["chamado"],
+            })
+            self._delete_intent(request_id)
+            return validate_contract("publish_response", {
+                "request_id": request_id, "unc": state["unc"], "user": user,
+                "password": password, "expires_at": state["expires_at"],
+            })
+        except CrashInjected:
+            raise
         except Exception:
-            self._rollback_partial(
-                repository=repository, payload=payload, loop=loop, mnt=mnt,
-                mounted=mounted, user=user if user_created else None,
-                created_vlan=created_vlan, vlan=payload["vlan"],
-                nft_handle=nft_handle, session_id=session_id,
-                map_created=map_created)
+            if state and os.path.exists(self._state_path(session_id)):
+                try:
+                    self._revoke_locked(session_id, boot=False, archive=False)
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._cleanup_intent(intent)
+                except Exception:
+                    pass
             raise
 
-    def _rollback_partial(self, repository, payload, loop, mnt, mounted,
-                          user, created_vlan, vlan, nft_handle, session_id,
-                          map_created):
-        """Best-effort rollback de um publish que falhou no meio."""
+    def publish(self, payload):
+        payload = validate_payload(payload)
+        request_lock = self._request_lock(payload["request_id"])
+        global_lock = None
         try:
-            if nft_handle is not None:
-                self.ops.run(["nft", "delete", "rule", "inet",
-                              self.ctx["nft_table"], "vl_policy",
-                              "handle", str(nft_handle)])
-            if mounted:
-                self.ops.run(["umount", "-l", mnt])
-            if user:
-                self.ops.run(["smbpasswd", "-x", user])
-                self.ops.run(["userdel", user])
-            self._remove_share_conf(session_id)
-            self._regenerate_samba_conf()
-            if created_vlan:
-                self.ops.run(["ip", "link", "del", "vl%d" % vlan])
-            if map_created and loop:
-                self.ops.run(["proxmox-backup-client", "unmap", "/dev/" + loop],
-                             env=self._pbs_subprocess_env(self._load_pbs_env()))
-        except Exception:
-            pass
+            global_lock = self._global_state_lock()
+            return self._publish_locked(payload)
+        finally:
+            if global_lock:
+                global_lock.close()
+            request_lock.close()
 
     # -- samba helpers -----------------------------------------------------
     def _write_share_conf(self, session_id, text):
@@ -669,7 +898,7 @@ class GwRestore:
         except OSError:
             pass
 
-    def _regenerate_samba_conf(self):
+    def _regenerate_samba_conf(self, extra_hosts=()):
         import glob as globmod
         confs = []
         for path in sorted(globmod.glob(
@@ -679,14 +908,39 @@ class GwRestore:
                     confs.append((os.path.basename(path)[:-5], handle.read()))
             except OSError:
                 continue
+        # Sem "bind interfaces only": o smbd não abre socket numa VLAN criada
+        # depois do start (reload não religa), e restart derrubaria as outras
+        # sessões. A tabela nft limita 139/445 às subinterfaces vl*.
+        # hosts allow/deny do [global] valem para o servidor inteiro e o share
+        # não consegue sobrepor: o global libera só as VMs com sessão viva, e
+        # cada share continua restrito à sua própria VM.
+        hosts = {"127.0.0.1"}
+        hosts.update(state["vm_ip"] for state in self._load_states().values()
+                     if state.get("vm_ip"))
+        hosts.update(extra_hosts)
+        global_conf = (
+            "# gerado por gw-restore — não edite\n"
+            "[global]\n"
+            "  hosts allow = %s\n"
+            "  hosts deny = ALL\n"
+            "  server min protocol = SMB3\n"
+            "  load printers = no\n"
+            "  disable spoolss = yes\n"
+            "  access based share enum = yes\n"
+            % " ".join(sorted(hosts)))
         os.makedirs(os.path.dirname(self.ctx["samba_conf"]), exist_ok=True)
         tmp = self.ctx["samba_conf"] + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(aggregate_includes(confs))
+            handle.write(global_conf)
+            for _sid, text in sorted(confs):
+                handle.write(text.rstrip("\n") + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, self.ctx["samba_conf"])
+        self._fsync_dir(os.path.dirname(self.ctx["samba_conf"]))
 
     # -- revoke ------------------------------------------------------------
-    def revoke(self, session_id):
+    def _revoke_locked(self, session_id, boot=False, archive=True):
         states = self._load_states()
         state = states.get(session_id)
         if not state:
@@ -694,8 +948,7 @@ class GwRestore:
                 "sessão %s não encontrada — veja as ativas com: "
                 "gw-restore list --json" % session_id
             )
-        self.ops.run(["smbcontrol", "smbd", "close-share",
-                      "r-" + session_id])
+        self.ops.run(["smbcontrol", "smbd", "close-share", "r-" + session_id])
         self._remove_share_conf(session_id)
         self._regenerate_samba_conf()
         self.ops.run(["smbcontrol", "smbd", "reload-config"])
@@ -708,26 +961,33 @@ class GwRestore:
                           self.ctx["nft_table"], "vl_policy",
                           "handle", str(state["nft_handle"])])
 
-        # umount (lazy se ocupado)
-        res = self.ops.run(["umount", state["mnt"]])
-        if res["rc"] != 0:
-            self.ops.run(["umount", "-l", state["mnt"]])
-
         counts = self._load_refcounts()
         key = state["map_key"]
         info = counts["maps"].get(key)
+        other_map_sessions = [item for item in states.values()
+                              if item.get("id") != session_id
+                              and item.get("map_key") == key]
         if info:
             info["count"] -= 1
             if info["count"] <= 0:
-                loop_exists = self.ops.path_exists(
-                    "/dev/" + str(state.get("loop", "")))
-                if loop_exists:
+                if not boot and self.ops.path_exists("/dev/" + str(state.get("loop", ""))):
                     pbs_env = self._load_pbs_env()
                     self.ops.run(
                         ["proxmox-backup-client", "unmap", "/dev/" + state["loop"]],
                         env=self._pbs_subprocess_env(pbs_env),
                     )
+                mount_path = info.get("mount", state.get("mount_path", state.get("mnt")))
+                if mount_path:
+                    res = self.ops.run(["umount", mount_path])
+                    if res["rc"] != 0:
+                        self.ops.run(["umount", "-l", mount_path])
                 del counts["maps"][key]
+        elif not other_map_sessions and state.get("mount_path"):
+            if not boot and self.ops.path_exists("/dev/" + str(state.get("loop", ""))):
+                pbs_env = self._load_pbs_env()
+                self.ops.run(["proxmox-backup-client", "unmap", "/dev/" + state["loop"]],
+                             env=self._pbs_subprocess_env(pbs_env))
+            self.ops.run(["umount", "-l", state["mount_path"]])
         vlan = str(state["vlan"])
         if vlan in counts["vlans"]:
             counts["vlans"][vlan] -= 1
@@ -735,19 +995,24 @@ class GwRestore:
                 self.ops.run(["ip", "link", "del", state.get("vlan_iface",
                                                              "vl" + vlan)])
                 del counts["vlans"][vlan]
+        elif not any(item.get("id") != session_id and
+                     str(item.get("vlan")) == vlan for item in states.values()):
+            self.ops.run(["ip", "link", "del", state.get("vlan_iface",
+                                                         "vl" + vlan)])
         self._save_refcounts(counts)
 
-        # arquiva estado
-        os.makedirs(self.ctx["state_archive_dir"], exist_ok=True)
-        archive = os.path.join(self.ctx["state_archive_dir"],
-                               session_id + ".json")
-        state["revoked_at"] = _now_iso()
-        with open(archive, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, indent=1, sort_keys=True)
+        # arquiva estado para que o mesmo request_id nunca crie sessão nova.
+        if archive:
+            state["revoked_at"] = _now_iso()
+            self._durable_json(os.path.join(self.ctx["state_archive_dir"],
+                                            session_id + ".json"), state, 0o600)
         try:
             os.remove(self._state_path(session_id))
         except OSError:
             pass
+        import shutil
+        shutil.rmtree(state.get("session_dir", ""), ignore_errors=True)
+        self._regenerate_samba_conf()
         self._audit("revoke", {
             "sessao": session_id,
             "solicitante": state.get("requester"),
@@ -760,10 +1025,24 @@ class GwRestore:
             "revoked": session_id,
         })
 
+    def revoke(self, session_id):
+        return self._revoke_locked(session_id, boot=False)
+
     # -- gc ----------------------------------------------------------------
     def gc(self, boot=False):
         now = datetime.now(timezone.utc)
         revoked = []
+        import glob as globmod
+        for path in sorted(globmod.glob(os.path.join(self.ctx["intent_dir"], "*.json"))):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    intent = json.load(handle)
+                request_id = intent.get("request_id")
+                _sid, state, _archived = self._find_request(request_id)
+                if not state:
+                    self._cleanup_intent(intent)
+            except (OSError, ValueError, KeyError):
+                continue
         for session_id, state in sorted(self._load_states().items()):
             if boot:
                 # Loops são efêmeros; após boot toda sessão remanescente é
@@ -774,10 +1053,18 @@ class GwRestore:
                     expired = datetime.fromisoformat(
                         state["expires_at"]) < now
                 except (KeyError, ValueError):
-                    expired = False
+                    expired = True
             if expired:
-                self.revoke(session_id)
+                self._revoke_locked(session_id, boot=boot)
                 revoked.append(session_id)
+        if boot:
+            # A crash may leave a directory or generated include without a
+            # corresponding state file; boot gc owns this final cleanup.
+            for path in globmod.glob(os.path.join(self.ctx["sessions_root"], "*")):
+                if os.path.isdir(path) and os.path.basename(path) not in self._load_states():
+                    import shutil
+                    shutil.rmtree(path, ignore_errors=True)
+            self._regenerate_samba_conf()
         return {"revoked": revoked, "boot": boot}
 
     # -- list --------------------------------------------------------------
@@ -801,7 +1088,10 @@ class GwRestore:
         checks = []
 
         def record(name, ok, detail=""):
-            checks.append({"name": name, "ok": bool(ok), "detail": detail})
+            item = {"name": name, "ok": bool(ok)}
+            if not item["ok"] and detail:
+                item["detail"] = detail
+            checks.append(item)
 
         # 1. plugin ntfs-3g dedup
         plugin_ok = any(self.ops.path_exists(p)
@@ -815,16 +1105,16 @@ class GwRestore:
             pbs_env = parse_env_file(self.ops.read_file(self.ctx["pbs_env"]))
         except OSError:
             pass
-        repo = pbs_env.get("PBS_REPOSITORY", "")
-        host = None
-        if "@pbs@" in repo:
-            rest = repo.split("@pbs@", 1)[1]
-            host = rest.split(":")[0].split("!")[0] or None
-        if not host and "@" in repo and ":" in repo:
-            host = repo.rsplit(":", 1)[0].split("@")[-1]
-        reachable = bool(host) and self.ops.tcp_connect(host, 8007, 3.0)
+        repo = ""
+        datastore_values = [item.strip() for item in
+                            pbs_env.get("PBS_DATASTORES", "").split(",") if item.strip()]
+        if pbs_env.get("PBS_SERVER") and pbs_env.get("PBS_USER") and datastore_values:
+            repo = "%s@%s:%s" % (pbs_env["PBS_USER"], pbs_env["PBS_SERVER"],
+                                  datastore_values[0])
+        host, port = parse_pbs_server(pbs_env.get("PBS_SERVER"))
+        reachable = bool(host) and self.ops.tcp_connect(host, port, 3.0)
         record("pbs-reachability", reachable,
-               "host %s porta 8007 inalcançável" % (host or "?"))
+               "host %s porta %s inalcançável" % (host or "?", port or "?"))
         if repo:
             res = self.ops.run(
                 ["proxmox-backup-client", "list", "--repository", repo],
@@ -832,7 +1122,7 @@ class GwRestore:
             record("pbs-token", res["rc"] == 0,
                    res["err"].strip()[:200])
         else:
-            record("pbs-token", False, "PBS_REPOSITORY ausente")
+            record("pbs-token", False, "PBS_SERVER/PBS_USER/PBS_DATASTORES ausente")
 
         # 4. sysctls
         sysctl_ok = True
@@ -860,6 +1150,9 @@ class GwRestore:
             ["nft", "list", "table", "inet", self.ctx["nft_table"]],
             timeout=10)
         record("nft-table", res["rc"] == 0, res["err"].strip()[:200])
+        mgmt_ok = res["rc"] == 0 and "dport { 139, 445 }" in res["out"]
+        record("nft-smb-only-vlan", mgmt_ok,
+               "" if mgmt_ok else "regra que bloqueia SMB fora das vl* ausente")
 
         # 6. include do Samba
         include_ok = False
@@ -933,8 +1226,6 @@ def main(argv=None):
     gw = GwRestore()
     lock = None
     try:
-        if args.cmd in ("publish", "revoke", "gc"):
-            lock = _global_lock(gw.ctx)
         if args.cmd == "publish":
             try:
                 payload = json.load(sys.stdin)
@@ -944,13 +1235,26 @@ def main(argv=None):
                 return 1
             try:
                 result = gw.publish(payload)
+            except CrashInjected:
+                return 70
             except GwError as exc:
-                print("gw-restore: %s" % exc, file=sys.stderr)
+                if exc.code in ("busy", "session_gone") and isinstance(payload, dict):
+                    error = validate_contract("publish_error", {
+                        "contract": CONTRACT_VERSION,
+                        "request_id": payload.get("request_id", "invalid"),
+                        "error": exc.code,
+                        "message": str(exc),
+                    })
+                    print(json.dumps(error, ensure_ascii=False, sort_keys=True),
+                          file=sys.stderr)
+                else:
+                    print("gw-restore: %s" % exc, file=sys.stderr)
                 return 1
             json.dump(result, sys.stdout, indent=1, sort_keys=True)
             sys.stdout.write("\n")
             return 0
         if args.cmd == "revoke":
+            lock = _global_lock(gw.ctx)
             if args.all:
                 for session_id in sorted(gw._load_states()):
                     gw.revoke(session_id)
@@ -975,6 +1279,7 @@ def main(argv=None):
             print(gw.list(as_json=args.json))
             return 0
         if args.cmd == "gc":
+            lock = _global_lock(gw.ctx)
             result = gw.gc(boot=args.boot)
             print(json.dumps(result, indent=1, sort_keys=True))
             return 0
