@@ -155,12 +155,12 @@ subtest 'precheck: erro em snapshot/pending/ha/replicacao também é falha dura 
 
 subtest 'recusa: HA sem flag' => sub {
     fresh();
-    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
+    $MockPve::S{ha} = [{ sid => 'vm:100', state => 'started' }];
     my ($r, $by) = pre();
     ok(!$by->{ha}{ok}, 'HA bloqueia');
     ok(!$r->{ok}, 'aborta');
     fresh();
-    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
+    $MockPve::S{ha} = [{ sid => 'vm:100', state => 'started' }];
     ($r, $by) = pre(handle_ha => 1);
     ok($by->{ha}{ok}, 'flag --handle-ha deixa passar');
     ok($r->{ok}, 'ok com flag') or diag explain [fail_names($r->{checks})];
@@ -169,11 +169,13 @@ subtest 'recusa: HA sem flag' => sub {
 
 subtest 'recusa: replicação sem flag' => sub {
     fresh();
-    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2' }];
+    $MockPve::S{repl} = [{ id => '100-0', guest => 100, jobnum => 0,
+                           target => 'n2', type => 'local' }];
     my ($r, $by) = pre();
     ok(!$by->{replicacao}{ok}, 'replicação bloqueia');
     fresh();
-    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2' }];
+    $MockPve::S{repl} = [{ id => '100-0', guest => 100, jobnum => 0,
+                           target => 'n2', type => 'local' }];
     ($r, $by) = pre(handle_replication => 1);
     ok($by->{replicacao}{ok}, 'flag --handle-replication deixa passar');
     ok($r->{ok}, 'ok com flag') or diag explain [fail_names($r->{checks})];

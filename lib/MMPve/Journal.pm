@@ -18,7 +18,9 @@ package MMPve::Journal;
 use strict;
 use warnings;
 use JSON::PP qw(encode_json decode_json);
-use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir now_iso log_line);
+use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir now_iso log_line flock_ex unlock);
+use Sys::Hostname qw(hostname);
+use POSIX qw(getpid);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -63,6 +65,12 @@ sub id     { return $_[0]->{id} }
 sub meta   { return $_[0]->{data}{meta} }
 sub state  { return $_[0]->{data}{state} }
 sub data   { return $_[0]->{data} }
+
+sub set_meta {
+    my ($self, %meta) = @_;
+    $self->{data}{meta}{$_} = $meta{$_} for keys %meta;
+    $self->_write;
+}
 
 sub set_state {
     my ($self, $s) = @_;
@@ -147,6 +155,78 @@ sub _write {
     die "journal excede 1 MiB (pmxcfs)\n" if length($json) > $MAX;
     write_file_atomic($self->{file}, $json . "\n", 0644);
     return 1;
+}
+
+# O lock de domínio só protege a transição curta do marcador. Nunca chame
+# código de tarefa dentro dele: o pve-cluster aborta callbacks após 60s.
+sub _with_run_lock {
+    my ($self, $code) = @_;
+    if (eval { require PVE::Cluster; PVE::Cluster->can('cfs_lock_domain') }) {
+        my $out = PVE::Cluster::cfs_lock_domain('mm-renumber', 10, $code);
+        die $@ if $@;
+        return $out;
+    }
+
+    my $lock = flock_ex($self->dir . '/.mm-renumber.lock');
+    my ($out, $ok);
+    $ok = eval { $out = $code->(); 1 };
+    my $err = $@;
+    unlock($lock);
+    die $err unless $ok;
+    return $out;
+}
+
+sub claim_run {
+    my ($self, %opt) = @_;
+    my $node = $opt{owner_node} // hostname();
+    my $pid = $opt{pid} // getpid();
+    my $now = time;
+    my $ttl = $opt{ttl} // 120;
+    return $self->_with_run_lock(sub {
+        my $current = $self->{data}{run_marker};
+        if ($current && ($current->{heartbeat} // 0) > $now - $ttl) {
+            die "renumber já está em execução no node $current->{owner_node} "
+                . "(pid $current->{pid}); aguarde o heartbeat expirar\n";
+        }
+        $self->{data}{run_marker} = {
+            owner_node => $node,
+            pid => 0 + $pid,
+            heartbeat => 0 + $now,
+            heartbeat_at => now_iso(),
+        };
+        $self->_write;
+        return 1;
+    });
+}
+
+sub heartbeat_run {
+    my ($self, %opt) = @_;
+    my $node = $opt{owner_node} // hostname();
+    my $pid = $opt{pid} // getpid();
+    return $self->_with_run_lock(sub {
+        my $m = $self->{data}{run_marker} || {};
+        die "marcador de execução não pertence a este processo\n"
+            unless ($m->{owner_node} // '') eq $node && ($m->{pid} // -1) == $pid;
+        $m->{heartbeat} = 0 + time;
+        $m->{heartbeat_at} = now_iso();
+        $self->_write;
+        return 1;
+    });
+}
+
+sub release_run {
+    my ($self, %opt) = @_;
+    my $node = $opt{owner_node} // hostname();
+    my $pid = $opt{pid} // getpid();
+    return $self->_with_run_lock(sub {
+        my $m = $self->{data}{run_marker};
+        return 1 unless $m;
+        die "marcador de execução pertence a outro processo\n"
+            unless ($m->{owner_node} // '') eq $node && ($m->{pid} // -1) == $pid;
+        delete $self->{data}{run_marker};
+        $self->_write;
+        return 1;
+    });
 }
 
 sub finish {

@@ -67,7 +67,8 @@ subtest 'rollback em ordem inversa' => sub {
     my $n = scalar MockPve::ops();
     my $res = MMPve::Module::Renumber->rollback(from => 100, to => 1100);
     ok($res->{ok}, 'rollback ok') or diag explain $res;
-    is_deeply($res->{undone}, [qw(move_disks reserve)], 'ordem inversa');
+    is_deeply($res->{undone}, [qw(config move_disks reserve)],
+        'ordem inversa inclui passo que pode ter ficado parcialmente aplicado');
     my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
 
     # 1º: devolver discos (move_disk da nova para a antiga, 3x)
@@ -78,6 +79,10 @@ subtest 'rollback em ordem inversa' => sub {
     my ($setold) = grep { $_->{op} eq 'set' && $_->{path} eq '/nodes/n1/qemu/100/config' } @after;
     ok($setold, 'config antiga recriada');
     is($setold->{args}{net0}, 'virtio=BC:24:11:AA:BB:CC,bridge=vmbr0', 'MAC devolvido');
+    ok(!exists $setold->{args}{scsi0} && !exists $setold->{args}{efidisk0},
+        'rollback não reaplica chaves de volume');
+    is($MockPve::S{vm_config}{ide2}, 'local:cloudinit',
+        'rollback recria cloud-init como <storage>:cloudinit');
     # último: apagar a VM nova vazia
     my ($delnew) = grep { $_->{op} eq 'delete' && $_->{path} eq '/nodes/n1/qemu/1100' } @after;
     ok($delnew, 'VM nova apagada');
@@ -161,7 +166,8 @@ subtest 'rollback após processo morto no meio do move_disks não perde disco �
     is($j->step_info('move_disks')->{status}, 'failed', 'move_disks falhou (não done)');
 
     # estado real: exatamente 1 disco migrou de verdade antes da queda
-    my @moved_to_new = keys %{ $MockPve::S{new_vm_config} };
+    my @moved_to_new = grep { /^(?:scsi|efidisk|sata|virtio|ide)\d+$/ }
+        keys %{ $MockPve::S{new_vm_config} };
     is(scalar @moved_to_new, 1, 'exatamente 1 disco migrou de verdade antes da queda');
     my $moved_key = $moved_to_new[0];
     ok(!exists $MockPve::S{vm_config}{$moved_key}, "$moved_key saiu da antiga de verdade");
@@ -175,7 +181,8 @@ subtest 'rollback após processo morto no meio do move_disks não perde disco �
 
     # os discos terminam de volta na config real da antiga; a nova fica vazia
     ok(exists $MockPve::S{vm_config}{$moved_key}, "$moved_key devolvido à antiga");
-    is(scalar(keys %{ $MockPve::S{new_vm_config} }), 0, 'VM nova fica sem nenhum disco');
+    is(scalar(grep { /^(?:scsi|efidisk|sata|virtio|ide)\d+$/ }
+        keys %{ $MockPve::S{new_vm_config} }), 0, 'VM nova fica sem nenhum disco');
 
     my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
     my @moveback = grep { $_->{op} eq 'create' && $_->{path} eq '/nodes/n1/qemu/1100/move_disk' } @after;
@@ -210,8 +217,9 @@ subtest 'resume após processo morto no meio do move_disks só move o que falta 
 subtest 'rollback com refs: HA/replicação voltam pro vmid antigo — R2.6 #10' => sub {
     MockPve->reset;
     system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
-    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
-    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2', type => 'local' }];
+    $MockPve::S{ha} = [{ sid => 'vm:100', state => 'started' }];
+    $MockPve::S{repl} = [{ id => '100-0', guest => 100, jobnum => 0,
+                           target => 'n2', type => 'local' }];
     $MockPve::S{fail_at} = 'destroy';   # refs roda inteiro antes de falhar
     my $err = eval {
         MMPve::Module::Renumber->run(from => 100, to => 1100,
@@ -227,15 +235,15 @@ subtest 'rollback com refs: HA/replicação voltam pro vmid antigo — R2.6 #10'
     ok($res->{ok}, 'rollback ok') or diag explain $res;
     my @after = (MockPve::ops())[ $n .. $#{ [MockPve::ops()] } ];
 
-    my ($ha_del_new) = grep { $_->{op} eq 'delete' && $_->{path} eq '/cluster/ha/resources/vmid:1100' } @after;
+    my ($ha_del_new) = grep { $_->{op} eq 'delete' && $_->{path} eq '/cluster/ha/resources/vm:1100' } @after;
     ok($ha_del_new, 'HA novo removido no rollback');
     my ($ha_new_old) = grep { $_->{op} eq 'create' && $_->{path} eq '/cluster/ha/resources' } @after;
-    is($ha_new_old->{args}{sid}, 'vmid:100', 'HA antigo recriado no rollback');
+    is($ha_new_old->{args}{sid}, 'vm:100', 'HA antigo recriado no rollback');
 
     my @rep_del = grep { $_->{op} eq 'delete' && $_->{path} =~ m{^/cluster/replication/1100-} } @after;
     ok(scalar(@rep_del) >= 1, 'job de replicação novo removido no rollback');
     my ($rep_new_old) = grep { $_->{op} eq 'create' && $_->{path} eq '/cluster/replication' } @after;
-    is($rep_new_old->{args}{id}, 'rep1', 'job antigo (rep1) recriado no rollback');
+    is($rep_new_old->{args}{id}, '100-0', 'job antigo recriado no rollback');
 };
 
 subtest 'wait_task: segue running->stopped e morre limpo no timeout — R2.6 #3 (acceptance H)' => sub {

@@ -16,12 +16,16 @@ use MMPve::Core::Runner;
 use MMPve::Core::Config;
 use MMPve::Journal;
 use MMPve::Core::Util qw(read_file write_file_atomic root_path log_line);
+use Sys::Hostname qw(hostname);
+use POSIX qw(getpid);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
 # Espera de tarefa pvesh (testes reduzem o intervalo/timeout).
 our $TASK_POLL    = 2;      # segundos entre consultas a /nodes/<n>/tasks/<upid>/status
 our $TASK_TIMEOUT = 21600;  # 6h por tarefa (move_disk de disco grande demora)
+our $RUN_MARKER_TTL = 120;
+our $CONFIG_LOCK;           # injetável nos testes; em PVE usa PVE::QemuConfig
 
 # Grammar real de um volid de volume (ver PVE::GuestHelpers/QemuServer):
 # <storage>:(<vmid>/)?(vm|base)-<vmid>-..., com storage podendo ter hífen
@@ -112,6 +116,105 @@ sub _scheme_warning {
 sub journal_id {
     my ($class, $from, $to) = @_;
     return "renumber-$from-$to";
+}
+
+sub _config_digest {
+    my ($class, $conf) = @_;
+    die "PVE não retornou digest da configuração; operação insegura\n"
+        unless ref $conf eq 'HASH' && defined $conf->{digest} && length $conf->{digest};
+    return $conf->{digest};
+}
+
+sub _source_snapshot {
+    my ($class, $meta) = @_;
+    my $path = "/nodes/$meta->{node}/qemu/$meta->{from}";
+    my ($status, $status_err) = $class->_pvesh_opt(get => "$path/status/current");
+    my ($conf, $conf_err) = $class->_pvesh_opt(get => "$path/config");
+    return (undef, undef, 0) if $conf_err && $conf_err =~ /not found|does not exist|no such|inexistente|不存在/i;
+    die "não consegui consultar status da VM $meta->{from}: " . _chomp($status_err)
+        if $status_err;
+    die "não consegui consultar configuração da VM $meta->{from}: " . _chomp($conf_err)
+        if $conf_err || !$conf;
+    return ($status, $conf, 1);
+}
+
+sub _guard_source {
+    my ($class, $j, $meta, %opt) = @_;
+    my ($status, $conf, $exists) = $class->_source_snapshot($meta);
+    return (undef, undef, 0) if !$exists && $opt{allow_absent};
+    die "VM $meta->{from} desapareceu antes do passo $opt{step}\n" unless $exists;
+    die "VM $meta->{from} não está parada antes do passo $opt{step}\n"
+        unless ($status->{status} // '') eq 'stopped';
+    my $expected = $meta->{config_digest};
+    my $actual = $class->_config_digest($conf);
+    die "digest da VM $meta->{from} mudou antes do passo $opt{step}\n"
+        unless defined $expected && $actual eq $expected;
+    return ($status, $conf, 1);
+}
+
+sub _refresh_source_digest {
+    my ($class, $j, $meta, $where) = @_;
+    my ($status, $conf, $exists) = $class->_source_snapshot($meta);
+    return undef unless $exists;
+    die "VM $meta->{from} não está parada após $where\n"
+        unless ($status->{status} // '') eq 'stopped';
+    my $digest = $class->_config_digest($conf);
+    $meta->{config_digest} = $digest;
+    $j->set_meta(config_digest => $digest);
+    return $digest;
+}
+
+sub _before_step {
+    my ($class, $j, $meta, $step) = @_;
+    $j->heartbeat_run(owner_node => hostname(), pid => getpid());
+    return $class->_guard_source($j, $meta, step => $step,
+        allow_absent => ($step eq 'destroy'));
+}
+
+sub _with_config_lock {
+    my ($class, $vmid, $code) = @_;
+    return $CONFIG_LOCK->($vmid, $code) if $CONFIG_LOCK;
+    if (eval { require PVE::QemuConfig; PVE::QemuConfig->can('lock_config') }) {
+        my $out = PVE::QemuConfig->lock_config($vmid, $code);
+        die $@ if $@;
+        return $out;
+    }
+    return $code->();
+}
+
+sub _config_edit {
+    my ($class, $node, $vmid, %args) = @_;
+    if ($CONFIG_LOCK) {
+        return $class->_with_config_lock($vmid, sub {
+            return MMPve::Core::Runner->pvesh(set => "/nodes/$node/qemu/$vmid/config", %args);
+        });
+    }
+    # pvesh is a separate process and would deadlock if called while this
+    # process holds the same local config flock. For a local VM use the real
+    # PVE config writer inside lock_config; a remote node owns its own lock and
+    # is updated through its API endpoint.
+    if ($node eq hostname()
+        && eval { require PVE::QemuConfig; PVE::QemuConfig->can('load_config')
+            && PVE::QemuConfig->can('write_config') }) {
+        return $class->_with_config_lock($vmid, sub {
+            my $conf = PVE::QemuConfig->load_config($vmid);
+            die "não consegui carregar configuração da VM $vmid\n" unless $conf;
+            if (exists $args{delete}) {
+                delete $conf->{ $args{delete} };
+                delete $args{delete};
+            }
+            $conf->{$_} = $args{$_} for keys %args;
+            return PVE::QemuConfig->write_config($vmid, $conf);
+        });
+    }
+    return MMPve::Core::Runner->pvesh(set => "/nodes/$node/qemu/$vmid/config", %args);
+}
+
+sub _maybe_fail_after {
+    my ($class, $step) = @_;
+    return unless defined $ENV{MM_RENUMBER_FAIL_AFTER} && length $ENV{MM_RENUMBER_FAIL_AFTER};
+    return unless $ENV{MM_RENUMBER_FAIL_AFTER} eq $step;
+    die "falha injetada após o passo '$step' (MM_RENUMBER_FAIL_AFTER)\n";
 }
 
 # ------------------------------------------------------------- precheck
@@ -247,7 +350,7 @@ sub precheck {
     if ($ha_err) {
         _check(\@checks, 'ha', 0, 'erro consultando HA: ' . _chomp($ha_err));
     } else {
-        ($ha_entry) = grep { ($_->{sid} // '') eq "vmid:$from" } @{$ha || []};
+        ($ha_entry) = grep { ($_->{sid} // '') eq "vm:$from" } @{$ha || []};
         if ($ha_entry) {
             if ($o{handle_ha}) {
                 push @warnings, 'VM está no HA: será removida e recriada com o novo ID (--handle-ha)';
@@ -260,12 +363,46 @@ sub precheck {
         }
     }
 
+    my ($ha_rules, $ha_rules_err) = $class->_pvesh_opt(get => '/cluster/ha/rules');
+    my @ha_rules_for_vm;
+    if ($ha_rules_err) {
+        _check(\@checks, 'ha-regras', 0, 'erro consultando regras HA: ' . _chomp($ha_rules_err));
+    } else {
+        @ha_rules_for_vm = grep {
+            my @resources = split /\s*,\s*/, ($_->{resources} // '');
+            grep { $_ eq "vm:$from" } @resources;
+        } @{$ha_rules || []};
+        if (@ha_rules_for_vm && !$o{handle_ha}) {
+            _check(\@checks, 'ha-regras', 0,
+                'VM aparece em regra HA (use --handle-ha)');
+        } else {
+            _check(\@checks, 'ha-regras', 1,
+                @ha_rules_for_vm ? scalar(@ha_rules_for_vm) . ' regra(s) HA serão migradas' : 'sem regra HA');
+        }
+    }
+
     my ($repl, $repl_err) = $class->_pvesh_opt(get => '/cluster/replication');
     my @repl_jobs;
     if ($repl_err) {
         _check(\@checks, 'replicacao', 0, 'erro consultando replicação: ' . _chomp($repl_err));
     } else {
         @repl_jobs = grep { ($_->{guest} // '') eq $from } @{$repl || []};
+        my @invalid_repl;
+        for my $r (@repl_jobs) {
+            my ($suffix) = ($r->{id} // '') =~ /^\Q$from\E-(\d+)$/;
+            my $valid = defined($suffix) && defined($r->{jobnum}) && $r->{jobnum} eq $suffix
+                && defined($r->{type}) && defined($r->{target});
+            my %create = map { $_ => 1 } qw(comment disable rate schedule source target type);
+            push @invalid_repl, $r->{id} // '?' if !$valid
+                || grep { !exists $create{$_} && !/^(?:id|guest|jobnum|digest)$/ } keys %{$r};
+        }
+        if (@invalid_repl) {
+            _check(\@checks, 'replicacao-preservavel', 0,
+                'job(s) sem schema preservável: ' . join(', ', @invalid_repl));
+        } else {
+            _check(\@checks, 'replicacao-preservavel', 1,
+                @repl_jobs ? 'todos os campos da replicação são preserváveis' : 'sem replicação');
+        }
         if (@repl_jobs) {
             if ($o{handle_replication}) {
                 push @warnings, 'VM tem replicação (' . join(', ', map { $_->{id} } @repl_jobs)
@@ -316,8 +453,10 @@ sub precheck {
     $info{drives} = \@drives;
 
     $info{original_config} = $conf;
+    $info{config_digest} = _config_digest($class, $conf);
     $info{name} = $conf->{name};
     $info{ha} = $ha_entry ? $ha_entry : undef;
+    $info{ha_rules} = \@ha_rules_for_vm;
     $info{replication} = \@repl_jobs;
 
     my $ok_all = (grep { !$_->{ok} } @checks) ? 0 : 1;
@@ -334,6 +473,8 @@ sub wait_task {
     my $start = time;
     my $deadline = $start + $timeout;
     while (1) {
+        $o{journal}->heartbeat_run(owner_node => hostname(), pid => getpid())
+            if $o{journal};
         my ($t) = $class->_pvesh_opt(get => "/nodes/$node/tasks/$upid/status");
         if ($t && (($t->{status} // '') eq 'stopped')) {
             my $es = $t->{exitstatus} // '';
@@ -357,12 +498,16 @@ sub _vm_set_config {
     my %params;
     for my $k (sort keys %{$conf || {}}) {
         next if $skip{$k};
+        next if $opt{skip_drives} && ($k =~ /^(?:ide|sata|scsi|virtio)\d+$/
+            || $k =~ /^unused\d+$/ || $k eq 'efidisk0' || $k eq 'tpmstate0');
         next unless defined $conf->{$k} && !ref $conf->{$k};
         $params{$k} = $conf->{$k};
     }
-    MMPve::Core::Runner->pvesh(set => "/nodes/$node/qemu/$vmid/config", %params) if %params;
+    $class->_config_edit($node, $vmid, %params) if %params;
     if ($opt{protection}) {
-        MMPve::Core::Runner->pvesh(set => "/nodes/$node/qemu/$vmid/config", protection => 1);
+        $class->_config_edit($node, $vmid, protection => 1);
+    } elsif (exists $opt{protection} && $opt{protection} == 0) {
+        $class->_config_edit($node, $vmid, protection => 0);
     }
     return 1;
 }
@@ -370,8 +515,17 @@ sub _vm_set_config {
 sub _step_reserve {
     my ($class, $j, $meta) = @_;
     my $tmpname = ($meta->{name} // "vm") . '-renumber';
+    my $marker = $meta->{reservation_marker};
+    my ($existing, $err) = $class->_pvesh_opt(
+        get => "/nodes/$meta->{node}/qemu/$meta->{to}/config");
+    if (!$err && $existing) {
+        die "VM $meta->{to} existe, mas não pertence a este renumber\n"
+            unless ($existing->{name} // '') eq $tmpname
+                && ($existing->{description} // '') eq $marker;
+        return "ID $meta->{to} já estava reservado por este journal";
+    }
     MMPve::Core::Runner->pvesh(create => "/nodes/$meta->{node}/qemu",
-        vmid => $meta->{to}, name => $tmpname);
+        vmid => $meta->{to}, name => $tmpname, description => $marker);
     return "ID $meta->{to} reservado (nome temporário $tmpname)";
 }
 
@@ -392,22 +546,30 @@ sub _step_move_disks {
     # qualquer coisa; o rollback (_undo_move_disks) restaura na antiga se
     # desfizer, e _step_config aplica na nova se concluir — RODADA2 #7.
     if ($meta->{original_config}{protection} && $old_conf->{protection}) {
-        MMPve::Core::Runner->pvesh(set => "$path/config", protection => 0);
+        $class->_guard_source($j, $meta, step => 'move_disks/protection');
+        $class->_config_edit($meta->{node}, $meta->{from}, protection => 0);
+        $class->_refresh_source_digest($j, $meta, 'limpeza de protection');
     }
 
     my $moved = 0;
     for my $d (@{$meta->{drives} || []}) {
         if ($d->{kind} eq 'cloudinit') {
             next unless exists $old_conf->{ $d->{key} };    # já removido (retomada)
-            MMPve::Core::Runner->pvesh(set => "$path/config", delete => $d->{key});
-            $j->record('move_disks', cloudinit => { $d->{key} => $d->{value} });
+            my $ci = $j->step_info('move_disks')->{cloudinit} || {};
+            $ci->{$d->{key}} = $d->{value};
+            $j->record('move_disks', cloudinit => $ci);
+            $class->_guard_source($j, $meta, step => 'move_disks/cloudinit');
+            $class->_config_edit($meta->{node}, $meta->{from}, delete => $d->{key});
+            $class->_refresh_source_digest($j, $meta, 'remoção do cloud-init');
             next;
         }
         next unless $d->{kind} eq 'volume';
         next unless exists $old_conf->{ $d->{key} };        # já movido (retomada)
+        $class->_guard_source($j, $meta, step => 'move_disks/' . $d->{key});
         my $upid = MMPve::Core::Runner->pvesh_task(create => "$path/move_disk",
             disk => $d->{key}, 'target-vmid' => $meta->{to}, 'target-disk' => $d->{key});
-        $class->wait_task($upid);
+        $class->wait_task($upid, journal => $j);
+        $class->_refresh_source_digest($j, $meta, 'move de ' . $d->{key});
         $moved++;
     }
     return $moved ? "$moved disco(s) movido(s) (tarefa esperada por drive)" : 'nenhum disco de volume';
@@ -434,14 +596,13 @@ sub _step_config {
         next unless defined $conf->{$k} && !ref $conf->{$k};
         $params{$k} = $conf->{$k};
     }
-    MMPve::Core::Runner->pvesh(set => "/nodes/$meta->{node}/qemu/$meta->{to}/config", %params)
-        if %params;
+    $class->_guard_source($j, $meta, step => 'config');
+    $class->_config_edit($meta->{node}, $meta->{to}, %params) if %params;
 
     # protection por último (aplicada na VM nova; a antiga já teve a dela
     # limpa no move_disks — RODADA2 #7).
     if ($conf->{protection}) {
-        MMPve::Core::Runner->pvesh(set => "/nodes/$meta->{node}/qemu/$meta->{to}/config",
-            protection => 1);
+        $class->_config_edit($meta->{node}, $meta->{to}, protection => 1);
     }
     return 'configuração copiada (MACs, smbios1 uuid e vmgenid preservados; protection por último)';
 }
@@ -458,18 +619,45 @@ sub _step_firewall {
     if (-f $old) {
         my $content = read_file($old);
         $j->record('firewall', fw_content => $content);   # ANTES (rollback)
+        if (-f $new) {
+            die "firewall novo já existe com conteúdo diferente\n"
+                unless read_file($new) eq $content;
+            return 'firewall já estava copiado';
+        }
+        $class->_guard_source($j, $meta, step => 'firewall');
         write_file_atomic($new, $content, 0644);
         return 'firewall copiado';
     }
     return 'sem arquivo de firewall';
 }
 
+sub _replace_vmid_list {
+    my ($value, $from, $to) = @_;
+    return undef if !defined($value) || ref($value);
+    my @ids = split /\s*,\s*/, $value;
+    return undef unless grep { $_ eq "$from" } @ids;
+    my %seen;
+    @ids = map { $_ eq "$from" ? "$to" : $_ } @ids;
+    @ids = grep { !$seen{$_}++ } @ids;
+    return join(',', @ids);
+}
+
+sub _acl_args {
+    my ($class, $path, $a) = @_;
+    my %args = (path => $path, roles => $a->{roleid}, propagate => $a->{propagate} // 0);
+    my $t = $a->{type} // 'user';
+    if    ($t eq 'token') { $args{tokens} = $a->{ugid} }
+    elsif ($t eq 'group') { $args{groups} = $a->{ugid} }
+    else                  { $args{users}  = $a->{ugid} }
+    return \%args;
+}
+
 sub _step_refs {
     my ($class, $j, $meta) = @_;
-    my ($from, $to, $node) = @{$meta}{qw(from to node)};
+    my ($from, $to) = @{$meta}{qw(from to)};
     my @done;
+    my @pool_changes;
 
-    # pool
     my ($pools) = $class->_pvesh_opt(get => '/pools');
     for my $p (@{$pools || []}) {
         my $pname = $p->{poolid} // next;
@@ -477,77 +665,110 @@ sub _step_refs {
         my @members = map { $_->{vmid} } grep { ($_->{id} // '') =~ /^qemu\// }
             @{$pd->{members} || []};
         next unless grep { $_ == $from } @members;
+        push @pool_changes, { pool => $pname, old_member => 1 };
+        next if grep { $_ == $to } @members;
+        $class->_guard_source($j, $meta, step => "refs/pool/$pname");
         MMPve::Core::Runner->pvesh(set => "/pools/$pname", vms => $to);
-        $j->record('refs', pool => $pname);
         push @done, "pool $pname";
-        last;
     }
+    $j->record('refs', pool_changes => \@pool_changes) if @pool_changes;
 
-    # ACLs /vms/<antigo> → /vms/<novo>, preservando o tipo da entrada
-    # (user/group/token) — antes qualquer coisa que não fosse "user" virava
-    # "group", inclusive token — RODADA2 #11.
     my ($acls) = $class->_pvesh_opt(get => '/access/acl');
     my @mine = grep { ($_->{path} // '') eq "/vms/$from" } @{$acls || []};
-    my @acl_undo;
+    my @acl_changes;
     for my $a (@mine) {
-        my %args = (path => "/vms/$to", roles => $a->{roleid}, propagate => $a->{propagate} // 0);
-        my $t = $a->{type} // 'user';
-        if    ($t eq 'token') { $args{tokens} = $a->{ugid} }
-        elsif ($t eq 'group') { $args{groups} = $a->{ugid} }
-        else                  { $args{users}  = $a->{ugid} }
-        MMPve::Core::Runner->pvesh(set => '/access/acl', %args);
-        push @acl_undo, \%args;
+        my $new_args = $class->_acl_args("/vms/$to", $a);
+        my $old_args = $class->_acl_args("/vms/$from", $a);
+        push @acl_changes, { original => { %$a }, new_args => $new_args, old_args => $old_args };
+        my $already = grep {
+            ($_->{path} // '') eq "/vms/$to" && ($_->{ugid} // '') eq ($a->{ugid} // '')
+                && ($_->{type} // 'user') eq ($a->{type} // 'user')
+                && ($_->{roleid} // '') eq ($a->{roleid} // '')
+        } @{$acls || []};
+        if (!$already) {
+            $class->_guard_source($j, $meta, step => 'refs/acl-create');
+            MMPve::Core::Runner->pvesh(set => '/access/acl', %$new_args);
+        }
+        $class->_guard_source($j, $meta, step => 'refs/acl-delete');
+        MMPve::Core::Runner->pvesh(delete => '/access/acl', %$old_args);
     }
-    $j->record('refs', acls => \@acl_undo) if @acl_undo;
-    push @done, scalar(@acl_undo) . ' ACL(s)' if @acl_undo;
+    $j->record('refs', acl_changes => \@acl_changes) if @acl_changes;
+    push @done, scalar(@acl_changes) . ' ACL(s)' if @acl_changes;
 
-    # jobs de backup com VMID explícito
     my ($jobs) = $class->_pvesh_opt(get => '/cluster/backup');
-    my @bk_undo;
+    my @backup_changes;
     for my $jb (@{$jobs || []}) {
-        my $v = $jb->{vmid} // '';
-        next if $v eq 'all' || $v eq '' || ref $v;
-        my @ids = split /\s*,\s*/, $v;
-        next unless grep { $_ == $from } @ids;
-        my $newlist = join ',', map { $_ == $from ? $to : $_ } @ids;
-        MMPve::Core::Runner->pvesh(set => "/cluster/backup/$jb->{id}", vmid => $newlist);
-        push @bk_undo, { id => $jb->{id}, vmid => $v };
+        for my $field (qw(vmid exclude)) {
+            my $old_value = $jb->{$field};
+            my $new_value = _replace_vmid_list($old_value, $from, $to);
+            next unless defined $new_value;
+            push @backup_changes, { id => $jb->{id}, field => $field, value => $old_value };
+            next if $old_value eq $new_value;
+            $class->_guard_source($j, $meta, step => "refs/backup/$jb->{id}/$field");
+            MMPve::Core::Runner->pvesh(set => "/cluster/backup/$jb->{id}", $field => $new_value);
+        }
     }
-    $j->record('refs', backups => \@bk_undo) if @bk_undo;
-    push @done, scalar(@bk_undo) . ' job(s) de backup' if @bk_undo;
+    $j->record('refs', backups => \@backup_changes) if @backup_changes;
+    push @done, scalar(@backup_changes) . ' campo(s) de backup' if @backup_changes;
 
-    # HA: remove o recurso antigo (vmid:<antigo>) e recria com o ID novo —
-    # antes só criava o novo e deixava o antigo pra trás — RODADA2 #10.
     if ($meta->{ha} && $meta->{handle_ha}) {
         my $h = $meta->{ha};
-        MMPve::Core::Runner->pvesh(delete => "/cluster/ha/resources/vmid:$from");
-        MMPve::Core::Runner->pvesh(create => '/cluster/ha/resources', sid => "vmid:$to");
+        $j->record('refs', ha => { original => { %$h }, old_sid => "vm:$from", new_sid => "vm:$to" });
+        my ($current) = $class->_pvesh_opt(get => '/cluster/ha/resources');
+        my ($old) = grep { ($_->{sid} // '') eq "vm:$from" } @{$current || []};
+        my ($new) = grep { ($_->{sid} // '') eq "vm:$to" } @{$current || []};
+        if ($old && !$new) {
+            $class->_guard_source($j, $meta, step => 'refs/ha-delete');
+            MMPve::Core::Runner->pvesh(delete => "/cluster/ha/resources/vm:$from");
+        }
+        if (!$new) {
+            $class->_guard_source($j, $meta, step => 'refs/ha-create');
+            MMPve::Core::Runner->pvesh(create => '/cluster/ha/resources', sid => "vm:$to");
+        }
         my %extra;
-        $extra{state} = $h->{state}     if defined $h->{state}  && $h->{state} ne 'started';
-        $extra{group} = $h->{group}     if defined $h->{group} && length $h->{group};
+        $extra{state} = $h->{state} if defined $h->{state} && $h->{state} ne 'started';
         $extra{comment} = $h->{comment} if defined $h->{comment} && length $h->{comment};
-        MMPve::Core::Runner->pvesh(set => "/cluster/ha/resources/vmid:$to", %extra) if %extra;
-        $j->record('refs', ha => 1);
-        push @done, "recurso HA (vmid:$from removido, vmid:$to criado)";
+        if (%extra) {
+            $class->_guard_source($j, $meta, step => 'refs/ha-set');
+            MMPve::Core::Runner->pvesh(set => "/cluster/ha/resources/vm:$to", %extra);
+        }
+        push @done, "recurso HA vm:$from → vm:$to";
     }
 
-    # replicação: remove o(s) job(s) antigo(s) e recria com ID novo na
-    # convenção <novo-vmid>-<n> (ver pvesr(1): "<GUEST>-<JOBNUM>"); o
-    # endpoint certo é /cluster/replication — /nodes/<n>/replication só tem
-    # leitura (status/log), criar lá sempre teria falhado — RODADA2 #10.
+    my @rule_changes;
+    for my $r (@{$meta->{ha_rules} || []}) {
+        my $old_resources = $r->{resources} // '';
+        my $new_resources = $old_resources;
+        $new_resources =~ s/\bvm:\Q$from\E\b/vm:$to/g;
+        next if $new_resources eq $old_resources;
+        push @rule_changes, { rule => $r->{rule}, resources => $old_resources };
+        $class->_guard_source($j, $meta, step => 'refs/ha-rule');
+        MMPve::Core::Runner->pvesh(set => "/cluster/ha/rules/$r->{rule}", resources => $new_resources);
+    }
+    $j->record('refs', ha_rules => \@rule_changes) if @rule_changes;
+    push @done, scalar(@rule_changes) . ' regra(s) HA' if @rule_changes;
+
     if ($meta->{handle_replication} && @{$meta->{replication} || []}) {
         my @new_jobs;
-        my $n = 0;
+        my ($current) = $class->_pvesh_opt(get => '/cluster/replication');
         for my $r (@{$meta->{replication}}) {
-            MMPve::Core::Runner->pvesh(delete => "/cluster/replication/$r->{id}");
-            my $new_id = "$to-" . $n++;
-            my %args = (id => $new_id, type => $r->{type} // 'local', target => $r->{target});
-            $args{schedule} = $r->{schedule} if defined $r->{schedule};
+            my $new_id = "$to-$r->{jobnum}";
+            my ($old) = grep { ($_->{id} // '') eq $r->{id} } @{$current || []};
+            my ($new) = grep { ($_->{id} // '') eq $new_id } @{$current || []};
+            push @new_jobs, { old_id => $r->{id}, new_id => $new_id, original => { %$r } };
+            if ($old && !$new) {
+                $class->_guard_source($j, $meta, step => "refs/replication-delete/$r->{id}");
+                MMPve::Core::Runner->pvesh(delete => "/cluster/replication/$r->{id}");
+            }
+            next if $new;
+            my %args = (id => $new_id);
+            $args{$_} = $r->{$_} for grep { exists $r->{$_} }
+                qw(comment disable rate schedule source target type);
+            $class->_guard_source($j, $meta, step => "refs/replication-create/$new_id");
             MMPve::Core::Runner->pvesh(create => '/cluster/replication', %args);
-            push @new_jobs, { old_id => $r->{id}, new_id => $new_id };
         }
         $j->record('refs', replication => \@new_jobs);
-        push @done, scalar(@new_jobs) . ' job(s) de replicação recriado(s) com ID novo (primeiro sync será completo)';
+        push @done, scalar(@new_jobs) . ' job(s) de replicação preservado(s)';
     }
 
     return @done ? join('; ', @done) : 'nenhuma referência externa';
@@ -569,6 +790,9 @@ sub _step_verify {
 
 sub _step_destroy {
     my ($class, $j, $meta) = @_;
+    my ($destroy_status, $destroy_conf, $exists) = $class->_source_snapshot($meta);
+    return "VM $meta->{from} já estava apagada" unless $exists;
+    $class->_guard_source($j, $meta, step => 'destroy');
     MMPve::Core::Runner->pvesh(delete => "/nodes/$meta->{node}/qemu/$meta->{from}",
         purge => 1, 'destroy-unreferenced-disks' => 0);
     return "VM $meta->{from} apagada (purge; discos já movidos)";
@@ -611,25 +835,41 @@ sub run {
         name => $pre->{info}{name},
         drives => $pre->{info}{drives},
         original_config => $pre->{info}{original_config},
+        config_digest => $pre->{info}{config_digest},
         ha => $pre->{info}{ha},
+        ha_rules => $pre->{info}{ha_rules},
         replication => $pre->{info}{replication},
         handle_ha => $o{handle_ha} ? 1 : 0,
         handle_replication => $o{handle_replication} ? 1 : 0,
     );
     my $id = $class->journal_id($o{from}, $o{to});
+    $meta{reservation_marker} = "mm-pve-tools renumber $id";
     # reusa o journal só se houver algo para retomar (failed/running);
     # journal concluído = nova operação do zero.
     my $j = eval { MMPve::Journal->open($id) };
     if ($j && ($j->state // '') =~ /^(failed|running)$/) {
-        my $m = $j->meta;
-        $m->{$_} = $meta{$_} for keys %meta;    # meta fresca, steps preservados
+        $j->set_meta(%meta);                    # meta fresca, steps preservados
     } else {
         $j = MMPve::Journal->create($id, %meta);
     }
     $j->steps([@STEPS]);
     $j->set_state('running');
-    my %jmeta = %{$j->meta};
-    return $class->_exec_steps($j, \%jmeta);
+    return $class->_with_run_marker($j, sub {
+        my %jmeta = %{$j->meta};
+        return $class->_exec_steps($j, \%jmeta);
+    });
+}
+
+sub _with_run_marker {
+    my ($class, $j, $code) = @_;
+    $j->claim_run(owner_node => hostname(), pid => getpid(), ttl => $RUN_MARKER_TTL);
+    my ($out, $ok);
+    $ok = eval { $out = $code->(); 1 };
+    my $err = $@;
+    my $release_err = eval { $j->release_run(owner_node => hostname(), pid => getpid()); $@ };
+    die $err unless $ok;
+    die $release_err if $release_err;
+    return $out;
 }
 
 sub _exec_steps {
@@ -639,15 +879,22 @@ sub _exec_steps {
         my $st = $j->step_info($s)->{status} // 'pending';
         next if $st eq 'done';
         $j->mark_running($s);                          # ANTES
-        my $detail = eval { $STEP_IMPL{$s}->($class, $j, $meta) };
+        my $detail = eval {
+            $class->_before_step($j, $meta, $s);
+            $STEP_IMPL{$s}->($class, $j, $meta);
+        };
         if (my $err = $@) {
             chomp $err;
             $j->mark_failed($s, $err);
             log_line("renumber $from>$to FALHOU no passo $s: $err");
             die "$err\nPasso '$s' falhou.\nContinue com: mm-pve renumber --resume --from $from --to $to\n";
         }
+        $class->_refresh_source_digest($j, $meta, "passo $s")
+            if $s ne 'destroy';
+        $j->set_meta(config_digest => $meta->{config_digest});
         $j->mark_done($s);                             # DEPOIS
         print "renumber: passo $s ok — $detail\n";
+        $class->_maybe_fail_after($s);
     }
     $j->finish({
         from => $from, to => $to, node => $meta->{node},
@@ -672,65 +919,99 @@ sub resume {
         (defined $o{handle_replication} ? (handle_replication => $o{handle_replication}) : ()));
     die "journal sem from/to.\n" unless $meta{from} && $meta{to};
     my $next = $j->first_pending;
-    die "nada pendente no journal $id (estado: " . $j->state . ").\n" unless $next;
-    print "renumber: retomando do passo '$next'\n";
+    die "nada pendente no journal $id (estado: " . $j->state . ").\n"
+        if !$next && ($j->state // '') eq 'finished';
+    print "renumber: retomando do passo '$next'\n" if $next;
     $j->set_state('running');
-    return $class->_exec_steps($j, \%meta);
+    return $class->_with_run_marker($j, sub { $class->_exec_steps($j, \%meta) });
 }
 
 # ------------------------------------------------------------- rollback
-
-sub _undo_destroy {
-    my ($class, $j, $meta) = @_;
-    MMPve::Core::Runner->pvesh(create => "/nodes/$meta->{node}/qemu",
-        vmid => $meta->{from}, name => ($meta->{name} // "vm$meta->{from}"));
-    return 'VM antiga recriada (shell)';
-}
 
 sub _undo_verify { return 'nada a desfazer (verificação)' }
 
 sub _undo_refs {
     my ($class, $j, $meta) = @_;
     my $info = $j->step_info('refs');
-    if (my $pool = $info->{pool}) {
-        MMPve::Core::Runner->pvesh(set => "/pools/$pool", vms => $meta->{to}, delete => 1);
+
+    for my $p (@{$info->{pool_changes} || []}) {
+        my ($pd) = $class->_pvesh_opt(get => "/pools/$p->{pool}");
+        my $has_new = grep { ($_->{vmid} // '') == $meta->{to} } @{$pd->{members} || []};
+        if ($has_new) {
+            $class->_guard_source($j, $meta, step => 'rollback/pool-delete');
+            MMPve::Core::Runner->pvesh(set => "/pools/$p->{pool}",
+                vms => $meta->{to}, delete => 1);
+        }
+        my $has_old = grep { ($_->{vmid} // '') == $meta->{from} } @{$pd->{members} || []};
+        if ($p->{old_member} && !$has_old) {
+            $class->_guard_source($j, $meta, step => 'rollback/pool-restore');
+            MMPve::Core::Runner->pvesh(set => "/pools/$p->{pool}", vms => $meta->{from});
+        }
     }
-    for my $a (@{$info->{acls} || []}) {
-        my %args = (path => "/vms/$meta->{to}", roles => $a->{roles});
-        $args{users}  = $a->{users}  if $a->{users};
-        $args{groups} = $a->{groups} if $a->{groups};
-        $args{tokens} = $a->{tokens} if $a->{tokens};
-        MMPve::Core::Runner->pvesh(delete => '/access/acl', %args);
+
+    my ($acls) = $class->_pvesh_opt(get => '/access/acl');
+    for my $a (@{$info->{acl_changes} || []}) {
+        my $old = $a->{original};
+        my $new_args = $a->{new_args};
+        my $new_exists = grep {
+            ($_->{path} // '') eq ($new_args->{path} // '')
+                && ($_->{ugid} // '') eq ($old->{ugid} // '')
+                && ($_->{type} // 'user') eq ($old->{type} // 'user')
+        } @{$acls || []};
+        if ($new_exists) {
+            $class->_guard_source($j, $meta, step => 'rollback/acl-delete');
+            MMPve::Core::Runner->pvesh(delete => '/access/acl', %$new_args);
+        }
+        my $old_exists = grep {
+            ($_->{path} // '') eq "/vms/$meta->{from}" && ($_->{ugid} // '') eq ($old->{ugid} // '')
+                && ($_->{type} // 'user') eq ($old->{type} // 'user')
+        } @{$acls || []};
+        if (!$old_exists) {
+            $class->_guard_source($j, $meta, step => 'rollback/acl-restore');
+            MMPve::Core::Runner->pvesh(set => '/access/acl', %{$a->{old_args}});
+        }
     }
+
     for my $b (@{$info->{backups} || []}) {
-        MMPve::Core::Runner->pvesh(set => "/cluster/backup/$b->{id}", vmid => $b->{vmid});
+        $class->_guard_source($j, $meta, step => 'rollback/backup');
+        MMPve::Core::Runner->pvesh(set => "/cluster/backup/$b->{id}", $b->{field} => $b->{value});
     }
-    if ($info->{ha}) {
-        MMPve::Core::Runner->pvesh(delete => "/cluster/ha/resources/vmid:$meta->{to}");
-        if (my $h = $meta->{ha}) {
-            MMPve::Core::Runner->pvesh(create => '/cluster/ha/resources', sid => "vmid:$meta->{from}");
-            my %extra;
-            $extra{state} = $h->{state}     if defined $h->{state}  && $h->{state} ne 'started';
-            $extra{group} = $h->{group}     if defined $h->{group} && length $h->{group};
-            $extra{comment} = $h->{comment} if defined $h->{comment} && length $h->{comment};
-            MMPve::Core::Runner->pvesh(set => "/cluster/ha/resources/vmid:$meta->{from}", %extra) if %extra;
+
+    if (my $hinfo = $info->{ha}) {
+        $class->_guard_source($j, $meta, step => 'rollback/ha-delete');
+        MMPve::Core::Runner->pvesh(delete => "/cluster/ha/resources/$hinfo->{new_sid}");
+        $class->_guard_source($j, $meta, step => 'rollback/ha-create');
+        MMPve::Core::Runner->pvesh(create => '/cluster/ha/resources', sid => $hinfo->{old_sid});
+        my %extra;
+        my $h = $hinfo->{original} || {};
+        $extra{state} = $h->{state} if defined $h->{state} && $h->{state} ne 'started';
+        $extra{comment} = $h->{comment} if defined $h->{comment} && length $h->{comment};
+        if (%extra) {
+            $class->_guard_source($j, $meta, step => 'rollback/ha-set');
+            MMPve::Core::Runner->pvesh(set => "/cluster/ha/resources/$hinfo->{old_sid}", %extra);
         }
     }
-    if (my $jobs = $info->{replication}) {
-        for my $pair (@{$jobs}) {
-            MMPve::Core::Runner->pvesh(delete => "/cluster/replication/$pair->{new_id}");
-        }
-        for my $r (@{$meta->{replication} || []}) {
-            my %args = (id => $r->{id}, type => $r->{type} // 'local', target => $r->{target});
-            $args{schedule} = $r->{schedule} if defined $r->{schedule};
-            MMPve::Core::Runner->pvesh(create => '/cluster/replication', %args);
-        }
+    for my $r (@{$info->{ha_rules} || []}) {
+        $class->_guard_source($j, $meta, step => 'rollback/ha-rule');
+        MMPve::Core::Runner->pvesh(set => "/cluster/ha/rules/$r->{rule}", resources => $r->{resources});
+    }
+
+    for my $pair (@{$info->{replication} || []}) {
+        $class->_guard_source($j, $meta, step => 'rollback/replication-delete');
+        MMPve::Core::Runner->pvesh(delete => "/cluster/replication/$pair->{new_id}");
+        my $old = $pair->{original} || {};
+        my %args = (id => $old->{id});
+        $args{$_} = $old->{$_} for grep { exists $old->{$_} }
+            qw(comment disable rate schedule source target type);
+        $class->_guard_source($j, $meta, step => 'rollback/replication-create');
+        MMPve::Core::Runner->pvesh(create => '/cluster/replication', %args);
     }
     return 'referências revertidas';
 }
 
 sub _undo_firewall {
     my ($class, $j, $meta) = @_;
+    $class->_guard_source($j, $meta, step => 'rollback/firewall');
     my $content = $j->step_info('firewall')->{fw_content};
     if (defined $content) {
         write_file_atomic($class->_fw_path($meta->{from}), $content, 0644);
@@ -760,21 +1041,37 @@ sub _undo_move_disks {
         $class->_classify_drives($new_conf, \%storage_types);
 
     for my $d (@on_new) {
+        $class->_guard_source($j, $meta, step => 'rollback/move-disks/' . $d->{key});
         my $upid = MMPve::Core::Runner->pvesh_task(create => "$new_path/move_disk",
             disk => $d->{key}, 'target-vmid' => $from, 'target-disk' => $d->{key});
         $class->wait_task($upid);
+        $class->_refresh_source_digest($j, $meta, 'devolução de ' . $d->{key});
     }
 
     # devolve o resto da configuração original (MACs/smbios1/vmgenid) e a
     # proteção, se tinha sido limpa antes de mover (ver _step_move_disks).
+    $class->_guard_source($j, $meta, step => 'rollback/move-disks');
     $class->_vm_set_config($node, $from, $meta->{original_config},
-        protection => $meta->{original_config}{protection} ? 1 : 0);
+        skip_drives => 1);
+    $class->_refresh_source_digest($j, $meta, 'restauração da configuração sem volumes');
+    if ($meta->{original_config}{protection}) {
+        $class->_guard_source($j, $meta, step => 'rollback/protection');
+        $class->_config_edit($node, $from, protection => 1);
+        $class->_refresh_source_digest($j, $meta, 'restauração de protection');
+    }
 
     # cloudinit: se já tinha sido removido da antiga, recria a linha
     # original (storage preservado, ver _step_config).
     my $ci = $j->step_info('move_disks')->{cloudinit} || {};
     if (%$ci) {
-        MMPve::Core::Runner->pvesh(set => "$old_path/config", %$ci);
+        my %restore_ci;
+        for my $key (keys %$ci) {
+            my ($sid) = ($ci->{$key} =~ /^([A-Za-z0-9][A-Za-z0-9_.\-]*):/);
+            $restore_ci{$key} = "$sid:cloudinit" if $sid;
+        }
+        $class->_guard_source($j, $meta, step => 'rollback/cloudinit');
+        $class->_config_edit($node, $from, %restore_ci);
+        $class->_refresh_source_digest($j, $meta, 'recriação do cloud-init');
     }
 
     return @on_new
@@ -791,6 +1088,7 @@ sub _undo_reserve {
     my $path = "/nodes/$meta->{node}/qemu/$meta->{to}";
 
     my ($conf) = $class->_pvesh_opt(get => "$path/config");
+    return "VM nova $meta->{to} já não existe" unless $conf;
     if ($conf) {
         my ($storages) = $class->_pvesh_opt(get => '/storage');
         my %storage_types = map { ($_->{storage} // '') => ($_->{type} // '') } @{$storages || []};
@@ -801,6 +1099,7 @@ sub _undo_reserve {
                 . " (risco de perda de dados) — resolva manualmente e rode --rollback de novo.\n";
         }
     }
+    $class->_guard_source($j, $meta, step => 'rollback/reserve');
     MMPve::Core::Runner->pvesh(delete => $path, 'destroy-unreferenced-disks' => 0);
     return "VM nova $meta->{to} apagada (sem discos; sem purge nem destroy-unreferenced-disks)";
 }
@@ -812,7 +1111,7 @@ my %UNDO_IMPL = (
     firewall   => \&_undo_firewall,
     refs       => \&_undo_refs,
     verify     => \&_undo_verify,
-    destroy    => \&_undo_destroy,
+    destroy    => sub { die "rollback recusado: o passo destroy já foi concluído\n" },
 );
 
 sub rollback {
@@ -823,16 +1122,33 @@ sub rollback {
     my %meta = %{$j->meta};
     die "journal sem from/to.\n" unless $meta{from} && $meta{to};
 
+    my $destroy_state = $j->step_info('destroy')->{status} // '';
+    if ($destroy_state eq 'done') {
+        die "rollback recusado: o passo destroy já foi concluído; o run está finalizado\n";
+    }
+    if ($destroy_state =~ /^(?:running|failed)$/) {
+        my ($destroy_status, $destroy_conf, $exists) = $class->_source_snapshot(\%meta);
+        die "rollback recusado: destroy já completou; o run precisa ser retomado\n"
+            unless $exists;
+    }
+
     my @done = $j->done_steps;
     # reserve/move_disks são tratados à parte (sempre, se 'reserve' chegou a
     # 'done'): o processo pode ter morrido no meio do move_disks sem o
     # journal marcar 'done' nem 'failed' nesse passo, e nesse caso confiar
     # só na lista de passos 'done' do journal perderia disco (RODADA2 #5).
-    my $reserve_done = (grep { $_ eq 'reserve' } @done) ? 1 : 0;
-    my @other_undo = reverse grep { $_ ne 'reserve' && $_ ne 'move_disks' } @done;
+    my @touched = grep {
+        my $status = $j->step_info($_)->{status} // '';
+        $status =~ /^(?:done|running|failed)$/ && !$j->step_info($_)->{undone}
+    } $j->steps;
+    my $reserve_touched = grep { $_ eq 'reserve' } @touched;
+    my $move_touched = grep { $_ eq 'move_disks' } @touched;
+    my @other_undo = reverse grep {
+        $_ ne 'reserve' && $_ ne 'move_disks' && $_ ne 'destroy'
+    } @touched;
 
     die "nenhum passo concluído para desfazer (estado: " . $j->state . ").\n"
-        unless $reserve_done || @other_undo;
+        unless $reserve_touched || $move_touched || @other_undo;
 
     my @undone;
     my $run_undo = sub {
@@ -850,16 +1166,20 @@ sub rollback {
         return;
     };
 
-    for my $s (@other_undo) {
-        $run_undo->($s, sub { $UNDO_IMPL{$s}->($class, $j, \%meta) });
-    }
-    if ($reserve_done) {
-        $run_undo->('move_disks', sub { $class->_undo_move_disks($j, \%meta) });
-        $run_undo->('reserve',    sub { $class->_undo_reserve($j, \%meta) });
-    }
+    return $class->_with_run_marker($j, sub {
+        for my $s (@other_undo) {
+            $run_undo->($s, sub { $UNDO_IMPL{$s}->($class, $j, \%meta) });
+        }
+        if ($move_touched) {
+            $run_undo->('move_disks', sub { $class->_undo_move_disks($j, \%meta) });
+        }
+        if ($reserve_touched) {
+            $run_undo->('reserve',    sub { $class->_undo_reserve($j, \%meta) });
+        }
 
-    $j->finish({ rolled_back => 1, from => $meta{from}, to => $meta{to} });
-    return { ok => 1, undone => \@undone };
+        $j->finish({ rolled_back => 1, from => $meta{from}, to => $meta{to} });
+        return { ok => 1, undone => \@undone };
+    });
 }
 
 # ------------------------------------------------------------- módulo/CLI
@@ -912,6 +1232,7 @@ opções:
   --force-scheme            continua mesmo com ID novo fora do vmid_scheme
   --handle-ha              remove e recria o recurso de HA com o novo ID
   --handle-replication     remove e recria replicação (sync completo) com o novo ID
+  MM_RENUMBER_FAIL_AFTER=passo  (somente testes/lab; interrompe após o passo)
   --json                   saída em JSON
 EOF
         return 0;

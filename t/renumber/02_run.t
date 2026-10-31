@@ -209,19 +209,20 @@ subtest 'refs: ACL token continua token, não vira group — R2.6 #11' => sub {
 subtest 'refs: HA e replicação removem o antigo e recriam com ID novo — R2.6 #10' => sub {
     MockPve->reset;
     system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
-    $MockPve::S{ha} = [{ sid => 'vmid:100', state => 'started' }];
-    $MockPve::S{repl} = [{ id => 'rep1', guest => 100, target => 'n2', type => 'local' }];
+    $MockPve::S{ha} = [{ sid => 'vm:100', state => 'started' }];
+    $MockPve::S{repl} = [{ id => '100-0', guest => 100, jobnum => 0,
+                           target => 'n2', type => 'local' }];
     my $res = MMPve::Module::Renumber->run(from => 100, to => 1100,
         handle_ha => 1, handle_replication => 1);
     ok($res->{ok}, 'run ok com HA/replicação') or diag explain $res;
 
-    my ($ha_del) = MockPve::ops('delete', '/cluster/ha/resources/vmid:100');
-    ok($ha_del, 'HA antigo (vmid:100) removido');
+    my ($ha_del) = MockPve::ops('delete', '/cluster/ha/resources/vm:100');
+    ok($ha_del, 'HA antigo (vm:100) removido');
     my ($ha_new) = MockPve::ops('create', '/cluster/ha/resources');
-    is($ha_new->{args}{sid}, 'vmid:1100', 'HA novo criado com o ID novo');
+    is($ha_new->{args}{sid}, 'vm:1100', 'HA novo criado com o ID novo');
 
-    my ($rep_del) = MockPve::ops('delete', '/cluster/replication/rep1');
-    ok($rep_del, 'job de replicação antigo (rep1) removido');
+    my ($rep_del) = MockPve::ops('delete', '/cluster/replication/100-0');
+    ok($rep_del, 'job de replicação antigo (100-0) removido');
     my ($rep_new) = MockPve::ops('create', '/cluster/replication');
     is($rep_new->{args}{id}, '1100-0', 'job novo usa a convenção <novo-vmid>-n (pvesr(1))');
     is($rep_new->{args}{target}, 'n2', 'mesmo destino');

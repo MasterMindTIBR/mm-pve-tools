@@ -20,6 +20,7 @@ sub reset {
         orphan      => 0,                        # volumes vm-<to>-* no storage
         vm_status   => { status => 'stopped' },   # GET .../status/current
         vm_config   => {
+            digest    => 'mock-0',
             name     => 'app01',
             memory   => 2048,
             cores    => 2,
@@ -39,6 +40,7 @@ sub reset {
             protection => 1,
         },
         new_vm_config => {},                     # GET/SET .../1100/config (VM nova)
+        config_revision => 0,
         snapshots   => [{ name => 'current' }],
         pending      => [],                       # [{key,value,pending?,delete?}, ...]
         ha           => [],
@@ -61,6 +63,7 @@ sub reset {
         new_created   => 0,
         task_status   => {},                     # upid => {status,exitstatus} ou {sequence=>[...],idx,exitstatus}
         api_fail      => {},                      # path => mensagem de erro (simula falha de API em qualquer GET/create/set/delete)
+        external_digest_on_status => 0,           # altera digest após N GETs de status
     );
     @OPS = ();
 }
@@ -83,6 +86,11 @@ sub _parse_args {
 sub _record {
     my ($op, $path, %args) = @_;
     push @OPS, { op => $op, path => $path, args => {%args} };
+}
+
+sub _touch_old_config {
+    $S{config_revision}++;
+    $S{vm_config}{digest} = 'mock-' . $S{config_revision};
 }
 
 # devolve o status "de agora" de uma tarefa mockada; se tiver 'sequence',
@@ -124,12 +132,19 @@ sub handler {
         if ($path =~ m{^/nodes/n1/storage/([^/]+)/content$}) {
             return _ok($S{orphan} ? [{ volid => "$1:vm-$S{to}-disk-9" }] : []);
         }
-        if ($path eq '/nodes/n1/qemu/100/status/current') { return _ok($S{vm_status}) }
-        if ($path eq '/nodes/n1/qemu/100/config')   { return _ok($S{vm_config}) }
-        if ($path eq '/nodes/n1/qemu/1100/config')  { return _ok($S{new_vm_config}) }
+        if ($path eq '/nodes/n1/qemu/100/status/current') {
+            return _err("VM inexistente\n") if $S{old_destroyed};
+            if ($S{external_digest_on_status} && --$S{external_digest_on_status} == 0) {
+                $S{vm_config}{digest} = 'mock-external-change';
+            }
+            return _ok($S{vm_status});
+        }
+        if ($path eq '/nodes/n1/qemu/100/config')   { return _err("VM inexistente\n") if $S{old_destroyed}; return _ok($S{vm_config}) }
+        if ($path eq '/nodes/n1/qemu/1100/config')  { return _err("VM inexistente\n") unless $S{new_created}; return _ok($S{new_vm_config}) }
         if ($path eq '/nodes/n1/qemu/100/snapshot') { return _ok($S{snapshots}) }
         if ($path eq '/nodes/n1/qemu/100/pending')  { return _ok($S{pending}) }
         return _ok($S{ha})  if $path eq '/cluster/ha/resources';
+        return _ok($S{ha_rules} || []) if $path eq '/cluster/ha/rules';
         return _ok($S{repl}) if $path eq '/cluster/replication';
         return _ok($S{pools}) if $path eq '/pools';
         return _ok({ members => $S{pool_members} }) if $path eq '/pools/infra';
@@ -152,6 +167,8 @@ sub handler {
         if ($path eq '/nodes/n1/qemu') {
             return _err("create falhou (injetado)\n") if $S{fail_at} eq 'reserve';
             $S{new_created} = 1;
+            $S{new_vm_config}{name} = $args{name};
+            $S{new_vm_config}{description} = $args{description};
             return _ok(undef);
         }
         if ($path eq '/nodes/n1/qemu/100/move_disk') {
@@ -163,6 +180,7 @@ sub handler {
             my $val = $S{vm_config}{ $args{disk} };
             delete $S{vm_config}{ $args{disk} };
             $S{new_vm_config}{ $args{'target-disk'} } = $val if defined $val;
+            _touch_old_config();
             $S{moves_done}++;
             my $upid = "UPID:n1:QN:move:$args{disk}:$S{vmid}:$args{'target-vmid'}:";
             $S{task_status}{$upid} = {
@@ -192,8 +210,9 @@ sub handler {
             return _ok(undef);
         }
         if ($path eq '/nodes/n1/qemu/100/config') {
-            if (defined $args{delete}) { delete $S{vm_config}{ $args{delete} }; return _ok(undef) }
+            if (defined $args{delete}) { delete $S{vm_config}{ $args{delete} }; _touch_old_config(); return _ok(undef) }
             $S{vm_config}{$_} = $args{$_} for keys %args;
+            _touch_old_config();
             return _ok(undef);
         }
         if ($path eq '/cluster/backup/job-1' && $S{fail_at} eq 'refs') {
