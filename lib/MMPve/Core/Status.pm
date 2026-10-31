@@ -61,6 +61,7 @@ sub collect {
         $mods{ $m->name } = { check => eval { $m->check($cfg) } || { ok => 0, error => $@ } };
     }
     $s{modules} = \%mods;
+    $s{branding} = $mods{branding}{check} if $mods{branding};
 
     return \%s;
 }

@@ -3,12 +3,19 @@
  * (a) MM.Branding.init(): lê /pve2/js/mm-branding.json (gravado pelo apply)
  *     e sobrescreve logo/favicon/título/texto do topo/texto de login.
  *     "Powered by Proxmox VE" permanece visível (regra do plano).
- * (b) Aba Branding (MM.registerTab): upload base64 via API, textos,
+ * (b) Aba Branding (MM.registerTab): upload PNG base64 via JSON, textos,
  *     pré-visualização, Salvar/Restaurar padrão.
  */
 
 Ext.define('MM.Branding', {
     singleton: true,
+
+    RAW_ASSET_MAX_BYTES: 256 * 1024,
+    REQUEST_MAX_BYTES: (512 * 1024) - (16 * 1024),
+
+    requestBytes: function (payload) {
+	return new TextEncoder().encode(JSON.stringify(payload)).length;
+    },
 
     cfg: null,
 
@@ -141,13 +148,17 @@ Ext.define('MM.panel.Branding', {
 	let me = this;
 
 	let readFile = (file, cb) => {
+	    if (!file || file.size > MM.Branding.RAW_ASSET_MAX_BYTES) {
+		Ext.Msg.alert(gettext('Error'), gettext('O PNG excede 256 KiB.'));
+		return;
+	    }
 	    let fr = new FileReader();
 	    fr.onload = () => cb(String(fr.result).split(',').pop()); // base64 puro
 	    fr.readAsDataURL(file);
 	};
 
 	let logoField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Logo') + ' (PNG, 200 KB)',
+	    fieldLabel: gettext('Logo') + ' (PNG, 256 KiB)',
 	    name: 'logo',
 	    accept: '.png',
 	    listeners: {
@@ -159,7 +170,7 @@ Ext.define('MM.panel.Branding', {
 	    },
 	});
 	let faviconField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Favicon') + ' (PNG, 200 KB)',
+	    fieldLabel: gettext('Favicon') + ' (PNG, 256 KiB)',
 	    name: 'favicon',
 	    accept: '.png',
 	    listeners: {
@@ -225,11 +236,19 @@ Ext.define('MM.panel.Branding', {
 		data.favicon_b64 = me.pendingFavicon;
 		data.favicon_name = me.pendingFaviconName;
 	    }
+	    let requestBytes = MM.Branding.requestBytes(data);
+	    if (requestBytes > MM.Branding.REQUEST_MAX_BYTES) {
+		Ext.Msg.alert(gettext('Error'), gettext('A requisição JSON excede o limite seguro do pveproxy.'));
+		return;
+	    }
 	    MM.Api.request({
 		method: 'PUT',
 		url: '/nodes/localhost/mm-tools/branding/upload',
-		params: data,
-		success: () => cb(),
+		jsonData: data,
+		success: (res) => {
+		    me.digest = res?.data?.digest || me.digest;
+		    cb();
+		},
 		failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 	    });
 	};
@@ -271,16 +290,7 @@ Ext.define('MM.panel.Branding', {
 				success: () => {
 				    me.pendingLogo = me.pendingFavicon = null;
 				    me.reload();
-				    // aplica já neste node (imagens copiadas + json)
-				    MM.Api.request({
-					method: 'POST',
-					url: '/nodes/localhost/mm-tools/apply',
-					success: (res) => {
-					    if (res?.data) {
-						Ext.create('Proxmox.window.TaskViewer', { upid: res.data, autoShow: true });
-					    }
-					},
-				    });
+				    MM.applyAll();
 				},
 				failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 			    });
@@ -299,6 +309,7 @@ Ext.define('MM.panel.Branding', {
 				me.pendingLogo = me.pendingFavicon = null;
 				MM.Branding.clear();
 				me.reload();
+				MM.applyAll();
 			    },
 			    failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 			});

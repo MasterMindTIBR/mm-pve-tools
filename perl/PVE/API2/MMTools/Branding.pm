@@ -1,9 +1,7 @@
 package PVE::API2::MMTools::Branding;
 
 # Endpoints do módulo branding sob /nodes/{node}/mm-tools/branding/...
-#   GET  branding              config atual + estado aplicado (check)
-#   PUT  branding/set          campos de texto (digest p/ CAS; opcional no primeiro write)
-#   PUT  branding/upload       logo_b64/favicon_b64 (máx 200 KB; SVG sanitizado)
+# Os writes de assets usam JSON e o mesmo limite calculado pelo cliente.
 
 use strict;
 use warnings;
@@ -18,145 +16,114 @@ use MMPve::Module::Branding;
 
 use base qw(PVE::RESTHandler);
 
-my $b64_field = sub {
+my @REQUEST_FIELDS = qw(digest logo_b64 logo_name favicon_b64 favicon_name);
+
+sub _request_payload {
+    my ($param) = @_;
+    my %payload;
+    $payload{$_} = $param->{$_} for grep { defined $param->{$_} } @REQUEST_FIELDS;
+    return \%payload;
+}
+
+sub _check_request_size {
+    my ($param) = @_;
+    my $payload = _request_payload($param);
+    my $bytes = MMPve::Module::Branding->encoded_request_bytes($payload);
+    return if $bytes <= MMPve::Module::Branding->request_limit;
+    raise_param_exc({ request => sprintf(
+        'requisição JSON excede %d bytes (recebidos %d; limite do pveproxy %d com margem %d)',
+        MMPve::Module::Branding->request_limit, $bytes,
+        MMPve::Module::Branding->proxy_request_limit,
+        MMPve::Module::Branding->request_margin,
+    ) });
+}
+
+sub _asset_from_param {
     my ($param, $field, $namefield, $kind) = @_;
     return unless defined $param->{$field};
-    my $name = $param->{$namefield}
-        // ($kind eq 'logo' ? 'logo.png' : 'favicon.png');
+    my $name = $param->{$namefield} // ($kind . '.png');
     my $data = decode_base64($param->{$field});
-    my $st = eval {
-        MMPve::Module::Branding->store_asset(kind => $kind, filename => $name, data => \$data);
+    my $asset = eval {
+        MMPve::Module::Branding->inspect_asset(kind => $kind, filename => $name, data => $data);
     };
     if ($@) {
-        chomp(my $e = $@);
-        raise_param_exc({ $field => $e });    # 400 com mensagem clara
+        chomp(my $error = $@);
+        raise_param_exc({ $field => $error });
     }
-    return $st->{filename};
-};
-
+    return $asset;
+}
 
 __PACKAGE__->register_method({
-    name => 'index',
-    path => '',
-    method => 'GET',
-    proxyto => 'node',
+    name => 'index', path => '', method => 'GET', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Branding: config atual e estado aplicado neste node.',
-    protected => 0,
-    parameters => {
-        additionalProperties => 0,
-        properties => {
-            node => get_standard_option('pve-node'),
-        },
-    },
+    description => 'Branding: config atual e estado aplicado neste node.', protected => 0,
+    parameters => { additionalProperties => 0, properties => { node => get_standard_option('pve-node') } },
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
         my ($cfg, $digest) = MMPve::Core::Config->load;
-        my $state = MMPve::Module::Branding->check($cfg);
         return {
-            branding => $cfg->{branding},
-            digest => $digest // '',
-            state => $state,
+            branding => $cfg->{branding}, digest => $digest // '',
+            state => MMPve::Module::Branding->check($cfg),
         };
     },
 });
 
 __PACKAGE__->register_method({
-    name => 'set',
-    path => 'set',
-    method => 'PUT',
-    proxyto => 'node',
+    name => 'set', path => 'set', method => 'PUT', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Salva os textos do branding (título, topo, login). Imagens vão pelo upload.',
-    protected => 1,
+    description => 'Salva a seção de textos do branding; clear restaura o padrão.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
-            digest => {
-                type => 'string',
-                optional => 1,
-                description => 'sha256 do config atual (CAS).',
-                pattern => '^sha256:[0-9a-f]{64}$',
-            },
-            title => {
-                type => 'string', maxLength => 100, optional => 1,
-                description => 'Título da aba (o nome do node é mantido).',
-            },
-            header_text => {
-                type => 'string', maxLength => 60, optional => 1,
-                description => 'Texto do topo no lugar de "Virtual Environment".',
-            },
-            login_text => {
-                type => 'string', maxLength => 200, optional => 1,
-                description => 'Texto extra na tela de login.',
-            },
-            clear => {
-                type => 'boolean', optional => 1, default => 0,
-                description => 'Zera toda a seção branding (restaurar padrão).',
-            },
+            digest => { type => 'string', optional => 1, pattern => '^sha256:[0-9a-f]{64}$' },
+            title => { type => 'string', maxLength => 100, optional => 1 },
+            header_text => { type => 'string', maxLength => 60, optional => 1 },
+            login_text => { type => 'string', maxLength => 200, optional => 1 },
+            clear => { type => 'boolean', optional => 1, default => 0 },
         },
     },
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
         my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
-        if (!$absent && defined $param->{digest} && $param->{digest} ne ($digest // '')) {
-            die PVE::Exception->new("DIGEST_MISMATCH: config mudou desde a leitura (atual ".($digest//'')."). Releia e salve de novo.\n");
+        my $clear = $param->{clear} ? 1 : 0;
+        my $branding = $clear
+            ? { title => '', header_text => '', login_text => '', logo => '', favicon => '', assets_hash => '' }
+            : { %{ $cfg->{branding} || {} } };
+        if (!$clear) {
+            $branding->{$_} = $param->{$_} for grep { defined $param->{$_} } qw(title header_text login_text);
         }
-        if ($param->{clear}) {
-            $cfg->{branding} = {
-                title => '', header_text => '', login_text => '',
-                logo => '', favicon => '', assets_hash => '',
-            };
-        } else {
-            for my $f (qw(title header_text login_text)) {
-                $cfg->{branding}{$f} = $param->{$f} if defined $param->{$f};
-            }
-        }
-        $cfg->{branding}{assets_hash} = MMPve::Module::Branding->assets_hash;
-        my %opt;
-        $opt{digest} = $digest if defined $digest && !$absent;
-        my ($saved) = MMPve::Core::Config->save($cfg, %opt);
-        return { revision => $saved->{revision}, branding => $saved->{branding} };
+        my %opt = (lock_domain => 'mm-branding');
+        $opt{digest} = $param->{digest} if defined $param->{digest};
+        $opt{before_write} = sub {
+            my ($new_cfg) = @_;
+            $new_cfg->{branding}{assets_hash} = $clear
+                ? '' : MMPve::Module::Branding->assets_hash($new_cfg);
+        };
+        $opt{after_write} = sub { MMPve::Module::Branding->_gc_assets_locked($_[0]) };
+        my ($saved, $new_digest) = MMPve::Core::Config->save_section('branding', $branding, %opt);
+        return {
+            revision => $saved->{revision}, digest => $new_digest,
+            branding => $saved->{branding}, apply_queued => $clear,
+        };
     },
 });
 
 __PACKAGE__->register_method({
-    name => 'upload',
-    path => 'upload',
-    proxyto => 'node',
-    method => 'PUT',
+    name => 'upload', path => 'upload', method => 'PUT', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Envia logo/favicon PNG em base64 (máx. 200 KB; assinatura PNG obrigatória).',
-    protected => 1,
+    description => 'Envia PNGs em JSON base64; limite bruto 256 KiB por asset.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
-            digest => {
-                type => 'string',
-                optional => 1,
-                description => 'sha256 do config atual (CAS).',
-                pattern => '^sha256:[0-9a-f]{64}$',
-            },
-            logo_b64 => {
-                type => 'string', optional => 1,
-                description => 'Logo PNG em base64.',
-            },
-            logo_name => {
-                type => 'string', optional => 1,
-                description => 'Nome .png do logo.',
-            },
-            favicon_b64 => {
-                type => 'string', optional => 1,
-                description => 'Favicon PNG em base64.',
-            },
-            favicon_name => {
-                type => 'string', optional => 1,
-                description => 'Nome .png do favicon.',
-            },
+            digest => { type => 'string', optional => 1, pattern => '^sha256:[0-9a-f]{64}$' },
+            logo_b64 => { type => 'string', optional => 1 },
+            logo_name => { type => 'string', optional => 1 },
+            favicon_b64 => { type => 'string', optional => 1 },
+            favicon_name => { type => 'string', optional => 1 },
         },
     },
     returns => { type => 'object' },
@@ -164,25 +131,26 @@ __PACKAGE__->register_method({
         my ($param) = @_;
         raise_param_exc({ logo_b64 => 'envie logo_b64 ou favicon_b64' })
             unless defined $param->{logo_b64} || defined $param->{favicon_b64};
+        _check_request_size($param);
 
+        my $logo = _asset_from_param($param, 'logo_b64', 'logo_name', 'logo');
+        my $favicon = _asset_from_param($param, 'favicon_b64', 'favicon_name', 'favicon');
         my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
-        if (!$absent && defined $param->{digest} && $param->{digest} ne ($digest // '')) {
-            die PVE::Exception->new("DIGEST_MISMATCH: config mudou desde a leitura (atual ".($digest//'')."). Releia e salve de novo.\n");
-        }
-
-        my $logo = $b64_field->($param, 'logo_b64', 'logo_name', 'logo');
-        my $fav  = $b64_field->($param, 'favicon_b64', 'favicon_name', 'favicon');
-        $cfg->{branding}{logo} = $logo if defined $logo;
-        $cfg->{branding}{favicon} = $fav if defined $fav;
-        $cfg->{branding}{assets_hash} = MMPve::Module::Branding->assets_hash;
-
-        my %opt;
-        $opt{digest} = $digest if defined $digest && !$absent;
-        my ($saved) = MMPve::Core::Config->save($cfg, %opt);
+        my $branding = { %{ $cfg->{branding} || {} } };
+        $branding->{logo} = $logo->{filename} if $logo;
+        $branding->{favicon} = $favicon->{filename} if $favicon;
+        my %opt = (lock_domain => 'mm-branding');
+        $opt{digest} = $param->{digest} if defined $param->{digest};
+        $opt{before_write} = sub {
+            my ($new_cfg) = @_;
+            MMPve::Module::Branding->_stage_asset_locked($_) for grep { $_ } ($logo, $favicon);
+            $new_cfg->{branding}{assets_hash} = MMPve::Module::Branding->assets_hash($new_cfg);
+        };
+        $opt{after_write} = sub { MMPve::Module::Branding->_gc_assets_locked($_[0]) };
+        my ($saved, $new_digest) = MMPve::Core::Config->save_section('branding', $branding, %opt);
         return {
-            revision => $saved->{revision},
-            logo => $saved->{branding}{logo},
-            favicon => $saved->{branding}{favicon},
+            revision => $saved->{revision}, digest => $new_digest,
+            logo => $saved->{branding}{logo}, favicon => $saved->{branding}{favicon},
             assets_hash => $saved->{branding}{assets_hash},
         };
     },

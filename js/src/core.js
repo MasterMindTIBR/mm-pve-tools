@@ -38,6 +38,11 @@ Ext.define('MM.Api', {
 	    base.method = opts.method || 'PUT';
 	    base.data = opts.data;
 	}
+	if (opts.jsonData) {
+	    base.method = opts.method || 'PUT';
+	    base.jsonData = opts.jsonData;
+	    base.headers = Ext.apply({ 'Content-Type': 'application/json' }, opts.headers || {});
+	}
 	if (opts.success) {
 	    base.success = function (response) { opts.success(response.result, response); };
 	}
@@ -186,6 +191,7 @@ MM.fillDiag = function (grid) {
 			state: ap.state,
 			applied: ap.applied_revision,
 			cfgrev: ap.config_revision,
+			branding_serves: !!data.branding?.serves_asset,
 			ntfs3g_ok: !!data.ntfs3g?.ok,
 			ntfs3g: data.ntfs3g?.ok === undefined
 			    ? gettext('skipped')
@@ -211,7 +217,7 @@ Ext.define('MM.panel.Diag', {
 	    store: {
 		fields: [
 		    'node', 'pkg', 'pve', 'patch_tpl', 'patch_pm',
-		    'state', 'applied', 'cfgrev', 'ntfs3g', 'ntfs3g_ok',
+		    'state', 'applied', 'cfgrev', 'branding_serves', 'ntfs3g', 'ntfs3g_ok',
 		],
 	    },
 	    columns: [
@@ -230,6 +236,10 @@ Ext.define('MM.panel.Diag', {
 		    text: gettext('Revision'), dataIndex: 'state', width: 140,
 		    renderer: (v, md, rec) =>
 			`${MM.Utils.html(rec.get('applied') ?? '-')}/${MM.Utils.html(rec.get('cfgrev') ?? '-')} (${MM.Utils.html(v)})`,
+		},
+		{
+		    text: gettext('Branding'), dataIndex: 'branding_serves', width: 100,
+		    renderer: (v) => MM.Utils.checkIcon(v, v ? gettext('serving') : gettext('not serving')),
 		},
 		{
 		    text: 'ntfs3g', dataIndex: 'ntfs3g', flex: 1,

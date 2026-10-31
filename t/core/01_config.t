@@ -36,7 +36,7 @@ subtest 'validacao aceita bom' => sub {
             session_max_hours     => 72,
             max_sessions          => 10,
         },
-        branding => { title => 'Cliente — Virtualização', logo => 'logo.svg' },
+        branding => { title => 'Cliente — Virtualização', logo => '' },
     });
     is(scalar @e, 0, 'sem erros') or diag explain \@e;
 };
@@ -47,7 +47,7 @@ subtest 'validacao rejeita ruim' => sub {
         [ { modules => { renumber => 'sim' } },                qr/booleano/ ],
         [ { modules => { inexistente => 1 } },                 qr/desconhecido/ ],
         [ { chave_nova => 1 },                                 qr/desconhecida/ ],
-        [ { branding => { logo => 'logo.gif' } },             qr/svg ou \.png/ ],
+        [ { branding => { logo => 'logo.gif' } },             qr/só \.png|asset precisa/ ],
         [ { vmid_scheme => [ { label => 'A', from => 1000, to => 1999 },
                              { label => 'B', from => 1500, to => 2500 } ] }, qr/sobrepostas/ ],
         [ { vmid_scheme => [ { label => 'A', from => 2000, to => 1000 } ] }, qr/from/ ],

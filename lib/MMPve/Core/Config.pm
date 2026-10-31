@@ -8,7 +8,6 @@ use strict;
 use warnings;
 use JSON::PP qw(encode_json decode_json);
 use Digest::SHA ();
-use File::Basename qw(basename);
 use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir flock_ex unlock log_line);
 
 our $VERSION = '@MM_PVE_VERSION@';
@@ -16,7 +15,10 @@ our $VERSION = '@MM_PVE_VERSION@';
 use constant {
     CONFIG_DIR_DEFAULT => '/etc/pve/mm-tools',
     MAX_BYTES          => 1024 * 1024,         # limite do pmxcfs por arquivo
-    MAX_BRANDING_BYTES => 200 * 1024,
+    PVE_PROXY_MAX_POST_BYTES       => 512 * 1024,
+    BRANDING_REQUEST_MARGIN_BYTES => 16 * 1024,
+    MAX_BRANDING_BYTES             => 256 * 1024,
+    MAX_BRANDING_REQUEST_BYTES     => (512 * 1024) - (16 * 1024),
 };
 
 sub config_dir {
@@ -234,8 +236,8 @@ sub validate_structure {
                 next unless defined $v && length $v;
                 _err(\@e, "branding.$f: nome de arquivo inválido (use [A-Za-z0-9._-])")
                     unless $v =~ /^[A-Za-z0-9._-]+$/ && $v !~ /^\./;
-                _err(\@e, "branding.$f: só .svg ou .png")
-                    unless $v =~ /\.(svg|png)$/;
+                _err(\@e, "branding.$f: só .png")
+                    unless $v =~ /^[0-9a-f]{64}\.png$/;
             }
             if (defined $b->{assets_hash} && length $b->{assets_hash}) {
                 _err(\@e, 'branding.assets_hash precisa ser sha256:<64 hex>')
@@ -319,19 +321,24 @@ sub _write_locked {
     return ($data, $class->digest_of($json . "\n"));
 }
 
-sub _with_write_lock {
-    my ($class, $code) = @_;
+sub _with_domain_lock {
+    my ($class, $domain, $code) = @_;
+    die "domínio de lock inválido\n"
+        unless defined $domain && $domain =~ /^[A-Za-z0-9_-]+$/;
     ensure_dir($class->config_dir);
 
     # flock é somente fallback de testes; em um PVE a trava do pmxcfs cobre
     # todos os nodes do cluster.
     if (!$ENV{MM_PVE_DISABLE_CFS_LOCK} && eval { require PVE::Cluster; 1 }) {
-        my $out = PVE::Cluster::cfs_lock_domain('mm-tools', 10, $code);
+        my $out = PVE::Cluster::cfs_lock_domain($domain, 10, $code);
         die $@ if $@;
         return $out;
     }
 
-    my $lock = flock_ex($class->lock_path);
+    my $lock_path = $domain eq 'mm-tools'
+        ? $class->lock_path
+        : $class->config_dir . '/.' . $domain . '.lock';
+    my $lock = flock_ex($lock_path);
     my (@out, $out, $want) = ((), undef, wantarray);
     my $ok = eval {
         if ($want) { @out = $code->() } else { $out = $code->() }
@@ -341,6 +348,17 @@ sub _with_write_lock {
     unlock($lock);
     die $err unless $ok;
     return $want ? @out : $out;
+}
+
+sub with_domain_lock {
+    my ($class, $domain, $code) = @_;
+    die 'with_domain_lock precisa de callback' unless ref $code eq 'CODE';
+    return $class->_with_domain_lock($domain, $code);
+}
+
+sub _with_write_lock {
+    my ($class, $code) = @_;
+    return $class->_with_domain_lock('mm-tools', $code);
 }
 
 sub save {
@@ -358,7 +376,10 @@ sub save_section {
     my ($class, $section, $value, %opt) = @_;
     my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding);
     die "seção inválida '$section'\n" unless $allowed{$section};
-    my $saved = $class->_with_write_lock(sub {
+    my $lock_domain = delete $opt{lock_domain} // 'mm-tools';
+    my $before_write = delete $opt{before_write};
+    my $after_write = delete $opt{after_write};
+    my $saved = $class->_with_domain_lock($lock_domain, sub {
         my ($raw, $current_digest, $err) = $class->load_raw;
         my $cfg;
         if (defined $err) {
@@ -368,7 +389,10 @@ sub save_section {
             die "config.json inválido durante a gravação: $@\n" if $@;
         }
         $cfg->{$section} = $value;
-        return [ $class->_write_locked($cfg, %opt) ];
+        $before_write->($cfg) if $before_write;
+        my @result = $class->_write_locked($cfg, %opt);
+        $after_write->($cfg, @result) if $after_write;
+        return [ @result ];
     });
     return wantarray ? @{$saved} : $saved->[0];
 }

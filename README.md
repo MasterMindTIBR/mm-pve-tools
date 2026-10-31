@@ -46,8 +46,8 @@ fixture é validado por `t/contract/01_fixtures.t` (Perl, lado node) e por
 `t/gateway/test_gw_restore.py::TestContractFixtures` (Python, lado
 gateway): renomear um campo de um lado sem atualizar schema/fixture quebra
 os dois testes. Sessões de restore aceitam no máximo 168 horas. Branding
-aceita somente PNG de até 200 KiB, validado pela assinatura do arquivo; os
-assets instalados usam os nomes canônicos `logo.png` e `favicon.png`.
+aceita somente PNG de até 256 KiB, validado pela assinatura e pelo IHDR; os
+assets instalados usam nomes content-addressed `<sha256>.png`.
 
 
 ## Desenvolvimento
