@@ -44,7 +44,7 @@ comandos do núcleo:
   config set --file <arquivo>  substitui o config (--stdin lê da entrada)
                                [--digest <sha256:...>] exige revisão concorrente
   config set-module <nome> --enable|--disable
-  apply [--no-patches]         aplica patches + módulos neste node
+  apply [--no-patches] [--no-reload] aplica patches + módulos neste node
   status                       diagnóstico deste node
   patch check|apply|revert     patch do pve-manager
   help                         esta ajuda
@@ -132,10 +132,15 @@ sub cmd_config_set_module {
 
 sub cmd_apply {
     my @argv = @_;
-    my $nopatch;
+    my ($nopatch, $noreload);
     local @ARGV = @argv;
-    GetOptions('no-patches' => \$nopatch) or return 2;
-    my $res = eval { MMPve::Core::Apply->apply_all($nopatch ? (patches => 0) : ()) };
+    GetOptions(
+        'no-patches' => \$nopatch,
+        'no-reload'  => \$noreload,
+    ) or return 2;
+    my %opts = $nopatch ? (patches => 0) : ();
+    $opts{no_reload} = 1 if $noreload;
+    my $res = eval { MMPve::Core::Apply->apply_all(%opts) };
     fail $@, 'mm-pve status' if $@;
     if ($JSON) {
         out_json($res);

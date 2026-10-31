@@ -76,41 +76,12 @@ Ext.define('MM.Branding', {
 	    // janelas/views criadas depois
 	    Ext.on('resize', setHeader);
 	}
+	Ext.ComponentQuery.query('#mm-login-text').forEach((c) => {
+	    c.setHtml(Ext.String.htmlEncode(cfg.login_text || ''));
+	    c.setHidden(!cfg.login_text);
+	});
+	Ext.ComponentQuery.query('#mm-login-powered').forEach((c) => c.setHidden(!cfg.login_text));
 
-	// Tela de login: mostra login_text abaixo do logo, sem esconder o
-	// branding do Proxmox.
-	if (cfg.login_text && Ext.ClassManager.get('PVE.window.LoginWindow')) {
-	    Ext.define('MM.override.LoginWindow', {
-		override: 'PVE.window.LoginWindow',
-		initComponent: function () {
-		    let me2 = this;
-		    me2.callParent(arguments);
-		    let items = me2.items;
-		    if (items && items.length && cfg.logo_url) {
-			// substitui o logo do login pelo da MasterMind
-			Ext.each(items, (it) => {
-			    if (it.xtype === 'proxmoxLogoSvg' || it.xtype === 'proxmoxlogo') {
-				it.src = cfg.logo_url.replace(/^\/pve2/, '');
-			    }
-			});
-		    }
-		    let panel = items?.[0];
-		    if (panel) {
-			panel.items = (panel.items || []).concat([{
-			    xtype: 'box',
-			    html: Ext.String.htmlEncode(cfg.login_text),
-			    padding: '5 0',
-			    style: { 'text-align': 'center', color: '#555' },
-			}, {
-			    xtype: 'box',
-			    html: 'Powered by Proxmox VE',
-			    padding: '2 0 5 0',
-			    style: { 'text-align': 'center', 'font-size': '11px', color: '#888' },
-			}]);
-		    }
-		},
-	    });
-	}
     },
 
     /* Sem branding.json (revert): devolve favicon/título ao padrão. */
@@ -118,9 +89,41 @@ Ext.define('MM.Branding', {
 	let me = this;
 	if (!me.cfg) { return; }
 	me.cfg = null;
+	Ext.ComponentQuery.query('#mm-login-text').forEach((c) => c.setHidden(true));
+	Ext.ComponentQuery.query('#mm-login-powered').forEach((c) => c.setHidden(true));
 	document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]').forEach((l) => {
 	    l.href = '/pve2/images/logo-128.png';
 	});
+    },
+});
+
+/* O LoginWindow é criado no primeiro render do workspace. O override precisa
+ * existir no carregamento do bundle, não depois do fetch assíncrono do JSON. */
+Ext.define('MM.override.LoginWindow', {
+    override: 'PVE.window.LoginWindow',
+    initComponent: function () {
+	let me = this;
+	me.callParent(arguments);
+	let cfg = MM.Branding.cfg || {};
+	let form = me.down('form[reference=loginForm]');
+	if (form) {
+	    form.add({
+		xtype: 'box',
+		itemId: 'mm-login-text',
+		hidden: !cfg.login_text,
+		html: Ext.String.htmlEncode(cfg.login_text),
+		padding: '5 0',
+		style: { 'text-align': 'center', color: '#555' },
+	    });
+	    form.add({
+		xtype: 'box',
+		itemId: 'mm-login-powered',
+		hidden: !cfg.login_text,
+		html: 'Powered by Proxmox VE',
+		padding: '2 0 5 0',
+		style: { 'text-align': 'center', 'font-size': '11px', color: '#888' },
+	    });
+	}
     },
 });
 

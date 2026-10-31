@@ -8,9 +8,11 @@ package MMPve::Core::Patch;
 
 use strict;
 use warnings;
+use Digest::SHA qw(sha256_hex);
 use File::Copy qw(copy);
+use JSON::PP qw(decode_json encode_json);
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line now_iso);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line random_uuid);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -18,7 +20,6 @@ my %TARGETS = (
     index_tpl => {
         path   => '/usr/share/pve-manager/index.html.tpl',
         anchor => qr{/pve2/js/pvemanagerlib\.js\?ver=\[% version %\]},
-        insert => '<!-- mm-pve-tools --><script type="text/javascript" src="/pve2/js/mm-tools.js?ver=[% version %]"></script>',
     },
     nodes_pm => {
         path => '/usr/share/perl5/PVE/API2/Nodes.pm',
@@ -33,6 +34,20 @@ sub _target_paths {
         index_tpl => root_path('/usr/share/pve-manager/index.html.tpl'),
         nodes_pm  => root_path('/usr/share/perl5/PVE/API2/Nodes.pm'),
     );
+}
+
+sub _patch_state_path { return root_path('/var/lib/mm-pve-tools/patch-state.json') }
+
+sub _patch_state {
+    my $raw = eval { read_file(_patch_state_path()) };
+    return {} if $@ || !defined $raw || $raw eq '';
+    return eval { decode_json($raw) } || {};
+}
+
+sub _save_patch_state {
+    my ($class, $state) = @_;
+    ensure_dir(root_path('/var/lib/mm-pve-tools'));
+    write_file_atomic(_patch_state_path(), encode_json($state) . "\n", 0644);
 }
 
 # ---------------------------------------------------------------- check
@@ -76,33 +91,6 @@ sub check {
     }
     return \%res;
 }
-sub _pve_manager_version {
-    my ($class) = @_;
-    my $res = MMPve::Core::Runner->run(
-        ['dpkg-query', '-W', '-f=${Version}', 'pve-manager'], timeout => 15);
-    return undef unless $res->{ok};
-    my $version = $res->{out} // '';
-    $version =~ s/\s+\z//;
-    return length($version) ? $version : undef;
-}
-
-sub _version_cache_path {
-    return root_path('/var/lib/mm-pve-tools/pve-manager.version');
-}
-
-sub _cached_version {
-    my ($class) = @_;
-    return eval { read_file($class->_version_cache_path) } // undef;
-}
-
-sub _write_version_cache {
-    my ($class, $version) = @_;
-    return unless defined $version;
-    ensure_dir(root_path('/var/lib/mm-pve-tools'));
-    write_file_atomic($class->_version_cache_path, "$version\n", 0644);
-}
-
-
 # ---------------------------------------------------------------- apply
 
 # opts: syntax_check => auto|always|never ; no_restart => 1
@@ -110,19 +98,129 @@ sub apply {
     my ($class, %opts) = @_;
     my %paths = $class->_target_paths;
     my %out;
-    my $any_changed = 0;
-    my $version = $class->_pve_manager_version;
-    my $cached = $class->_cached_version;
-    $cached =~ s/\s+\z// if defined $cached;
+    my %raw;
+    my %desired;
+    my %backup;
+    my @changed;
+    my $state = _patch_state();
 
+    # Prepare and validate BOTH files before touching either upstream file.
+    # An already-patched file is only retried when its desired content differs
+    # (for example, a new mm-pve-tools version changes ?ver=).
     for my $k (sort keys %paths) {
-        my $status = $class->check->{$k}{status};
-        if ($status eq 'applied' && defined($version) && defined($cached) && $cached eq $version) {
-            $out{$k} = { status => 'version_current', changed => 0 };
+        my $raw = eval { read_file($paths{$k}) };
+        if ($@) {
+            $out{$k} = { status => 'file_missing', error => "$@" };
             next;
         }
-        $out{$k} = $class->_apply_one($k, $paths{$k}, \%opts, \$any_changed);
+        $raw{$k} = $raw;
+        my $source_hash = sha256_hex($raw);
+        if ($state->{$k} && ($state->{$k}{source_hash} // '') eq $source_hash) {
+            $out{$k} = {
+                status => 'previous_failure',
+                note => 'mesmo upstream já falhou; aguarda mudança do arquivo PVE',
+                error => $state->{$k}{error},
+            };
+            next;
+        }
+        my $want = $class->_desired_content($k, $raw);
+        if (!$want->{ok}) {
+            $out{$k} = { status => $want->{status}, note => $want->{note} };
+            next;
+        }
+        $desired{$k} = $want->{content};
+        if ($desired{$k} eq $raw) {
+            $out{$k} = { status => 'version_current', changed => 0 };
+            delete $state->{$k};
+            next;
+        }
+        push @changed, $k;
     }
+
+    # An anchor failure is deliberately sticky in practice: this call has no
+    # side effect, so timer/trigger retries cannot partially patch the GUI.
+    # A later pve-manager update changes the file and makes the anchor eligible
+    # again.
+    if (grep { ($out{$_}{status} // '') eq 'anchor_missing' } keys %out) {
+        for my $k (keys %out) {
+            next unless ($out{$k}{status} // '') eq 'anchor_missing';
+            $state->{$k} = { source_hash => sha256_hex($raw{$k}), error => $out{$k}{note} };
+        }
+        eval { $class->_save_patch_state($state); 1 };
+        return {
+            ok => 0, changed => 0, targets => \%out,
+            error => 'patch não aplicado: âncora upstream ausente',
+        };
+    }
+    if (grep { ($out{$_}{status} // '') eq 'file_missing' } keys %out) {
+        return { ok => 0, changed => 0, targets => \%out };
+    }
+    if (grep { ($out{$_}{status} // '') eq 'previous_failure' } keys %out) {
+        return {
+            ok => 0, changed => 0, targets => \%out,
+            error => 'patch não repetido até mudança do upstream',
+        };
+    }
+
+    # One backup is kept for each pristine upstream content hash.  Updating
+    # only the package cache-buster reuses the existing upstream backup.
+    for my $k (@changed) {
+        my $bak = $class->_backup_for($k, $raw{$k}, 1);
+        if (!$bak) {
+            $out{$k} = { status => 'failed', error => "backup: $!" };
+            return { ok => 0, changed => 0, targets => \%out };
+        }
+        $backup{$k} = $bak;
+    }
+
+    my %staged;
+    my $transaction_error;
+    eval {
+        for my $k (@changed) {
+            my $stage = $paths{$k} . ".mm-stage-$$-" . random_uuid();
+            $staged{$k} = $stage;
+            write_file_atomic($stage, $desired{$k}, 0644);
+        }
+        for my $k (@changed) {
+            my $valid = $class->_validate_staged($k, $staged{$k}, \%opts);
+            die "$k: $valid->{error}\n" unless $valid->{ok};
+        }
+        for my $k (@changed) {
+            rename($staged{$k}, $paths{$k})
+                or die "rename do stage para $paths{$k}: $!\n";
+        }
+        for my $k (@changed) {
+            my $after = read_file($paths{$k});
+            die "$k: verificação pós-commit falhou\n" unless $after eq $desired{$k};
+        }
+        1;
+    } or do {
+        $transaction_error = $@ || 'falha desconhecida na transação';
+    };
+
+    if ($transaction_error) {
+        unlink($_) for values %staged;
+        my @rollback_errors;
+        for my $k (@changed) {
+            push @rollback_errors, "$k: $!" unless copy($backup{$k}, $paths{$k});
+        }
+        my $error = $transaction_error;
+        $error .= ' rollback: ' . join('; ', @rollback_errors) if @rollback_errors;
+        $out{$_} = {
+            status => 'failed', error => $error, restored => @rollback_errors ? 0 : 1,
+        } for @changed;
+        log_line('patch apply: transação revertida: ' . $error);
+        $state->{$_} = { source_hash => sha256_hex($raw{$_}), error => $error } for @changed;
+        eval { $class->_save_patch_state($state); 1 };
+        return { ok => 0, changed => 0, targets => \%out, error => $error };
+    }
+
+    my $any_changed = scalar @changed ? 1 : 0;
+    for my $k (@changed) {
+        $out{$k} = { status => 'applied', changed => 1, backup => $backup{$k} };
+        delete $state->{$k};
+    }
+    eval { $class->_save_patch_state($state); 1 };
 
     my $restart;
     if ($any_changed && !$opts{no_restart}) {
@@ -137,71 +235,82 @@ sub apply {
         targets => \%out,
         ($restart ? (restart => $restart) : ()),
     };
-    $class->_write_version_cache($version) if $res->{ok};
     log_line('patch apply: ok=' . $res->{ok} . ' changed=' . $res->{changed} . ' '
         . join(' ', map { "$_=" . $out{$_}{status} } sort keys %out));
     return $res;
 }
 
-sub _apply_one {
-    my ($class, $k, $path, $opts, $changed_ref) = @_;
+sub _index_insert {
+    return '<!-- mm-pve-tools --><script type="text/javascript" src="/pve2/js/mm-tools.js?ver='
+        . $VERSION . '"></script>';
+}
 
-    my $lines = _read_lines($path);
-    if (!$lines) {
-        return { status => 'file_missing', note => 'arquivo ausente; nada feito' };
-    }
-
-    my (@new, $inserted);
+sub _desired_content {
+    my ($class, $k, $raw) = @_;
+    my @lines = split(/^/, $raw);
     if ($k eq 'index_tpl') {
-        return { status => 'applied', changed => 0 }
-            if grep { /mm-pve-tools|mm-tools\.js/ } @{$lines};
-        my $anchor_seen = 0;
-        for my $l (@{$lines}) {
-            push @new, $l;
-            if ($l =~ $TARGETS{index_tpl}{anchor}) {
-                $anchor_seen = 1;
-                push @new, $TARGETS{index_tpl}{insert} . "\n";
+        my $insert = _index_insert();
+        my $found = 0;
+        for my $i (0 .. $#lines) {
+            if ($lines[$i] =~ /mm-tools\.js/) {
+                $lines[$i] = $insert . "\n";
+                $found = 1;
+                last;
             }
         }
-        if (!$anchor_seen) {
+        if (!$found) {
+            my @new;
+            for my $line (@lines) {
+                push @new, $line;
+                push @new, $insert . "\n" if $line =~ $TARGETS{index_tpl}{anchor};
+            }
             return {
-                status => 'anchor_missing',
+                ok => 0, status => 'anchor_missing',
                 note => 'âncora (pvemanagerlib.js) não encontrada; GUI fica original',
-            };
+            } if @new == @lines;
+            @lines = @new;
         }
-        $inserted = 1;
-    } else {
-        my $r = $class->_patch_nodes_pm($lines);
-        return $r unless ($r->{status} // '') eq 'inserted';
-        @new = @{ $r->{lines} };
-        $inserted = 1;
+        return { ok => 1, content => join('', @lines) };
     }
 
-    # backup
-    my $bakdir = root_path('/var/lib/mm-pve-tools/patch-backups');
-    ensure_dir($bakdir);
-    my $bak = $bakdir . '/' . ($k eq 'index_tpl' ? 'index.html.tpl' : 'Nodes.pm') . '.' . now_iso();
-    $bak =~ s/[:+]//g;
-    copy($path, $bak) or return { status => 'failed', error => "backup: $!" };
+    return { ok => 1, content => $raw } if grep { /PVE::API2::MMTools/ } @lines;
+    my $r = $class->_patch_nodes_pm(\@lines);
+    return { ok => 0, status => $r->{status}, note => $r->{note} } unless $r->{status} eq 'inserted';
+    return { ok => 1, content => join('', @{ $r->{lines} }) };
+}
 
-    # grava
-    my $new_raw = join('', @new);
-    eval { write_file_atomic($path, $new_raw); 1 }
-        or return { status => 'failed', error => "gravação: $@" };
+sub _backup_for {
+    my ($class, $k, $raw, $create) = @_;
+    my $dir = root_path('/var/lib/mm-pve-tools/patch-backups');
+    ensure_dir($dir);
+    my $name = $k eq 'index_tpl' ? 'index.html.tpl' : 'Nodes.pm';
+    # A version-only rewrite of the mm-tools script must reuse the upstream
+    # backup, not create a backup of an already patched file.
+    if ($raw =~ /mm-pve-tools|mm-tools\.js/) {
+        if (opendir(my $dh, $dir)) {
+            my @found = sort grep { /^\Q$name\E\.[0-9a-f]{64}$/ } readdir($dh);
+            closedir($dh);
+            return "$dir/$found[0]" if @found;
+        }
+    }
+    my $bak = "$dir/$name." . sha256_hex($raw);
+    return $bak if -f $bak;
+    my %paths = $class->_target_paths;
+    return undef unless $create && copy($paths{$k}, $bak);
+    return $bak;
+}
 
-    # verificação perl -c no Nodes.pm (auto: só se o ambiente PVE existir)
+sub _validate_staged {
+    my ($class, $k, $path, $opts) = @_;
+    my $raw = eval { read_file($path) };
+    return { ok => 0, error => "não consegui ler stage: $@" } if $@;
+    return { ok => 0, error => 'stage sem script mm-tools.js' }
+        if $k eq 'index_tpl' && $raw !~ /mm-tools\.js\?ver=\Q$VERSION\E/;
     if ($k eq 'nodes_pm' && $class->_syntax_check_mode($opts) ne 'never') {
         my $can = $class->_perl_c($path);
-        if (!$can->{ok}) {
-            copy($bak, $path);
-            my $msg = 'perl -c falhou; backup restaurado: ' . ($can->{err} // '');
-            log_line("patch nodes_pm: $msg");
-            return { status => 'syntax_failed', error => $msg, restored => 1 };
-        }
+        return { ok => 0, error => ($can->{err} // "rc=$can->{rc}") } unless $can->{ok};
     }
-
-    ${$changed_ref} = 1;
-    return { status => 'applied', changed => 1, backup => $bak };
+    return { ok => 1 };
 }
 
 # Insere no Nodes.pm (package PVE::API2::Nodes::Nodeinfo):
@@ -261,9 +370,10 @@ sub _perl_c {
 
 sub _restart_and_verify {
     my ($class) = @_;
+    my $unit = 'mm-pve-patch-reload-' . substr(random_uuid(), 0, 12);
     my $restart = MMPve::Core::Runner->run(
-        ['systemd-run', '--wait', '--collect', '--unit=mm-pve-patch-reload',
-         'systemctl', 'reload-or-restart', 'pveproxy.service', 'pvedaemon.service'],
+        ['systemd-run', '--wait', '--collect', "--unit=$unit",
+         'systemctl', 'reload', 'pveproxy.service', 'pvedaemon.service'],
         timeout => 120);
     my $v = { restart_rc => $restart->{rc}, ok => 0 };
     for my $svc (qw(pveproxy pvedaemon)) {
@@ -277,11 +387,16 @@ sub _restart_and_verify {
 
     if (!$v->{ok}) {
         log_line('patch: pós-restart falhou (' . ($ver->{err} // 'rc=' . $ver->{rc}) . '); revertendo');
-        my $rev = $class->revert(force => 1);
+        my $rev = $class->revert(force => 1, no_restart => 1);
         $v->{reverted} = $rev->{changed};
         $v->{ok} = 0;
     }
     return $v;
+}
+
+sub reload_services {
+    my ($class) = @_;
+    return $class->_restart_and_verify();
 }
 
 # ---------------------------------------------------------------- revert

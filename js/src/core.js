@@ -59,9 +59,12 @@ Ext.define('MM.Api', {
 
 Ext.define('MM.Utils', {
     singleton: true,
+    html: function (value) {
+	return Ext.String.htmlEncode(String(value ?? ''));
+    },
     checkIcon: function (ok, extra) {
 	let ico = ok ? '✔' : '✘';
-	return extra ? `${ico} ${extra}` : ico;
+	return extra ? `${ico} ${MM.Utils.html(extra)}` : ico;
     },
 });
 
@@ -226,7 +229,7 @@ Ext.define('MM.panel.Diag', {
 		{
 		    text: gettext('Revision'), dataIndex: 'state', width: 140,
 		    renderer: (v, md, rec) =>
-			`${rec.get('applied') ?? '-'}/${rec.get('cfgrev') ?? '-'} (${v})`,
+			`${MM.Utils.html(rec.get('applied') ?? '-')}/${MM.Utils.html(rec.get('cfgrev') ?? '-')} (${MM.Utils.html(v)})`,
 		},
 		{
 		    text: 'ntfs3g', dataIndex: 'ntfs3g', flex: 1,
@@ -269,16 +272,21 @@ Ext.define('MM.panel.Tools', {
     },
 });
 
-/* Aba dentro do Datacenter: PVE.dc.Config adiciona as tabs conforme
- * permissões; nós entram por cima com override seguro (callParent + add). */
+/* Aba dentro do Datacenter. O upstream constrói a árvore em insertNodes()
+ * antes do callParent(); interceptamos esse ponto para a aba entrar no
+ * TreeStore real, em vez de adicioná-la tarde demais ao card panel. */
 Ext.define('PVE.dc.Config', {
     override: 'PVE.dc.Config',
-    initComponent: function () {
-	let me = this;
-	me.callParent(arguments);
-	let caps = Ext.state.Manager.get('GuiCap');
-	if (caps?.dc?.['Sys.Audit']) {
-	    me.add({ xtype: 'mmToolsPanel' });
+    insertNodes: function (items) {
+	let caps = Ext.state.Manager.get('GuiCap') || {};
+	if (caps.dc?.['Sys.Audit']) {
+	    items.push({
+		xtype: 'mmToolsPanel',
+		itemId: 'mastermind',
+		title: 'MasterMind',
+		iconCls: 'fa fa-fw fa-puzzle-piece',
+	    });
 	}
+	this.callParent(arguments);
     },
 });

@@ -425,17 +425,19 @@ Ext.define('MM.panel.Restore', {
 		},
 	    });
 	};
+	let sm = Ext.create('Ext.selection.RowModel', {});
 
 	Ext.apply(me, {
+	    selModel: sm,
 	    store: {
-		fields: ['id', 'vmid', 'vlan', 'expires_at', 'path', 'ticket'],
+		fields: ['id', 'target_vmid', 'vlan', 'expires_at', 'subpath', 'ticket'],
 	    },
 	    columns: [
 		{ text: 'ID', dataIndex: 'id', width: 130 },
-		{ text: gettext('VM'), dataIndex: 'vmid', width: 80 },
+		{ text: gettext('VM'), dataIndex: 'target_vmid', width: 80 },
 		{ text: 'VLAN', dataIndex: 'vlan', width: 80 },
 		{ text: gettext('Expires'), dataIndex: 'expires_at', width: 180 },
-		{ text: gettext('Folder'), dataIndex: 'path', flex: 1 },
+		{ text: gettext('Folder'), dataIndex: 'subpath', flex: 1 },
 		{ text: 'GLPI', dataIndex: 'ticket', width: 110 },
 	    ],
 	    tbar: [
@@ -443,7 +445,7 @@ Ext.define('MM.panel.Restore', {
 		    xtype: 'proxmoxButton',
 		    text: gettext('Revoke'),
 		    disabled: true,
-		    selModel: () => me.getSelectionModel(),
+		    selModel: sm,
 		    handler: revoke,
 		},
 		{ xtype: 'tbspacer', width: 10 },
@@ -489,30 +491,27 @@ Ext.define('PVE.grid.BackupView', {
     override: 'PVE.grid.BackupView',
     initComponent: function () {
 	let me = this;
-	// o tbar precisa existir ANTES do callParent: Ext.panel.Panel converte
-	// a config tbar num docked toolbar real durante o próprio initComponent
-	// do pai, então empurrar depois (push no array) não aparece mais —
-	// o array já foi consumido.
-	me.tbar = me.tbar || [];
-	me.tbar.push({
-	    xtype: 'proxmoxButton',
-	    text: gettext('Publish folder…'),
+	me.callParent(arguments);
+	let caps = Ext.state.Manager.get('GuiCap') || {};
+	if (!caps.dc?.['Sys.Audit']) { return; }
+	let toolbar = me.getDockedItems('toolbar[dock="top"]')[0] || me.down('toolbar');
+	if (!toolbar) { return; }
+	let button = Ext.create('Proxmox.button.Button', {
+	    text: 'Publicar pasta…',
 	    disabled: true,
-	    selModel: () => me.getSelectionModel(),
+	    selModel: me.getSelectionModel(),
+	    enableFn: (rec) => !!rec && /:backup\/vm\//.test(rec.data?.volid || ''),
 	    handler: function (b, e, rec) {
 		let volid = rec?.data?.volid || '';
-		if (!volid.match(/:backup\/vm\//)) {
-		    Ext.Msg.alert(
-			gettext('Error'),
-			gettext('Select a PBS backup (storage:backup/vm/...).'),
-		    );
-		    return;
-		}
-		// VLAN e IP são resolvidos no servidor (Restore.pm); o diálogo
-		// não lê a config (evita exigir Sys.Audit de quem só publica).
+		if (!volid.match(/:backup\/vm\//)) { return; }
+		// VLAN e IP são resolvidos no servidor (Restore.pm).
 		Ext.create('MM.window.RestorePublish', { autoShow: true, volid });
 	    },
 	});
-	me.callParent(arguments);
+	let insertAt = toolbar.items.length;
+	toolbar.items.each((item, index) => {
+	    if (item.getText?.() === gettext('File Restore')) { insertAt = index + 1; }
+	});
+	toolbar.insert(insertAt, button);
     },
 });

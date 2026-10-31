@@ -27,6 +27,7 @@ use MMPve::Core::Apply;
 use MMPve::Core::Status;
 use MMPve::Core::Patch;
 use MMPve::Core::Runner;
+use MMPve::Core::Util qw(random_uuid);
 
 use base qw(PVE::RESTHandler);
 
@@ -173,16 +174,31 @@ __PACKAGE__->register_method({
         my $node = $param->{node};
         my $realcmd = sub {
             my ($upid) = @_;
-            my $unit = 'mm-pve-apply-' . $node . '-' . substr($upid, -12);
-            $unit =~ s/[^A-Za-z0-9_.-]/-/g;
             my $res = MMPve::Core::Runner->run([
-                'systemd-run', '--no-block', "--unit=$unit",
-                '/usr/sbin/mm-pve', 'apply',
-            ], timeout => 30);
-            die "não consegui agendar apply fora do pvedaemon: "
-                . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n"
+                '/usr/sbin/mm-pve', '--json', 'apply', '--no-reload',
+            ], timeout => 240);
+            die "mm-pve apply falhou (rc=$res->{rc}): "
+                . ($res->{err} || $res->{error} || 'sem diagnóstico') . "\n"
                 unless $res->{ok};
-            print "apply agendado na unit $unit\n";
+            my $data = eval { decode_json($res->{out}) };
+            die "mm-pve apply não retornou JSON válido: $@\n" if $@ || ref($data) ne 'HASH';
+            die "mm-pve apply reportou falha (rc=0): "
+                . ($data->{error} || 'resultado ok=false') . "\n"
+                unless $data->{ok};
+
+            if ($data->{reload_required}) {
+                my $unit = 'mm-pve-reload-' . substr(random_uuid(), 0, 12);
+                my $reload = MMPve::Core::Runner->run([
+                    'systemd-run', '--no-block', '--collect', "--unit=$unit",
+                    'systemctl', 'reload', 'pveproxy.service', 'pvedaemon.service',
+                ], timeout => 30);
+                die "não consegui agendar reload pós-apply (unit $unit): "
+                    . ($reload->{err} || $reload->{error} || "rc=$reload->{rc}") . "\n"
+                    unless $reload->{ok};
+                print "apply concluído; reload agendado na unit $unit\n";
+            } else {
+                print "apply concluído; reload não necessário\n";
+            }
         };
         return $rpcenv->fork_worker('mmapply', "apply-$node", $authuser, $realcmd);
     },

@@ -6,7 +6,7 @@ PROVE      = prove $(PERL_INC)
 JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js
 JS_OUT     = build/mm-tools.js
 
-.PHONY: all js test test-api test-gateway lint build build-dir check-anchors clean
+.PHONY: all js test test-api test-gateway test-gui lint build build-dir check-anchors clean
 
 all: js
 
@@ -31,6 +31,9 @@ test-api:
 test-gateway:
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s t/gateway -v
 
+test-gui:
+	t/gui/run.sh
+
 lint:
 	@rc=0; \
 	while IFS= read -r f; do \
@@ -43,6 +46,10 @@ lint:
 	if command -v perlcritic >/dev/null 2>&1; then \
 	    find lib perl -name '*.pm' | xargs perlcritic --gentle || rc=1; \
 	else echo "perlcritic ausente (CI roda)"; fi; \
+	if command -v node >/dev/null 2>&1; then \
+	    node --check t/gui/browser.js || rc=1; \
+	    node t/gui/browser-smoke.js || rc=1; \
+	else echo "node ausente (lint GUI falhou)"; rc=1; fi; \
 	exit $$rc
 
 build:

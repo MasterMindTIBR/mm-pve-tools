@@ -3,9 +3,16 @@
 # Regras (plano): nenhuma falha aqui pode quebrar a instalação ou deixar o
 # pveproxy/pvedaemon parados. apply-patches é tolerante por projeto (D5).
 
-set -e
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+
+apply_state() {
+    if command -v mm-pve >/dev/null 2>&1; then
+        mm-pve apply || true
+    elif [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
+        /usr/lib/mm-pve-tools/apply-patches || true
+    fi
+}
 
 case "$1" in
     configure)
@@ -13,23 +20,14 @@ case "$1" in
         mkdir -p /var/lib/mm-pve-tools /var/log
         touch /var/log/mm-pve-tools.log || true
 
-        # Patches do pve-manager + estado desejado. Idempotentes; qualquer
-        # problema fica registrado no log e o PVE permanece funcional.
-        if [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
-            /usr/lib/mm-pve-tools/apply-patches || true
-        fi
-        if command -v mm-pve >/dev/null 2>&1; then
-            mm-pve apply >/dev/null 2>&1 || true
-        fi
+        # O apply único faz o patch, os módulos e, quando necessário, agenda
+        # o reload gracioso depois do apply. Falhas ficam registradas; a
+        # instalação nunca deixa o PVE original indisponível.
+        apply_state
         ;;
     triggered)
         # Trigger dpkg: pve-manager atualizado → reaplica patch + estado.
-        if [ -x /usr/lib/mm-pve-tools/apply-patches ]; then
-            /usr/lib/mm-pve-tools/apply-patches || true
-        fi
-        if command -v mm-pve >/dev/null 2>&1; then
-            mm-pve apply >/dev/null 2>&1 || true
-        fi
+        apply_state
         ;;
 esac
 

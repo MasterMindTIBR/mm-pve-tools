@@ -28,6 +28,7 @@ sub _now { return strftime('%Y-%m-%dT%H:%M:%S%z', localtime) }
 # opts: patches => 0|1 (default 1), dry_run => 1
 sub apply_all {
     my ($class, %opts) = @_;
+    my $previous = eval { decode_json(read_file(state_path())) };
     my $cfg = eval { MMPve::Core::Config->load };
     my $cfg_err = $@;
     if ($cfg_err) {
@@ -37,12 +38,16 @@ sub apply_all {
 
     my %res = (
         started => _now(),
+        package_version => $VERSION,
         revision => $cfg->{revision},
         modules => {},
     );
+    my $patches_requested = !exists $opts{patches} || $opts{patches};
+    my $version_changed = $patches_requested
+        && (!$previous || ($previous->{package_version} // '') ne $VERSION);
 
-    if (!exists $opts{patches} || $opts{patches}) {    # garante patches (idempotente)
-        $res{patches} = MMPve::Core::Patch->apply();
+    if ($patches_requested) {    # garante patches (idempotente)
+        $res{patches} = MMPve::Core::Patch->apply(no_restart => 1);
     }
 
     my $mode = $cfg->{modules} || {};
@@ -65,8 +70,16 @@ sub apply_all {
     }
     $res{finished} = _now();
     $res{ok} = 1;
+    $res{ok} = 0 if $res{patches} && !$res{patches}{ok};
     for my $n (sort keys %{ $res{modules} }) {
         $res{ok} = 0 if !$res{modules}{$n}{ok};
+    }
+    $res{reload_required} = ($version_changed
+        || ($res{patches} && $res{patches}{changed})
+        || ($res{modules}{branding} && $res{modules}{branding}{changed})) ? 1 : 0;
+    if ($res{reload_required} && !$opts{no_reload} && $res{ok}) {
+        $res{reload} = MMPve::Core::Patch->reload_services;
+        $res{ok} = 0 unless $res{reload}{ok};
     }
     if (!$opts{dry_run}) {
         ensure_dir(root_path('/var/lib/mm-pve-tools'));

@@ -103,6 +103,24 @@ subtest 'âncora quebrada → nada muda, status anchor_missing' => sub {
     is($c->{nodes_pm}{status},  'anchor_missing');
 };
 
+subtest 'falha no segundo arquivo → os dois ficam originais' => sub {
+    $ENV{MM_PVE_ROOT} = fresh_root('transaction');
+    my $tpl = "$ENV{MM_PVE_ROOT}/usr/share/pve-manager/index.html.tpl";
+    my $pm  = "$ENV{MM_PVE_ROOT}/usr/share/perl5/PVE/API2/Nodes.pm";
+    my $tpl_before = join('', lines_of($tpl));
+    my $pm_before  = join('', lines_of($pm));
+
+    no warnings 'redefine';
+    local *MMPve::Core::Patch::_perl_c = sub {
+        return { ok => 0, rc => 1, out => '', err => 'falha simulada no segundo arquivo' };
+    };
+    my $r = MMPve::Core::Patch->apply(syntax_check => 'always', no_restart => 1);
+    ok(!$r->{ok}, 'transação falha');
+    is(join('', lines_of($tpl)), $tpl_before, 'index.html.tpl restaurado');
+    is(join('', lines_of($pm)),  $pm_before,  'Nodes.pm restaurado');
+    ok((grep { $r->{targets}{$_}{restored} } qw(index_tpl nodes_pm)), 'rollback registrado');
+};
+
 sub first_index {
     my ($l, $re) = @_;
     for my $i (0 .. $#{$l}) { return $i if $l->[$i] =~ $re }
