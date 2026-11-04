@@ -23,7 +23,7 @@ case "$1" in
         if [ -f /etc/samba/smb.conf ]; then
             tmp_smb=/etc/samba/smb.conf.mm-gw-restore.tmp
             awk '
-                /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+                /^[[:space:]]*\[.+\][[:space:]]*$/ {
                     name = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", name)
                     low = tolower(name)
                     skip = (low == "homes" || low == "printers" || low == "print$")
@@ -66,12 +66,8 @@ EOF
         # sysctl de hardening (não rotear, não responder ARP cruzado)
         sysctl -p /etc/sysctl.d/90-gw-restore.conf >/dev/null 2>&1 || true
 
-        # Tabela base do nftables (política drop nas vl*)
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl daemon-reload >/dev/null 2>&1 || true
-            systemctl enable gw-restore-nft.service gw-restore-gc-boot.service >/dev/null 2>&1 || true
-            systemctl start gw-restore-nft.service >/dev/null 2>&1 || true
-        fi
+        # A tabela base do nftables (gw-restore-nft) e o gc de boot são
+        # habilitados e iniciados pelo trecho do dh_installsystemd abaixo.
         ;;
 esac
 

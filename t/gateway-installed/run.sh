@@ -163,6 +163,13 @@ if client_smb //10.1.20.250/r-"$sid1" -U "gwr-$sid2%$pwd2" -I 10.1.20.250 -c ls 
     die 'a credencial da sessão 2 acessou a sessão 1 pelo IP da sessão 1'
 fi
 
+# A package upgrade restarts the units (dh_installsystemd). Boot gc already ran
+# in this boot, so restarting it must keep both live sessions.
+dexec systemctl restart gw-restore-gc-boot.service
+dexec gw-restore list --json | python3 -c \
+    'import json,sys; d=json.load(sys.stdin); assert len(d["sessions"]) == 2, d'
+client_smb //10.1.20.250/r-"$sid1" -U "gwr-$sid1%$pwd1" -I 10.1.20.250 -c ls >/dev/null
+
 # Same request_id: exactly one session, new password, old credential invalid.
 old_pwd=$pwd1
 retry=$(publish "$payload1")

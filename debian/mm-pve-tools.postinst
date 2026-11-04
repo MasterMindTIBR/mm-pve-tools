@@ -2,7 +2,9 @@
 # postinst do mm-pve-tools
 # Regras (plano): nenhuma falha aqui pode quebrar a instalação ou deixar o
 # pveproxy/pvedaemon parados. apply-patches é tolerante por projeto (D5).
+# Com set -e, todo comando que pode falhar aqui termina em "|| true".
 
+set -e
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 

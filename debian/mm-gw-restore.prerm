@@ -19,9 +19,6 @@ case "$1" in
         if command -v nft >/dev/null 2>&1; then
             nft delete table inet gw_restore >/dev/null 2>&1 || true
         fi
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl disable gw-restore-nft.service gw-restore-gc-boot.service >/dev/null 2>&1 || true
-        fi
         ;;
 esac
 

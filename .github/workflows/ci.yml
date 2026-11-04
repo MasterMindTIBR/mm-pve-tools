@@ -93,52 +93,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          MIRROR=http://download.proxmox.com/debian/pve
-          KEY_URL=https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
-          KEY_SHA=136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45
           root="$RUNNER_TEMP/pve-gui-assets"
-          mkdir -p "$root/keyring" "$root/debs" "$root/x"
-          curl -fsSL "$KEY_URL" -o "$root/keyring/archive.gpg"
-          echo "$KEY_SHA  $root/keyring/archive.gpg" | sha256sum -c -
-          gpg --dearmor < "$root/keyring/archive.gpg" > "$root/keyring/archive.gpg.bin"
-          curl -fsSL "$MIRROR/dists/trixie/pve-no-subscription/InRelease" -o "$root/InRelease"
-          gpgv --keyring "$root/keyring/archive.gpg.bin" "$root/InRelease"
-          curl -fsSL "$MIRROR/dists/trixie/pve-no-subscription/binary-amd64/Packages" -o "$root/Packages"
-          python3 - "$root/Packages" "$root/debs" > "$root/packages.tsv" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          source = pathlib.Path(sys.argv[1]).read_text()
-          out = pathlib.Path(sys.argv[2])
-          pinned = pathlib.Path('ci/pve-manager.version').read_text().strip()
-          expected = {
-              'pve-manager': pinned,
-              'proxmox-widget-toolkit': '5.2.10',
-              'libjs-extjs': '7.0.0-9',
-              'libjs-qrcodejs': '1.20230525-pve1',
-          }
-          wanted = {name: None for name in expected}
-          for stanza in re.split(r'\n\s*\n', source):
-              fields = dict(line.split(': ', 1) for line in stanza.splitlines()
-                            if ': ' in line and not line.startswith((' ', '\t')))
-              package = fields.get('Package')
-              if package not in expected or 'Filename' not in fields:
-                  continue
-              if fields.get('Version') != expected[package] or wanted[package] is not None:
-                  continue
-              wanted[package] = fields
-          missing = [name for name, item in wanted.items() if item is None]
-          if missing:
-              raise SystemExit('pacote(s) ausente(s): ' + ', '.join(missing))
-          for name, item in wanted.items():
-              print(f"{name}\t{item['Version']}\t{item['Filename']}")
-              (out / f'{name}.meta').write_text(item['Filename'])
-          PY
-          while IFS=$'\t' read -r package version filename; do
-            curl -fsSL -o "$root/debs/$package.deb" "$MIRROR/$filename"
-            dpkg-deb -x "$root/debs/$package.deb" "$root/x/$package"
-          done < "$root/packages.tsv"
+          scripts/fetch-pve-debs.sh "$root" \
+            pve-manager="$(cat ci/pve-manager.version)" \
+            proxmox-widget-toolkit=5.2.10 \
+            libjs-extjs=7.0.0-9 \
+            libjs-qrcodejs=1.20230525-pve1
           mkdir -p "$root/assets"
           find "$root/x/pve-manager" -name index.html.tpl -exec cp {} "$root/assets/" \;
           find "$root/x/pve-manager" -name Nodes.pm -exec cp {} "$root/assets/" \;
@@ -184,121 +144,63 @@ jobs:
   anchors:
     name: Âncoras de patch (pve-manager 9.2.24 fixado)
     runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl gpg gpgv python3 perl make \
+            libhttp-message-perl libio-socket-ssl-perl
       - name: baixa o pve-manager fixado e o widget-toolkit atual
+        shell: bash
         run: |
           set -euo pipefail
-          MIRROR=https://download.proxmox.com/debian/pve
-          BASE="$MIRROR/dists/trixie/pve-no-subscription/binary-amd64"
-          curl -fsSL "$BASE/Packages" -o Packages
-          python3 - <<'PY' > packages.tsv
-          import re
-          import subprocess
-
-          source = open("Packages", encoding="utf-8").read()
-          pinned = open("ci/pve-manager.version", encoding="utf-8").read().strip()
-          wanted = ("pve-manager", "proxmox-widget-toolkit")
-          latest = {}
-          for stanza in re.split(r"\n\s*\n", source):
-              fields = dict(
-                  line.split(": ", 1)
-                  for line in stanza.splitlines()
-                  if ": " in line and not line.startswith((" ", "\t"))
-              )
-              package = fields.get("Package")
-              if package not in wanted or "Version" not in fields or "Filename" not in fields:
-                  continue
-              if package == "pve-manager" and fields["Version"] != pinned:
-                  continue
-              current = latest.get(package)
-              if current is None or subprocess.run(
-                  ["dpkg", "--compare-versions", fields["Version"], "gt", current["Version"]],
-                  check=False,
-              ).returncode == 0:
-                  latest[package] = fields
-          missing = [package for package in wanted if package not in latest]
-          if missing:
-              raise SystemExit("pacote(s) ausente(s): " + ", ".join(missing))
-          for package in wanted:
-              item = latest[package]
-              print(f"{package}\t{item['Version']}\t{item['Filename']}")
-          PY
-          while IFS=$'\t' read -r package version filename; do
-            echo "$package $version"
-            curl -fsSL -o "$package.deb" "$MIRROR/$filename"
-            case "$package" in
-              pve-manager) dpkg-deb -x "$package.deb" /tmp/root ;;
-              proxmox-widget-toolkit) dpkg-deb -x "$package.deb" /tmp/widget ;;
-            esac
-          done < packages.tsv
+          pve="$RUNNER_TEMP/pve"
+          scripts/fetch-pve-debs.sh "$pve" \
+            pve-manager="$(cat ci/pve-manager.version)" proxmox-widget-toolkit=latest
           make -s js >/dev/null
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root /tmp/root
-          perl -I/tmp/root/usr/share/perl5 -Ilib -Iperl -It/lib-stubs -c \
-            /tmp/root/usr/share/perl5/PVE/API2/Nodes.pm
-          grep -R -q "Ext.define('PMX.image.LogoSVG'" /tmp/widget
-          grep -R -q 'proxmox_logo.svg' /tmp/widget
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
+          # Só o Nodes.pm é compilado; os módulos do PVE viram stubs (t/lib-autostub).
+          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
+            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
+          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
 
   anchors-latest:
     name: Âncoras contra upstream mais recente (semanal, não bloqueante)
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
     permissions:
       contents: read
       issues: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: deps
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl gpg gpgv python3 perl make \
+            libhttp-message-perl libio-socket-ssl-perl
       - name: aplica os patches no upstream mais recente
         id: check
         continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
-          MIRROR=https://download.proxmox.com/debian/pve
-          BASE="$MIRROR/dists/trixie/pve-no-subscription/binary-amd64"
-          curl -fsSL "$BASE/Packages" -o Packages
-          python3 - <<'PY' > packages.tsv
-          import re
-          import subprocess
-
-          source = open("Packages", encoding="utf-8").read()
-          wanted = ("pve-manager", "proxmox-widget-toolkit")
-          latest = {}
-          for stanza in re.split(r"\n\s*\n", source):
-              fields = dict(
-                  line.split(": ", 1)
-                  for line in stanza.splitlines()
-                  if ": " in line and not line.startswith((" ", "\t"))
-              )
-              package = fields.get("Package")
-              if package not in wanted or "Version" not in fields or "Filename" not in fields:
-                  continue
-              current = latest.get(package)
-              if current is None or subprocess.run(
-                  ["dpkg", "--compare-versions", fields["Version"], "gt", current["Version"]],
-                  check=False,
-              ).returncode == 0:
-                  latest[package] = fields
-          missing = [package for package in wanted if package not in latest]
-          if missing:
-              raise SystemExit("pacote(s) ausente(s): " + ", ".join(missing))
-          for package in wanted:
-              item = latest[package]
-              print(f"{package}\t{item['Version']}\t{item['Filename']}")
-          PY
-          rm -rf /tmp/root /tmp/widget
-          while IFS=$'\t' read -r package _ filename; do
-            curl -fsSL -o "$package.deb" "$MIRROR/$filename"
-            case "$package" in
-              pve-manager) dpkg-deb -x "$package.deb" /tmp/root ;;
-              proxmox-widget-toolkit) dpkg-deb -x "$package.deb" /tmp/widget ;;
-            esac
-          done < packages.tsv
+          pve="$RUNNER_TEMP/pve"
+          scripts/fetch-pve-debs.sh "$pve" \
+            pve-manager=latest proxmox-widget-toolkit=latest
           make -s js >/dev/null
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root /tmp/root
-          perl -I/tmp/root/usr/share/perl5 -Ilib -Iperl -It/lib-stubs -c \
-            /tmp/root/usr/share/perl5/PVE/API2/Nodes.pm
-          grep -R -q "Ext.define('PMX.image.LogoSVG'" /tmp/widget
-          grep -R -q 'proxmox_logo.svg' /tmp/widget
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
+          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
+            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
+          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
       - name: abre ou atualiza o issue único de upstream
         if: steps.check.outcome == 'failure'
         uses: actions/github-script@v7

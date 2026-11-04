@@ -2,10 +2,17 @@
 Description=MasterMind gw-restore: limpeza de sessões após boot
 After=network-online.target gw-restore-nft.service smbd.service
 Wants=network-online.target gw-restore-nft.service smbd.service
+# "gc --boot" revoga todas as sessões e não desfaz os maps do PBS (supõe que o
+# boot já os desfez). Um upgrade do pacote reinicia esta unit
+# (dh_installsystemd), então ela só roda uma vez por boot: o marcador fica no
+# /run, que o boot limpa.
+ConditionPathExists=!/run/gw-restore/boot-gc.done
 
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/gw-restore gc --boot
+ExecStartPost=/usr/bin/mkdir -p /run/gw-restore
+ExecStartPost=/usr/bin/touch /run/gw-restore/boot-gc.done
 
 [Install]
 WantedBy=multi-user.target
