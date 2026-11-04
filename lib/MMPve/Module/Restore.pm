@@ -64,6 +64,16 @@ sub decode_path_b64 {
 # /drive-scsi1.img.fidx/part/2/Dados/Financeiro
 #   → drive=drive-scsi1.img, part=2, subpath=Dados/Financeiro
 # Buckets lvm/zpool/raw: fase 2 (Linux) — recusados com mensagem clara.
+# O contrato v1 publica uma pasta dentro de uma partição (subpath não vazio);
+# a partição ou o disco inteiro não são publicados.
+sub require_folder {
+    my ($class, $xlate) = @_;
+    die "escolha uma pasta dentro da partição (drive-*.img.fidx/part/N/<pasta>); "
+        . "publicar a partição ou o disco inteiro não é suportado\n"
+        unless defined $xlate->{part} && length($xlate->{subpath} // '');
+    return $xlate;
+}
+
 sub translate_path {
     my ($class, $path) = @_;
     $path = $class->decode_path_b64($path) if $path !~ m{^/};
@@ -169,11 +179,16 @@ sub gw_exec {
     push @cmd, '--command', $_ for @{$argv};
     my $json;
     if (defined $opt{input_data}) {
-        $json = ref $opt{input_data} ? encode_json($opt{input_data}) : $opt{input_data};
+        # só ASCII: o pvesh decodifica o argumento e o PVE faz base64 da string
+        # de caracteres, o que vira Latin-1 ("Á" chega ao gateway como 0xC1).
+        # Com \uXXXX o JSON passa intacto.
+        $json = ref $opt{input_data}
+            ? JSON::PP->new->ascii->canonical->encode($opt{input_data})
+            : $opt{input_data};
         push @cmd, '--input-data', $json;
     }
     my $res = MMPve::Core::Runner->run(\@cmd, timeout => 60);
-    die "agent/exec no gateway falhou: " . ($res->{err} || "rc=$res->{rc}") . "\n"
+    die "agent/exec no gateway falhou: " . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n"
         unless $res->{ok};
     my $pid;
     eval { $pid = (decode_json($res->{out}))->{pid} }
@@ -192,7 +207,8 @@ sub gw_exec {
     if (defined $st->{exitcode} && $st->{exitcode} != 0) {
         my $detail = $st->{'err-data'} // $st->{err} // '';
         $detail =~ s/\s+$//;
-        $detail = substr($detail, 0, 500) if length($detail) > 500;
+        # num traceback a exceção está no fim: guarda o final
+        $detail = '...' . substr($detail, -500) if length($detail) > 500;
         die "gw-restore falhou (exit " . $st->{exitcode} . ")"
             . (length($detail) ? ": $detail" : "") . "\n";
     }
@@ -321,8 +337,9 @@ sub gc_results {
     my $lock = flock_ex($class->results_lock_path);
     my $removed = 0;
     if (opendir(my $dh, $dir)) {
-        while (my $name = readdir($dh)) {
-            next unless $name =~ /^[A-Fa-f0-9]{64}\.(?:json|pending)$/;
+        while (my $entry = readdir($dh)) {
+            # nome de readdir vem contaminado sob perl -T (worker da API)
+            my ($name) = $entry =~ /^([A-Fa-f0-9]{64}\.(?:json|pending))$/ or next;
             my $path = "$dir/$name";
             my @st = stat($path);
             next unless @st && time - $st[9] > $ttl;
@@ -479,7 +496,7 @@ sub publish {
         $spec->{owner_vmid} = $vol{vmid};
         $spec->{storage}    = $vol{storage};
         $spec->{timestamp}  = $vol{timestamp};
-        $spec->{xlate} = $class->translate_path($spec->{path_b64});
+        $spec->{xlate} = $class->require_folder($class->translate_path($spec->{path_b64}));
         die "duração precisa ser inteiro 1.." . $r->{session_max_hours} . " horas\n"
             unless defined $spec->{hours} && $spec->{hours} =~ /^\d+$/
             && $spec->{hours} >= 1 && $spec->{hours} <= $r->{session_max_hours};

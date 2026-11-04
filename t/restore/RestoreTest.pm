@@ -58,7 +58,8 @@ sub make_override {
         if ($cmd =~ m{create /nodes/\S+/qemu/$gwvmid/agent/exec}) {
             my @cmds = grep { defined } map { $argv->[$_] eq '--command' ? $argv->[$_+1] : () } 0..$#$argv-1;
             push @execs, [@cmds];
-            ($last_input) = $cmd =~ /--input-data (\S+)/;
+            # argumento inteiro (o JSON pode ter espaços)
+            ($last_input) = map { $argv->[$_ + 1] } grep { $argv->[$_] eq '--input-data' } 0 .. $#$argv - 1;
             push @payloads, $last_input if defined $last_input;
             return { ok => 1, rc => 0, out => encode_json({ pid => 4242 }), err => '' };
         }
@@ -70,7 +71,8 @@ sub make_override {
             }
             my $out = '';
             my @c = @{ $execs[-1] // [] };
-            my $request_id = eval { decode_json($last_input)->{request_id} } if defined $last_input;
+            my $request_id;
+            $request_id = eval { decode_json($last_input)->{request_id} } if defined $last_input;
             if ($opt{exitcode}) {
                 $out = $opt{gw_out} // '';
             } elsif ($c[1] && $c[1] eq 'publish') {
@@ -92,7 +94,8 @@ sub make_override {
             my $ec = $opt{exitcode} // 0;
             return {
                 ok => 1, rc => 0,
-                out => encode_json({ exited => 1, pid => $1, exitcode => $ec, out => $out, err => '' }),
+                out => encode_json({ exited => 1, pid => $1, exitcode => $ec, out => $out,
+                    err => $opt{gw_err} // '' }),
                 err => '',
             };
         }

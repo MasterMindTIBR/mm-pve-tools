@@ -66,4 +66,12 @@ like($@, qr/partição precisa ser 1/, 'particao 0 recusada');
 eval { $R->translate_path(b64('drive-scsi1.img.fidx')) };
 like($@, qr/precisa começar/, 'sem barra inicial recusado');
 
+# ---- publicar exige uma pasta dentro de uma partição (contrato v1)
+ok(eval { $R->require_folder($R->translate_path(b64('/drive-sata1.img.fidx/part/2/Área de Trabalho'))) },
+    'pasta dentro da partição é aceita') or diag $@;
+for my $p ('/drive-sata1.img.fidx/part/2', '/drive-sata1.img.fidx/part/2/', '/drive-sata0.img.fidx') {
+    eval { $R->require_folder($R->translate_path(b64($p))) };
+    like($@, qr/escolha uma pasta dentro da partição/, "recusado sem pasta: $p");
+}
+
 done_testing();

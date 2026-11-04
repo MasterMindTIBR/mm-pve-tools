@@ -243,8 +243,9 @@ sub _gc_assets_locked {
     my @deleted;
     my $dir = branding_dir();
     return \@deleted unless opendir(my $dh, $dir);
-    while (my $name = readdir($dh)) {
-        next unless $name =~ /^[0-9a-f]{64}\.png$/;
+    while (my $entry = readdir($dh)) {
+        # nome de readdir vem contaminado sob perl -T (worker da API)
+        my ($name) = $entry =~ /^([0-9a-f]{64}\.png)$/ or next;
         next if $referenced{$name};
         my @st = stat "$dir/$name";
         next unless @st && defined $st[9] && $now - $st[9] >= GC_GRACE_SECONDS;
@@ -285,8 +286,9 @@ sub apply {
     }
     if (opendir(my $dh, images_dir())) {
         my %want = map { $b->{$_} => 1 } @wanted;
-        while (my $name = readdir($dh)) {
-            next if $name =~ /^\./ || $want{$name};
+        while (my $entry = readdir($dh)) {
+            my ($name) = $entry =~ /^([^.\/][^\/]*)$/ or next;
+            next if $want{$name};
             unlink(images_dir() . '/' . $name);
             $changed = 1;
         }
@@ -313,8 +315,8 @@ sub revert {
     my ($class) = @_;
     my $changed = 0;
     if (-d images_dir() && opendir(my $dh, images_dir())) {
-        while (my $name = readdir($dh)) {
-            next if $name =~ /^\./;
+        while (my $entry = readdir($dh)) {
+            my ($name) = $entry =~ /^([^.\/][^\/]*)$/ or next;
             unlink(images_dir() . '/' . $name);
             $changed = 1;
         }

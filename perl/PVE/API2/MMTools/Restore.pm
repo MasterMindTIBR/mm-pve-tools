@@ -16,7 +16,7 @@ package PVE::API2::MMTools::Restore;
 use strict;
 use warnings;
 
-use PVE::Exception qw(raise raise_perm_exc);
+use PVE::Exception qw(raise raise_param_exc raise_perm_exc);
 use PVE::JSONSchema qw(get_standard_option);
 use PVE::RESTHandler;
 use PVE::RPCEnvironment;
@@ -138,6 +138,12 @@ __PACKAGE__->register_method({
         my $rpcenv = PVE::RPCEnvironment->get();
         $publish_perms->($param, $rpcenv);
         my $authuser = $rpcenv->get_user();
+        # caminho inválido volta na resposta, antes de abrir a tarefa
+        eval {
+            MMPve::Module::Restore->require_folder(
+                MMPve::Module::Restore->translate_path($param->{path_b64}));
+        };
+        raise_param_exc({ path_b64 => "$@" }) if $@;
 
         my %p = map { $_ => $param->{$_} } grep { defined $param->{$_} }
             qw(backup path_b64 vmid hours ticket vm_ip);

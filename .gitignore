@@ -20,4 +20,5 @@ __pycache__/
 *.pyc
 .coverage
 t/*/tmp-*/
+# Ambiente real do laboratório: nunca versionar.
 t/lab/lab.env

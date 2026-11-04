@@ -244,6 +244,20 @@ def aggregate_includes(session_confs):
     return "".join(chunks)
 
 
+def remove_empty_dir(path):
+    """Apaga o ponto de montagem vazio; se ainda estiver montado (EBUSY) ou com
+    conteúdo, fica onde está."""
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def map_output(result):
+    """O proxmox-backup-client map escreve "mapped on /dev/loopN" (e os erros) no stderr."""
+    return "%s\n%s" % (result.get("out") or "", result.get("err") or "")
+
+
 def parse_loop_device(output):
     """Extrai loopN ou /dev/loopN da saída real do backup-client map."""
     for token in reversed(output.split()):
@@ -623,6 +637,7 @@ class GwRestore:
                 self._regenerate_samba_conf()
             if intent.get("mount_created") and intent.get("mount_path"):
                 self.ops.run(["umount", "-l", intent["mount_path"]])
+                remove_empty_dir(intent["mount_path"])
             if user:
                 self.ops.run(["smbpasswd", "-x", user])
                 self.ops.run(["userdel", user])
@@ -709,12 +724,14 @@ class GwRestore:
                     intent, "map",
                     lambda: self.ops.run(argv, env=self._pbs_subprocess_env(pbs_env)),
                     record=lambda result: intent.update(
-                        loop=parse_loop_device(result["out"])))
+                        loop=parse_loop_device(map_output(result))))
                 if res["rc"] != 0:
                     self._fail("map", (res["err"] or res["out"]).strip())
-                loop = parse_loop_device(res["out"])
+                loop = parse_loop_device(map_output(res))
                 if not loop:
-                    self._fail("map", "saída do map sem dispositivo loop")
+                    # o map também sai com rc 0 em erro (ex.: "already mapped")
+                    self._fail("map", "saída do map sem dispositivo loop: %s"
+                               % (map_output(res).strip() or "vazia"))
                 intent["loop"] = loop
             part_dev = "/dev/%sp%d" % (loop, payload["particao"])
             if not self.ops.path_exists(part_dev):
@@ -770,6 +787,12 @@ class GwRestore:
                     record=lambda _result: intent.update(created_vlan=True))
                 if res["rc"] != 0:
                     self._fail("vlan", res["err"].strip())
+            if trunk:
+                # o trunk não tem IP e pode estar DOWN (ex.: cloud-init só
+                # configura a 1ª placa); a VLAN não sobe sobre um pai derrubado
+                res = self.ops.run(["ip", "link", "set", trunk, "up"])
+                if res["rc"] != 0:
+                    self._fail("trunk-up", res["err"].strip())
             res = self.ops.run(["ip", "link", "set", vid, "up"])
             if res["rc"] != 0:
                 self._fail("vlan-up", res["err"].strip())
@@ -981,6 +1004,7 @@ class GwRestore:
                     res = self.ops.run(["umount", mount_path])
                     if res["rc"] != 0:
                         self.ops.run(["umount", "-l", mount_path])
+                    remove_empty_dir(mount_path)
                 del counts["maps"][key]
         elif not other_map_sessions and state.get("mount_path"):
             if not boot and self.ops.path_exists("/dev/" + str(state.get("loop", ""))):
@@ -988,6 +1012,7 @@ class GwRestore:
                 self.ops.run(["proxmox-backup-client", "unmap", "/dev/" + state["loop"]],
                              env=self._pbs_subprocess_env(pbs_env))
             self.ops.run(["umount", "-l", state["mount_path"]])
+            remove_empty_dir(state["mount_path"])
         vlan = str(state["vlan"])
         if vlan in counts["vlans"]:
             counts["vlans"][vlan] -= 1
@@ -1064,6 +1089,11 @@ class GwRestore:
                 if os.path.isdir(path) and os.path.basename(path) not in self._load_states():
                     import shutil
                     shutil.rmtree(path, ignore_errors=True)
+            # pontos de montagem sem map registrado (publicação desfeita)
+            in_use = {info.get("mount") for info in self._load_refcounts().get("maps", {}).values()}
+            for path in globmod.glob(os.path.join(self.ctx["mounts_root"], "*")):
+                if path not in in_use:
+                    remove_empty_dir(path)
             self._regenerate_samba_conf()
         return {"revoked": revoked, "boot": boot}
 

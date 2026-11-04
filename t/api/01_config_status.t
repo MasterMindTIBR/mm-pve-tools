@@ -40,6 +40,27 @@ my ($cfg, $actual) = MMPve::Core::Config->load;
 is_deeply($cfg->{$_}, $sections{$_}, "seção $_ preservada") for keys %sections;
 is($cfg->{revision}, 5, 'servidor calculou revision para cada seção');
 
+subtest 'round-trip numifica inteiros vindos como strings do PVE' => sub {
+    MMPve::Core::Config->save_section('vmid_scheme', [
+        { label => 'Lab', from => '1000', to => '1999' },
+    ]);
+    MMPve::Core::Config->save_section('restore', {
+        gateway_vmid => '9000',
+        vlans => { 120 => { gw_ip => '10.20.120.250', prefix => '24' } },
+        session_default_hours => '24', session_max_hours => '168', max_sessions => '10',
+    });
+    MMPve::Core::Config->save_section('branding', $sections{branding});
+    my ($roundtrip, $roundtrip_digest, $absent) = MMPve::Core::Config->load;
+    ok(!$absent && $roundtrip_digest, 'config continua presente após salvar outra seção');
+    my ($raw) = MMPve::Core::Config->load_raw;
+    for my $field (qw(revision from to gateway_vmid prefix session_default_hours session_max_hours max_sessions)) {
+        like($raw, qr/"$field"\s*:\s*\d+\b/, "$field permanece JSON integer");
+        unlike($raw, qr/"$field"\s*:\s*"/, "$field não volta como JSON string");
+    }
+    is($roundtrip->{restore}{gateway_vmid}, 9000, 'gateway_vmid round-trip');
+    is($roundtrip->{vmid_scheme}[0]{from}, 1000, 'vmid_scheme.from round-trip');
+};
+
 eval { MMPve::Core::Config->save_section('branding', { title => 'stale' }, digest => 'sha256:' . ('0' x 64)) };
 like($@, qr/DIGEST_MISMATCH/, 'digest velho chega como DIGEST_MISMATCH');
 

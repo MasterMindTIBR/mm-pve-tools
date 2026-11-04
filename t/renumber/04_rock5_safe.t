@@ -143,4 +143,53 @@ subtest 'falha após destroy deixa run retomável, mas rollback é recusado' => 
     like($@, qr/rollback recusado.*destroy/i, 'rollback continua recusado após finished');
 };
 
+subtest 'journal inacabado bloqueia run do zero (lab Rock 7, run 8)' => sub {
+    fresh();
+    local $ENV{MM_RENUMBER_FAIL_AFTER} = 'verify';
+    eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
+    like($@, qr/falha injetada.*verify/, 'injeção parou após verify');
+    delete $ENV{MM_RENUMBER_FAIL_AFTER};
+    # limpeza "à mão" das VMs, journal esquecido; VM 100 recriada com discos
+    MockPve->reset;
+    my $res = MMPve::Module::Renumber->run(from => 100, to => 1100);
+    ok(!$res->{ok}, 'run do zero recusado') or diag explain $res;
+    my ($check) = grep { $_->{check} eq 'sem-journal-pendente' } @{$res->{checks}};
+    ok($check && !$check->{ok}, 'precheck aponta o journal inacabado');
+    like($check->{detail}, qr/--resume ou --rollback.*remova .*renumber-100-1100\.json/,
+        'mensagem diz como seguir');
+    is_deeply([MockPve::ops()], [], 'nada foi apagado nem criado');
+    local *MMPve::Module::Renumber::precheck = sub { +{ ok => 1, info => {} } };
+    eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
+    like($@, qr/inacabado/, 'run recusa mesmo sem o precheck');
+    is_deeply([MockPve::ops()], [], 'ainda nada mutado');
+};
+
+sub journal_before_destroy {
+    my $j = MMPve::Journal->create('renumber-100-1100', from => 100, to => 1100,
+        node => 'n1', config_digest => $MockPve::S{vm_config}{digest});
+    my @steps = qw(reserve move_disks config firewall refs verify destroy);
+    $j->steps([@steps]);
+    for my $s (@steps[0 .. 5]) { $j->mark_running($s); $j->mark_done($s) }
+    $j->set_state('failed');
+    return $j;
+}
+
+subtest 'destroy recusa purge com volumes na VM antiga ou sem a VM nova' => sub {
+    fresh();
+    journal_before_destroy();
+    $MockPve::S{new_created} = 1;
+    eval { MMPve::Module::Renumber->resume(from => 100, to => 1100) };
+    like($@, qr/destroy recusado: VM antiga ainda tem volumes: .*scsi0=zfs1:vm-100-disk-0/,
+        'volumes ainda na VM antiga bloqueiam o purge');
+    is(scalar(MockPve::ops('delete')), 0, 'nenhum delete enviado');
+    ok(!$MockPve::S{old_destroyed}, 'VM antiga intacta');
+
+    fresh();
+    delete $MockPve::S{vm_config}{$_} for qw(scsi0 scsi1 efidisk0);
+    journal_before_destroy();
+    eval { MMPve::Module::Renumber->resume(from => 100, to => 1100) };
+    like($@, qr/destroy recusado: VM nova 1100 não existe/, 'VM nova ausente bloqueia');
+    is(scalar(MockPve::ops('delete')), 0, 'nenhum delete enviado');
+};
+
 done_testing();

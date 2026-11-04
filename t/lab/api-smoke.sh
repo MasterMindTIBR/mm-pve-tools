@@ -1,164 +1,155 @@
-#!/bin/bash
-# Smoke test da API instalada no cluster de laboratório.
-# Uso: exporte as variáveis abaixo; os segredos devem ser arquivos 0600.
+#!/usr/bin/env bash
+# Smoke test da API instalada no cluster de laboratório, executado no workstation.
 set -euo pipefail
 
-: "${PVE_API_URL:?PVE_API_URL é a URL base HTTPS do pveproxy}"
-: "${PVE_NODE:?PVE_NODE é o node usado no endpoint}"
-: "${PVE_API_CA_FILE:?PVE_API_CA_FILE é o CA do cluster}"
-: "${PVE_ALLOWED_TOKEN_ID:?PVE_ALLOWED_TOKEN_ID é o token limitado permitido}"
-: "${PVE_ALLOWED_TOKEN_SECRET_FILE:?PVE_ALLOWED_TOKEN_SECRET_FILE é o arquivo do segredo permitido}"
-: "${PVE_FORBIDDEN_TOKEN_ID:?PVE_FORBIDDEN_TOKEN_ID é o token sem permissão}"
-: "${PVE_FORBIDDEN_TOKEN_SECRET_FILE:?PVE_FORBIDDEN_TOKEN_SECRET_FILE é o arquivo do segredo sem permissão}"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck disable=SC1091
+source "${script_dir}/lab-common.sh"
+lab_load_env
+lab_require LAB_SSH_CONFIG LAB_NODE1 LAB_API_CA_FILE LAB_ALLOWED_TOKEN_ID \
+    LAB_ALLOWED_TOKEN_SECRET_FILE LAB_FORBIDDEN_TOKEN_ID LAB_FORBIDDEN_TOKEN_SECRET_FILE \
+    LAB_API_SCHEME LAB_API_PORT LAB_EVIDENCE_DIR
+lab_init_evidence
 
-for secret_file in "$PVE_ALLOWED_TOKEN_SECRET_FILE" "$PVE_FORBIDDEN_TOKEN_SECRET_FILE"; do
-    test -r "$secret_file" || { echo "segredo não legível: arquivo fora do repositório" >&2; exit 1; }
-done
-test -r "$PVE_API_CA_FILE" || { echo 'CA do pveproxy não é legível' >&2; exit 1; }
-
-allowed_secret=$(tr -d '\r\n' < "$PVE_ALLOWED_TOKEN_SECRET_FILE")
-forbidden_secret=$(tr -d '\r\n' < "$PVE_FORBIDDEN_TOKEN_SECRET_FILE")
-api_base="${PVE_API_URL%/}/api2/json/nodes/${PVE_NODE}/mm-tools"
-tmp_dir=$(mktemp -d)
-trap 'rm -rf "$tmp_dir"' EXIT
+lab_step 'API: permissões e CAS concorrente'
+output="${LAB_EVIDENCE_RUN_DIR}/api-smoke.log"
+rc=0
+lab_ssh "$LAB_NODE1" bash -s -- "$LAB_NODE1" "$(lab_node_url "$LAB_NODE1")" \
+    "$LAB_API_CA_FILE" "$LAB_ALLOWED_TOKEN_ID" "$LAB_ALLOWED_TOKEN_SECRET_FILE" \
+    "$LAB_FORBIDDEN_TOKEN_ID" "$LAB_FORBIDDEN_TOKEN_SECRET_FILE" >"$output" 2>&1 <<'REMOTE'
+set -euo pipefail
+node=$1
+api_base=$2
+ca_file=$3
+allowed_id=$4
+allowed_file=$5
+forbidden_id=$6
+forbidden_file=$7
+test -r "$ca_file"
+test -r "$allowed_file"
+test -r "$forbidden_file"
+allowed_secret=$(tr -d '\r\n' < "$allowed_file")
+forbidden_secret=$(tr -d '\r\n' < "$forbidden_file")
+tmp=$(mktemp -d /run/mm-pve-api-smoke.XXXXXX)
+trap 'rm -rf -- "$tmp"' EXIT
+base="${api_base}/api2/json/nodes/${node}/mm-tools"
 
 request() {
-    local token_id=$1
-    local secret=$2
-    local method=$3
-    local path=$4
-    local body=$5
-    local code=$6
+    local id=$1 secret=$2 method=$3 path=$4 body=$5 code=$6
     shift 6
-    local -a form_args=()
-    for field in "$@"; do
-        form_args+=(--data-urlencode "$field")
-    done
-    if ! curl --silent --show-error --cacert "$PVE_API_CA_FILE" \
-        -H "Authorization: PVEAPIToken=${token_id}=${secret}" \
-        -X "$method" -o "$body" -w '%{http_code}' \
-        "${form_args[@]}" \
-        "${api_base}${path}" > "$code"; then
-        echo "falha de transporte em $method $path" >&2
-        return 1
-    fi
+    local rc=0
+    curl --silent --show-error --cacert "$ca_file" \
+        -H "Authorization: PVEAPIToken=${id}=${secret}" \
+        -X "$method" -o "$body" -w '%{http_code}' "$@" "${base}${path}" >"$code" || rc=$?
+    (( rc == 0 )) || return "$rc"
 }
 
 assert_code() {
-    local expected=$1
-    local code_file=$2
-    local label=$3
-    local actual
-    actual=$(<"$code_file")
-    if [[ $actual != "$expected" ]]; then
-        echo "$label: HTTP $actual (esperado $expected)" >&2
+    local expected=$1 file=$2 label=$3 actual
+    actual=$(<"$file")
+    [[ $actual == "$expected" ]] || {
+        printf '%s: HTTP %s (esperado %s)\n' "$label" "$actual" "$expected" >&2
         return 1
-    fi
-    echo "$label: HTTP $actual"
+    }
+    printf '%s: HTTP %s\n' "$label" "$actual"
 }
 
-request "$PVE_ALLOWED_TOKEN_ID" "$allowed_secret" GET '' \
-    "$tmp_dir/index.json" "$tmp_dir/index.code"
-assert_code 200 "$tmp_dir/index.code" 'GET permitido'
+request "$allowed_id" "$allowed_secret" GET '' "$tmp/index" "$tmp/index.code"
+assert_code 200 "$tmp/index.code" 'GET permitido'
+request "$forbidden_id" "$forbidden_secret" GET '' "$tmp/forbidden" "$tmp/forbidden.code"
+assert_code 403 "$tmp/forbidden.code" 'GET sem permissão'
+request "$allowed_id" "$allowed_secret" GET /config "$tmp/config" "$tmp/config.code"
+assert_code 200 "$tmp/config.code" 'GET config permitido'
 
-request "$PVE_FORBIDDEN_TOKEN_ID" "$forbidden_secret" GET '' \
-    "$tmp_dir/forbidden.json" "$tmp_dir/forbidden.code"
-assert_code 403 "$tmp_dir/forbidden.code" 'GET sem permissão'
-
-request "$PVE_ALLOWED_TOKEN_ID" "$allowed_secret" GET /config \
-    "$tmp_dir/config.json" "$tmp_dir/config.code"
-assert_code 200 "$tmp_dir/config.code" 'GET config permitido'
-
-python3 - "$tmp_dir/config.json" "$tmp_dir/original-branding.json" "$tmp_dir/digest" <<'PY'
+python3 - "$tmp/config" "$tmp/original" "$tmp/digest" <<'PY'
 import json
-import pathlib
+from pathlib import Path
 import sys
-
-response, branding_path, digest_path = map(pathlib.Path, sys.argv[1:])
-payload = json.loads(response.read_text())
+payload = json.loads(Path(sys.argv[1]).read_text())
 data = payload.get("data", payload)
-digest = data.get("digest", "")
 branding = data.get("config", {}).get("branding")
-if not digest.startswith("sha256:") or not isinstance(branding, dict):
-    raise SystemExit("GET config não trouxe digest/config.branding")
-branding_path.write_text(json.dumps(branding, separators=(",", ":")))
-digest_path.write_text(digest)
+digest = data.get("digest", "")
+if not isinstance(branding, dict):
+    raise SystemExit("GET config não trouxe config.branding")
+Path(sys.argv[2]).write_text(json.dumps(branding, separators=(",", ":")))
+Path(sys.argv[3]).write_text(digest)
 PY
 
-digest=$(<"$tmp_dir/digest")
-value_a=$(python3 - "$tmp_dir/original-branding.json" <<'PY'
+if [[ -z $(<"$tmp/digest") ]]; then
+    request "$allowed_id" "$allowed_secret" PUT /config/branding "$tmp/first-write" \
+        "$tmp/first-write.code" --data-urlencode value@"$tmp/original"
+    assert_code 200 "$tmp/first-write.code" 'primeira gravação sem digest'
+    request "$allowed_id" "$allowed_secret" GET /config "$tmp/config-after-first" \
+        "$tmp/config-after-first.code"
+    assert_code 200 "$tmp/config-after-first.code" 'GET config após primeira gravação'
+    python3 - "$tmp/config-after-first" "$tmp/digest" <<'PY'
 import json
-import pathlib
+from pathlib import Path
 import sys
-
-branding = json.loads(pathlib.Path(sys.argv[1]).read_text())
-branding["header_text"] = "api-smoke-a"
-print(json.dumps(branding, separators=(",", ":")))
+data = json.loads(Path(sys.argv[1]).read_text()).get("data", {})
+digest = data.get("digest", "")
+if not digest.startswith("sha256:"):
+    raise SystemExit("primeira gravação não produziu digest sha256")
+Path(sys.argv[2]).write_text(digest)
 PY
-)
-value_b=$(python3 - "$tmp_dir/original-branding.json" <<'PY'
+fi
+[[ $(<"$tmp/digest") == sha256:* ]] || { printf 'GET config não trouxe digest sha256\n' >&2; exit 1; }
+
+python3 - "$tmp/original" "$tmp/value-a" "$tmp/value-b" <<'PY'
 import json
-import pathlib
+from pathlib import Path
 import sys
-
-branding = json.loads(pathlib.Path(sys.argv[1]).read_text())
-branding["header_text"] = "api-smoke-b"
-print(json.dumps(branding, separators=(",", ":")))
+branding = json.loads(Path(sys.argv[1]).read_text())
+for path, value in zip(sys.argv[2:], ("api-smoke-a", "api-smoke-b")):
+    copy = dict(branding)
+    copy["header_text"] = value
+    Path(path).write_text(json.dumps(copy, separators=(",", ":")))
 PY
-)
-
-curl --silent --show-error --cacert "$PVE_API_CA_FILE" \
-    -H "Authorization: PVEAPIToken=${PVE_ALLOWED_TOKEN_ID}=${allowed_secret}" \
-    -X PUT --data-urlencode "digest=$digest" --data-urlencode "value=$value_a" \
-    -o "$tmp_dir/write-a.json" -w '%{http_code}' \
-    "${api_base}/config/branding" > "$tmp_dir/write-a.code" 2> "$tmp_dir/write-a.err" &
-pid_a=$!
-curl --silent --show-error --cacert "$PVE_API_CA_FILE" \
-    -H "Authorization: PVEAPIToken=${PVE_ALLOWED_TOKEN_ID}=${allowed_secret}" \
-    -X PUT --data-urlencode "digest=$digest" --data-urlencode "value=$value_b" \
-    -o "$tmp_dir/write-b.json" -w '%{http_code}' \
-    "${api_base}/config/branding" > "$tmp_dir/write-b.code" 2> "$tmp_dir/write-b.err" &
-pid_b=$!
+digest=$(<"$tmp/digest")
 rc_a=0
 rc_b=0
+curl --silent --show-error --cacert "$ca_file" \
+    -H "Authorization: PVEAPIToken=${allowed_id}=${allowed_secret}" \
+    -X PUT --data-urlencode "digest=$digest" --data-urlencode value@"$tmp/value-a" \
+    -o "$tmp/write-a" -w '%{http_code}' "${base}/config/branding" >"$tmp/write-a.code" 2>"$tmp/write-a.err" &
+pid_a=$!
+curl --silent --show-error --cacert "$ca_file" \
+    -H "Authorization: PVEAPIToken=${allowed_id}=${allowed_secret}" \
+    -X PUT --data-urlencode "digest=$digest" --data-urlencode value@"$tmp/value-b" \
+    -o "$tmp/write-b" -w '%{http_code}' "${base}/config/branding" >"$tmp/write-b.code" 2>"$tmp/write-b.err" &
+pid_b=$!
 wait "$pid_a" || rc_a=$?
 wait "$pid_b" || rc_b=$?
-if [[ $rc_a -ne 0 || $rc_b -ne 0 ]]; then
-    echo 'falha de transporte durante os escritores concorrentes' >&2
-    exit 1
-fi
+(( rc_a == 0 && rc_b == 0 )) || { printf 'falha de transporte no CAS\n' >&2; exit 1; }
 
-python3 - "$tmp_dir/write-a.code" "$tmp_dir/write-b.code" \
-    "$tmp_dir/write-a.json" "$tmp_dir/write-b.json" <<'PY'
-import pathlib
+python3 - "$tmp/write-a.code" "$tmp/write-b.code" "$tmp/write-a" "$tmp/write-b" <<'PY'
+from pathlib import Path
 import sys
-
-code_a, code_b, body_a, body_b = map(pathlib.Path, sys.argv[1:])
-codes = [code_a.read_text(), code_b.read_text()]
+codes = [Path(sys.argv[1]).read_text(), Path(sys.argv[2]).read_text()]
 if codes.count("200") != 1:
     raise SystemExit(f"CAS concorrente inesperado: {codes}")
-loser = body_b.read_text() if codes[0] == "200" else body_a.read_text()
+loser = Path(sys.argv[4] if codes[0] == "200" else sys.argv[3]).read_text()
 if "DIGEST_MISMATCH" not in loser:
     raise SystemExit("o escritor perdedor não recebeu DIGEST_MISMATCH")
-print(f"CAS concorrente: um HTTP 200, outro {next(code for code in codes if code != '200')}")
+print("CAS concorrente: um HTTP 200 e um DIGEST_MISMATCH")
 PY
 
-request "$PVE_ALLOWED_TOKEN_ID" "$allowed_secret" GET /config \
-    "$tmp_dir/config-after.json" "$tmp_dir/config-after.code"
-assert_code 200 "$tmp_dir/config-after.code" 'GET config após CAS'
-after_digest=$(python3 - "$tmp_dir/config-after.json" <<'PY'
+request "$allowed_id" "$allowed_secret" GET /config "$tmp/after" "$tmp/after.code"
+assert_code 200 "$tmp/after.code" 'GET config após CAS'
+after_digest=$(python3 - "$tmp/after" <<'PY'
 import json
-import pathlib
+from pathlib import Path
 import sys
-
-payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
-print(payload.get("data", payload).get("digest", ""))
+print(json.loads(Path(sys.argv[1]).read_text()).get("data", {}).get("digest", ""))
 PY
 )
-original_value=$(<"$tmp_dir/original-branding.json")
-request "$PVE_ALLOWED_TOKEN_ID" "$allowed_secret" PUT /config/branding \
-    "$tmp_dir/restore.json" "$tmp_dir/restore.code" \
-    "digest=$after_digest" "value=$original_value"
-assert_code 200 "$tmp_dir/restore.code" 'restauração da seção branding'
-
-echo 'api-smoke: OK'
+original=$(<"$tmp/original")
+request "$allowed_id" "$allowed_secret" PUT /config/branding "$tmp/restore" "$tmp/restore.code" \
+    --data-urlencode "digest=$after_digest" --data-urlencode "value=$original"
+assert_code 200 "$tmp/restore.code" 'restauração da seção branding'
+printf 'api-smoke: OK\n'
+REMOTE
+rc=$?
+cat "$output"
+(( rc == 0 )) || lab_fail "api-smoke falhou (consulte $output)"
+lab_pass 'api-smoke concluído'

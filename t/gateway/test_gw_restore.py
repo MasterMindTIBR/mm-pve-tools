@@ -52,7 +52,9 @@ class FakeOps(gw.RealOps):
         self.calls.append((list(argv), stdin))
         prog = argv[0]
         if prog == "proxmox-backup-client" and argv[1] == "map":
-            return {"rc": 0, "out": "map loop7\n", "err": ""}
+            # formato e fluxo reais do proxmox-backup-client 4.2.8 (stderr)
+            return {"rc": 0, "out": "", "err": "Image '%s/%s' mapped on /dev/loop7\n"
+                    % (argv[2], argv[3].removesuffix(".fidx"))}
         if prog == "mount":
             return {"rc": 0, "out": "", "err": ""}
         if prog == "id":
@@ -95,7 +97,8 @@ class GatewayCase(unittest.TestCase):
             "state_archive_dir": os.path.join(self.tmp, "var/lib/archive"),
             "refcounts_file": os.path.join(self.tmp, "var/lib/refcounts.json"),
             "audit_log": os.path.join(self.tmp, "var/log/audit.log"),
-            "sessions_root": os.path.join(self.tmp, "srv"),
+            # mesmo layout do gateway real: sessions e mounts são irmãos
+            "sessions_root": os.path.join(self.tmp, "srv/sessions"),
             "samba_d_dir": os.path.join(self.tmp, "etc/samba/gw-restore.d"),
             "samba_conf": os.path.join(self.tmp, "etc/samba/gw-restore.conf"),
             "smb_conf": os.path.join(self.tmp, "etc/samba/smb.conf"),
@@ -203,6 +206,14 @@ class TestPure(GatewayCase):
     def test_parse_loop_e_handle(self):
         self.assertEqual(gw.parse_loop_device("image map loop3\n"), "loop3")
         self.assertIsNone(gw.parse_loop_device("nada"))
+        # saída real do proxmox-backup-client 4.2.8: tudo no stderr, rc 0
+        real = {"rc": 0, "out": "", "err": (
+            "Image 'gw-restore@pbs!gateway@10.0.0.1:8007:lab:"
+            "vm/100/2026-10-30T03:05:42Z/drive-sata1.img' mapped on /dev/loop0\n")}
+        self.assertEqual(gw.parse_loop_device(gw.map_output(real)), "loop0")
+        twice = {"rc": 0, "out": "",
+                 "err": "Error: the given archive is already mapped, cannot map twice\n"}
+        self.assertIsNone(gw.parse_loop_device(gw.map_output(twice)))
         self.assertEqual(gw.parse_nft_handle("rule x # handle 42"), 42)
         self.assertIsNone(gw.parse_nft_handle("sem handle"))
 
@@ -224,6 +235,14 @@ class TestPublish(GatewayCase):
         repository = map_call[map_call.index("--repository") + 1]
         self.assertEqual(repository,
                          "gwr@pbs!gateway@pbs.example:8007:bkp01")
+
+    def test_trunk_sobe_antes_da_vlan(self):
+        self.gwr.publish(base_payload())
+        calls = [a for a, _s in self.ops.calls]
+        trunk_up = calls.index(["ip", "link", "set", "ens20", "up"])
+        vlan_up = next(i for i, a in enumerate(calls)
+                       if a[:3] == ["ip", "link", "set"] and a[3] != "ens20" and a[-1] == "up")
+        self.assertLess(trunk_up, vlan_up)
 
     def test_saida_json_estavel(self):
         result = self.gwr.publish(base_payload())
@@ -284,6 +303,15 @@ class TestPublish(GatewayCase):
         # nenhuma sessão persistiu
         self.assertFalse(os.path.isdir(self.ctx["state_dir"])
                          and os.listdir(self.ctx["state_dir"]))
+        # nem o ponto de montagem (lab Rock 7: sobrava o diretório vazio)
+        mounts = self.ctx["mounts_root"]
+        self.assertEqual(os.listdir(mounts) if os.path.isdir(mounts) else [], [])
+
+    def test_boot_gc_remove_ponto_de_montagem_orfao_vazio(self):
+        orphan = os.path.join(self.ctx["mounts_root"], "0" * 32)
+        os.makedirs(orphan)
+        self.gwr.gc(boot=True)
+        self.assertFalse(os.path.exists(orphan))
 
     def test_path_traversal_recusado(self):
         # ".." já é recusado na validação do payload

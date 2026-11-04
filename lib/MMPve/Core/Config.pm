@@ -59,6 +59,39 @@ sub _err { my ($e, $m) = @_; push @{$e}, $m; return }
 
 sub _is_int { return defined $_[0] && !ref $_[0] && $_[0] =~ /^\d+$/ }
 
+sub _numify_schema {
+    my ($data) = @_;
+    return $data unless ref $data eq 'HASH';
+    my $numify = sub {
+        my ($value) = @_;
+        return $value unless defined $value && !ref $value && $value =~ /^\d+$/;
+        return 0 + $value;
+    };
+
+    $data->{revision} = $numify->($data->{revision}) if exists $data->{revision};
+    if (ref $data->{vmid_scheme} eq 'ARRAY') {
+        for my $range (@{$data->{vmid_scheme}}) {
+            next unless ref $range eq 'HASH';
+            for my $field (qw(from to)) {
+                $range->{$field} = $numify->($range->{$field}) if exists $range->{$field};
+            }
+        }
+    }
+    my $restore = $data->{restore};
+    if (ref $restore eq 'HASH') {
+        for my $field (qw(gateway_vmid session_default_hours session_max_hours max_sessions)) {
+            $restore->{$field} = $numify->($restore->{$field}) if exists $restore->{$field};
+        }
+        if (ref $restore->{vlans} eq 'HASH') {
+            for my $vlan (values %{$restore->{vlans}}) {
+                next unless ref $vlan eq 'HASH';
+                $vlan->{prefix} = $numify->($vlan->{prefix}) if exists $vlan->{prefix};
+            }
+        }
+    }
+    return $data;
+}
+
 sub _is_ipv4 {
     my ($s) = @_;
     return 0 unless defined $s && !ref $s && $s =~ /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
@@ -309,7 +342,9 @@ sub _write_locked {
             }
         }
     }
+    _numify_schema($data);
     $data->{revision} = ($previous->{revision} // 0) + 1;
+    _numify_schema($data);
 
     my @e = $class->validate($data);
     die "config rejeitado:\n" . join("\n", @e) . "\n" if @e;

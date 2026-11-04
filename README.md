@@ -49,6 +49,23 @@ os dois testes. Sessões de restore aceitam no máximo 168 horas. Branding
 aceita somente PNG de até 256 KiB, validado pela assinatura e pelo IHDR; os
 assets instalados usam nomes content-addressed `<sha256>.png`.
 
+## Permissões do restore (API e GUI)
+
+| Ação | Exige |
+|---|---|
+| Listar, publicar, revogar, testar gateway | `Sys.Audit` em `/` |
+| Publicar | o mesmo que o File Restore nativo para o backup: `Datastore.AllocateSpace` em `/storage/<pbs>` e `VM.Backup` na VM dona do backup; `VM.Audit` na VM destino, mais `VM.Backup` nela se for outra VM |
+| Revogar | `VM.Audit` na VM destino, mais `VM.Backup` nela se o backup for de outra VM |
+| Ler resultado | `Sys.Audit` ou `Sys.Modify` em `/`; só o autor lê o próprio resultado, salvo com `Sys.Modify` |
+
+Um usuário só com `PVEAuditor` recebe 403 ao publicar. O mínimo usual é
+`PVEAuditor` em `/`, `PVEDatastoreUser` em `/storage/<pbs>` e `PVEVMUser` na
+VM.
+
+Sessões na mesma VLAN usam o mesmo IP do gateway, e o Windows não aceita duas
+credenciais no mesmo servidor (erro 1219). Para abrir outra sessão na mesma VM,
+desconecte a anterior antes: `net use \\<ip-do-gateway>\<share> /delete`.
+
 
 ## Desenvolvimento
 

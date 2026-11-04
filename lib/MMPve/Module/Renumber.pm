@@ -118,6 +118,24 @@ sub journal_id {
     return "renumber-$from-$to";
 }
 
+# Descrição do journal inacabado (qualquer estado fora de 'finished') para o
+# par, ou undef quando não há journal ou ele terminou.
+sub _pending_journal {
+    my ($class, $from, $to) = @_;
+    my $id = $class->journal_id($from, $to);
+    my $file = MMPve::Journal->path_for($id);
+    return undef unless -e $file;
+    my $j = eval { MMPve::Journal->open($id) };
+    return "journal $id ilegível; confira $file antes de continuar" unless $j;
+    my $state = $j->state // '';
+    return undef if $state eq 'finished';
+    my @done = $j->done_steps;
+    return "renumber $from>$to inacabado (journal $id, estado $state"
+        . (@done ? ', concluídos: ' . join(', ', @done) : '')
+        . "); use --resume ou --rollback. Se a operação já foi limpa à mão, "
+        . "remova $file";
+}
+
 sub _config_digest {
     my ($class, $conf) = @_;
     die "PVE não retornou digest da configuração; operação insegura\n"
@@ -233,6 +251,13 @@ sub precheck {
     _check(\@checks, 'ids-diferentes', ($from != $to ? 1 : 0),
         $from == $to ? 'ID novo é igual ao antigo' : 'ok');
 
+    # 0. Nenhum renumber inacabado para o mesmo par. Começar do zero por cima
+    # de um journal running/failed pularia os passos 'done' e iria direto ao
+    # destroy da VM antiga com os discos ainda nela.
+    my $open_journal = $class->_pending_journal($from, $to);
+    _check(\@checks, 'sem-journal-pendente', ($open_journal ? 0 : 1),
+        $open_journal // 'nenhum renumber inacabado para este par');
+
     # 1. ID novo livre (GET /cluster/nextid --vmid dá erro se em uso).
     my ($next, $next_err) = $class->_pvesh_opt(get => '/cluster/nextid', vmid => $to);
     _check(\@checks, 'id-novo-livre', ($next ? 1 : 0),
@@ -249,12 +274,14 @@ sub precheck {
         _check(\@checks, 'esquema', 1, 'dentro do esquema configurado (ou sem esquema)');
     }
 
-    # Localizar a VM.
-    my $node = $o{node} // ($class->_find_node($from) // '');
+    # Localizar a VM (com --node, confere que ela está mesmo lá).
+    my $found = $class->_find_node($from) // '';
+    my $node = ($o{node} && $o{node} ne $found) ? '' : $found;
     $info{node} = $node;
     _check(\@checks, 'vm-existe', ($node ? 1 : 0),
-        $node ? "VM $from no node $node" : ("VM $from não encontrada"
-            . ($o{node} ? " no node $o{node}" : ' no cluster')));
+        $node ? "VM $from no node $node"
+            : $o{node} && $found ? "VM $from está no node $found, não em $o{node}"
+            : ("VM $from não encontrada" . ($o{node} ? " no node $o{node}" : ' no cluster')));
 
     my $ok = (grep { !$_->{ok} } @checks) ? 0 : 1;
     return { ok => 0, checks => \@checks, warnings => \@warnings, info => \%info } if !$ok;
@@ -774,16 +801,22 @@ sub _step_refs {
     return @done ? join('; ', @done) : 'nenhuma referência externa';
 }
 
-sub _step_verify {
-    my ($class, $j, $meta) = @_;
-    my ($conf) = $class->_pvesh_opt(get => "/nodes/$meta->{node}/qemu/$meta->{from}/config");
-    my @left;
+sub _config_volumes {
+    my ($class, $conf) = @_;
+    my @vols;
     for my $k (sort keys %{$conf || {}}) {
         next unless $k =~ /^(?:ide|sata|scsi|virtio)\d+$/
             || $k =~ /^unused\d+$/ || $k eq 'efidisk0' || $k eq 'tpmstate0';
-        push @left, "$k=$conf->{$k}"
+        push @vols, "$k=$conf->{$k}"
             if defined $conf->{$k} && $conf->{$k} =~ $VOLID_RE;
     }
+    return @vols;
+}
+
+sub _step_verify {
+    my ($class, $j, $meta) = @_;
+    my ($conf) = $class->_pvesh_opt(get => "/nodes/$meta->{node}/qemu/$meta->{from}/config");
+    my @left = $class->_config_volumes($conf);
     die "VM antiga ainda tem volumes: " . join(', ', @left) . "\n" if @left;
     return 'VM antiga sem volumes';
 }
@@ -792,7 +825,15 @@ sub _step_destroy {
     my ($class, $j, $meta) = @_;
     my ($destroy_status, $destroy_conf, $exists) = $class->_source_snapshot($meta);
     return "VM $meta->{from} já estava apagada" unless $exists;
-    $class->_guard_source($j, $meta, step => 'destroy');
+    my (undef, $conf) = $class->_guard_source($j, $meta, step => 'destroy');
+    # --purge apaga todo volume que ainda estiver na config: confere de novo,
+    # logo antes, que os discos saíram da VM antiga e que a nova existe.
+    my @left = $class->_config_volumes($conf);
+    die "destroy recusado: VM antiga ainda tem volumes: " . join(', ', @left) . "\n"
+        if @left;
+    my ($new_conf) = $class->_pvesh_opt(get => "/nodes/$meta->{node}/qemu/$meta->{to}/config");
+    die "destroy recusado: VM nova $meta->{to} não existe no node $meta->{node}\n"
+        unless $new_conf;
     MMPve::Core::Runner->pvesh(delete => "/nodes/$meta->{node}/qemu/$meta->{from}",
         purge => 1, 'destroy-unreferenced-disks' => 0);
     return "VM $meta->{from} apagada (purge; discos já movidos)";
@@ -844,14 +885,13 @@ sub run {
     );
     my $id = $class->journal_id($o{from}, $o{to});
     $meta{reservation_marker} = "mm-pve-tools renumber $id";
-    # reusa o journal só se houver algo para retomar (failed/running);
-    # journal concluído = nova operação do zero.
-    my $j = eval { MMPve::Journal->open($id) };
-    if ($j && ($j->state // '') =~ /^(failed|running)$/) {
-        $j->set_meta(%meta);                    # meta fresca, steps preservados
-    } else {
-        $j = MMPve::Journal->create($id, %meta);
+    # journal inacabado só continua por --resume/--rollback (o precheck já
+    # recusa; isto cobre quem chegar aqui sem ele). Journal concluído = nova
+    # operação do zero.
+    if (my $pending = $class->_pending_journal($o{from}, $o{to})) {
+        die "$pending\n";
     }
+    my $j = MMPve::Journal->create($id, %meta);
     $j->steps([@STEPS]);
     $j->set_state('running');
     return $class->_with_run_marker($j, sub {

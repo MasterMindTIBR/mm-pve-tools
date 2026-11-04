@@ -122,7 +122,7 @@ sub cmd_config_set_module {
     my %known = map { $_ => 1 } MMPve::Core::Modules->names;
     fail "módulo desconhecido '$name' (conhecidos: " . join(', ', sort keys %known) . ')'
         unless $known{$name};
-    fail 'use --enable OU --disable' unless $enable ^ $disable;
+    fail 'use --enable OU --disable' unless ($enable ? 1 : 0) + ($disable ? 1 : 0) == 1;
     $cfg->{modules}{$name} = $enable ? 1 : 0;
     my ($saved) = eval { MMPve::Core::Config->save($cfg, digest => $digest) };
     fail $@, 'mm-pve apply' if $@;

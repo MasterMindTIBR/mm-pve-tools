@@ -54,7 +54,13 @@ sub read_file {
     local $/;
     my $data = <$fh>;
     close($fh);
-    return defined $data ? $data : '';
+    return '' unless defined $data;
+    # pvedaemon/pveproxy rodam com perl -T e todo dado lido de arquivo vem
+    # contaminado. Aqui só se lê estado próprio ou do PVE (pmxcfs, /run, /var),
+    # de root; contaminado, qualquer caminho montado com ele (journal → firewall)
+    # faria o worker da API morrer em open/unlink.
+    ($data) = $data =~ /\A(.*)\z/s;
+    return $data;
 }
 
 sub write_file_atomic {

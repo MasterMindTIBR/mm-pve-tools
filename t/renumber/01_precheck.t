@@ -242,6 +242,15 @@ subtest 'recusa: VM não existe' => sub {
     my ($r, $by) = pre();
     ok(!$by->{'vm-existe'}{ok}, 'VM ausente detectada');
     ok(!$r->{ok}, 'aborta');
+
+    ($r, $by) = pre(node => 'n1');
+    ok(!$by->{'vm-existe'}{ok}, '--node não dispensa achar a VM');
+    like($by->{'vm-existe'}{detail}, qr/não encontrada no node n1/, 'detalhe cita o node');
+
+    fresh();
+    ($r, $by) = pre(node => 'n2');
+    ok(!$by->{'vm-existe'}{ok}, 'VM em outro node é recusada');
+    like($by->{'vm-existe'}{detail}, qr/está no node n1, não em n2/, 'detalhe cita os dois nodes');
 };
 
 subtest 'plano: ordem dos passos' => sub {

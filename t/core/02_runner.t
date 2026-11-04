@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 
 use lib "$Bin/../../lib";
@@ -64,6 +65,41 @@ subtest 'pvesh builder' => sub {
         '__timeout NÃO vira flag') or diag explain \@vistos;
     MMPve::Core::Runner->pvesh('create', '/nodes/n/qemu', vmid => 100, name => 'x');
     like(join(' ', @{ $vistos[1] }), qr/--name x/, 'args viram --chave valor');
+};
+
+subtest 'pvesh delete aceita log da task antes do JSON final' => sub {
+    my $fixture_path = "$Bin/../fixtures/api/delete-task.stdout";
+    open(my $fh, '<', $fixture_path) or die "abrir $fixture_path: $!\n";
+    local $/;
+    my $mixed = <$fh>;
+    close($fh);
+    {
+        local $MMPve::Core::Runner::OVERRIDE = sub {
+            return { rc => 0, out => $mixed };
+        };
+        is(MMPve::Core::Runner->pvesh(delete => '/nodes/n/qemu/9510', purge => 1), undef,
+            'delete com log + null JSON é sucesso');
+    }
+    my $tmp = tempdir('mm-runner-log-XXXXXX', TMPDIR => 1, CLEANUP => 1);
+    local $ENV{MM_PVE_ROOT} = $tmp;
+    {
+        local $MMPve::Core::Runner::OVERRIDE = sub {
+            return { rc => 0, out => "purging VM 9510 from related configurations ...\n" };
+        };
+        is(MMPve::Core::Runner->pvesh(delete => '/nodes/n/qemu/9510', purge => 1), undef,
+            'delete sem JSON, mas rc=0, é sucesso');
+    }
+    open(my $log, '<', "$tmp/var/log/mm-pve-tools.log") or die "abrir log: $!\n";
+    my $logged = do { local $/; <$log> };
+    close($log);
+    like($logged, qr/purging VM 9510/, 'texto da task sem JSON vai para o log');
+};
+
+subtest 'pvesh get sem JSON falha com mensagem limpa' => sub {
+    local $MMPve::Core::Runner::OVERRIDE = sub { return { rc => 0, out => "texto solto\n" } };
+    eval { MMPve::Core::Runner->pvesh(get => '/nodes/n/status') };
+    like($@, qr/saída não contém JSON\n\z/, 'erro termina em quebra de linha real');
+    unlike($@, qr/ at \S+ line \d+/, 'sem "at ... line" do Perl');
 };
 
 done_testing();

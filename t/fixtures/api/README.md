@@ -14,6 +14,7 @@ Destaques:
   `out-data`, `err-data`, `out-truncated`, `err-truncated` (sem `out-data` se não houve saída).
 - `move-disk-*`: em contexto CLI o `pvesh` imprime o log da task e só na última linha a UPID
   como string JSON. A UPID pode conter `>` (`qmmove:9000-scsi0>9001-scsi0`).
+- `delete-task.stdout`: destroy imprime texto da task antes do JSON final `null`.
 - `ha-resources`, `ha-rules`: sid `vm:<id>`; regras do PVE 9 (`type node-affinity`).
 - `backup-jobs`, `replication-jobs`: `exclude` é lista de VMIDs; job de replicação com
   `rate`, `comment`, `disable`, `schedule`, id `<vmid>-<n>`.

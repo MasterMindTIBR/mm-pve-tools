@@ -52,6 +52,12 @@ subtest 'config set + get + set-module' => sub {
 
     ($rc, $out) = mm('config', 'set-module', 'branding', '--enable');
     is($rc, 0) or diag $out;
+    unlike($out, qr/uninitialized/, 'set-module sem warning de Perl');
+    ($rc, $out) = mm('config', 'set-module', 'branding', '--disable');
+    is($rc, 0) or diag $out;
+    unlike($out, qr/uninitialized/, 'set-module --disable sem warning de Perl');
+    ($rc, $out) = mm('config', 'set-module', 'branding', '--enable', '--disable');
+    isnt($rc, 0, '--enable e --disable juntos recusados');
 
     # digest velho agora recusa (concorrência)
     open($fh, '>', "$tmp/novo2.json");

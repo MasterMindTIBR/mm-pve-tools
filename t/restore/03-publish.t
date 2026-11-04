@@ -10,6 +10,8 @@ use lib 't/restore';
 use RestoreTest;
 use Test::More;
 use JSON::PP qw(decode_json);
+use MIME::Base64 qw(encode_base64);
+use Encode ();
 
 BEGIN { use_ok('MMPve::Module::Restore') }
 
@@ -25,7 +27,7 @@ sub run_publish {
     local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(%arg);
     local $MMPve::Module::Restore::GW_TIMEOUT = $arg{gw_timeout} // 300;
     my $res = eval { $R->publish(
-        backup => $BACKUP, path_b64 => $PATH,
+        backup => $BACKUP, path_b64 => $arg{path_b64} // $PATH,
         storage_config => { ids => { pbs1 => { datastore => 'bkp01', namespace => 'cliente/a' } } },
         map { $_ => $arg{$_} } grep { defined $arg{$_} } qw(vmid hours ticket vm_ip user resume),
     ) };
@@ -130,6 +132,22 @@ like($err, qr/limite de sessões atingido \(max_sessions=3, ativas=3\)/, 'max_se
 like($err, qr/gw-restore falhou \(exit 2\)/, 'erro do gateway sem stdout');
 unlike($err, qr/map falhou/, 'stdout do gateway não vaza no erro');
 unlike($err, qr/SECRETA/, 'sem senha no erro do gateway');
+
+# caminho com acento e espaço: o input-data vai só em ASCII e o gateway
+# recebe a subpasta intacta (lab Rock 7: "Á" chegava como 0xC1)
+($res, $err) = run_publish(
+    path_b64 => encode_base64(Encode::encode('UTF-8', '/drive-scsi1.img.fidx/part/2/Área de Trabalho'), ''));
+ok($res && $res->{ok}, 'publica pasta com acento') or diag $err;
+my $raw = $RestoreTest::payloads[0];
+unlike($raw, qr/[^\x00-\x7f]/, 'input-data só ASCII');
+is(JSON::PP->new->decode($raw)->{subpath}, 'Área de Trabalho', 'subpasta intacta');
+
+# traceback longo no stderr: a exceção (no fim) aparece no erro
+my $trace = "Traceback (most recent call last):\n" . ("  File \"/usr/sbin/gw-restore\", line 1\n" x 40)
+    . "KeyError: 'loop'\n";
+($res, $err) = run_publish(exitcode => 1, gw_err => $trace);
+like($err, qr/KeyError: 'loop'/, 'fim do traceback preservado');
+like($err, qr/: \.\.\./, 'corte marcado no início');
 
 # timeout do poll
 ($res, $err) = run_publish(never_exit => 1, gw_timeout => 1);
