@@ -36,9 +36,36 @@ mm-pve config get             # estado desejado (/etc/pve/mm-tools/config.json)
 mm-pve apply                  # aplica patches + módulos ligados neste node
 mm-pve renumber --from 100 --to 1100 [--dry-run|--resume|--rollback]
 mm-pve restore publish --backup <storage>:backup/vm/<id>/<ts> --path <b64>
-mm-pve branding set --logo logo.svg --title "Cliente — Virtualização"
+mm-pve branding set --logo logo.png --title "Cliente — Virtualização"
 gw-restore selfcheck          # no gateway
 ```
+O contrato entre node e gateway é versionado em
+`contract/gw-restore.v1.schema.json`, com exemplos compartilhados em
+`contract/fixtures/*.json` (um arquivo por definição do schema). O MESMO
+fixture é validado por `t/contract/01_fixtures.t` (Perl, lado node) e por
+`t/gateway/test_gw_restore.py::TestContractFixtures` (Python, lado
+gateway): renomear um campo de um lado sem atualizar schema/fixture quebra
+os dois testes. Sessões de restore aceitam no máximo 168 horas. Branding
+aceita somente PNG de até 256 KiB, validado pela assinatura e pelo IHDR; os
+assets instalados usam nomes content-addressed `<sha256>.png`.
+
+## Permissões do restore (API e GUI)
+
+| Ação | Exige |
+|---|---|
+| Listar, publicar, revogar, testar gateway | `Sys.Audit` em `/` |
+| Publicar | o mesmo que o File Restore nativo para o backup: `Datastore.AllocateSpace` em `/storage/<pbs>` e `VM.Backup` na VM dona do backup; `VM.Audit` na VM destino, mais `VM.Backup` nela se for outra VM |
+| Revogar | `VM.Audit` na VM destino, mais `VM.Backup` nela se o backup for de outra VM |
+| Ler resultado | `Sys.Audit` ou `Sys.Modify` em `/`; só o autor lê o próprio resultado, salvo com `Sys.Modify` |
+
+Um usuário só com `PVEAuditor` recebe 403 ao publicar. O mínimo usual é
+`PVEAuditor` em `/`, `PVEDatastoreUser` em `/storage/<pbs>` e `PVEVMUser` na
+VM.
+
+Sessões na mesma VLAN usam o mesmo IP do gateway, e o Windows não aceita duas
+credenciais no mesmo servidor (erro 1219). Para abrir outra sessão na mesma VM,
+desconecte a anterior antes: `net use \\<ip-do-gateway>\<share> /delete`.
+
 
 ## Desenvolvimento
 

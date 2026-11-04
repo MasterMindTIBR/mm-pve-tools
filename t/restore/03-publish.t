@@ -10,6 +10,8 @@ use lib 't/restore';
 use RestoreTest;
 use Test::More;
 use JSON::PP qw(decode_json);
+use MIME::Base64 qw(encode_base64);
+use Encode ();
 
 BEGIN { use_ok('MMPve::Module::Restore') }
 
@@ -25,7 +27,8 @@ sub run_publish {
     local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(%arg);
     local $MMPve::Module::Restore::GW_TIMEOUT = $arg{gw_timeout} // 300;
     my $res = eval { $R->publish(
-        backup => $BACKUP, path_b64 => $PATH,
+        backup => $BACKUP, path_b64 => $arg{path_b64} // $PATH,
+        storage_config => { ids => { pbs1 => { datastore => 'bkp01', namespace => 'cliente/a' } } },
         map { $_ => $arg{$_} } grep { defined $arg{$_} } qw(vmid hours ticket vm_ip user resume),
     ) };
     return ($res, $@);
@@ -41,17 +44,20 @@ is($res->{expires_at}, '2026-10-28T10:00:00-03:00', 'expires_at');
 # payload enviado ao gateway via --input-data
 is(scalar @RestoreTest::payloads, 1, 'um --input-data no publish');
 my $payload = decode_json($RestoreTest::payloads[0]);
-is($payload->{drive}, 'drive-scsi1.img', 'payload drive');
-is($payload->{part}, 2, 'payload part');
+is($payload->{contract}, 1, 'payload contract version');
+is($payload->{archive}, 'drive-scsi1.img', 'payload archive');
+is($payload->{partition}, 2, 'payload partition');
 is($payload->{subpath}, 'Dados/Financeiro', 'payload subpath');
 is($payload->{snapshot}, 'vm/100/2026-10-26T02:00:03Z', 'payload snapshot');
+is($payload->{datastore}, 'bkp01', 'payload datastore do storage.cfg');
+is($payload->{namespace}, 'cliente/a', 'payload namespace do storage.cfg');
 is($payload->{vlan}, 120, 'payload vlan');
 is($payload->{gw_ip}, '10.20.120.250', 'payload gw_ip');
 is($payload->{prefix}, 24, 'payload prefix');
 is($payload->{vm_ip}, '10.20.120.77', 'payload vm_ip (do agent)');
 is($payload->{hours}, 24, 'payload hours (padrão)');
-is($payload->{vmid}, 100, 'payload vmid destino');
-is($payload->{backup}, $BACKUP, 'payload backup');
+is($payload->{target_vmid}, 100, 'payload target VMID');
+is($payload->{source_vmid}, 100, 'payload source VMID');
 
 # comando exec correto no gateway
 my @pub = grep { $_->[1] && $_->[1] eq 'publish' } @RestoreTest::execs;
@@ -91,14 +97,14 @@ is(scalar @RestoreTest::tag_sets, 0, 'nenhum set chamado');
     vm_ip => '10.20.120.50');
 ok($res, 'publish com destino/ticket/vm_ip') or diag $err;
 $payload = decode_json($RestoreTest::payloads[0]);
-is($payload->{vmid}, 150, 'payload vmid explícito');
+is($payload->{target_vmid}, 150, 'payload target VMID explícito');
 is($payload->{hours}, 8, 'payload hours explícito');
 is($payload->{ticket}, 'GLPI-4231', 'payload ticket');
 is($payload->{vm_ip}, '10.20.120.50', 'vm_ip manual prevalece');
 
 # ---------- validações que recusam ----------
-($res, $err) = run_publish(hours => 73);
-like($err, qr/duração precisa ser inteiro 1\.\.72/, 'duração acima do máximo');
+($res, $err) = run_publish(hours => 169);
+like($err, qr/duração precisa ser inteiro 1\.\.168/, 'duração acima do máximo');
 like($err, qr/mm-pve restore publish .* --resume\n?\z/, 'erro termina com comando --resume');
 
 ($res, $err) = run_publish(ticket => 'X-1');
@@ -115,22 +121,41 @@ unlike($err, qr/SECRETA/, 'sem senha no erro');
 
 # max_sessions atingido
 ($res, $err) = run_publish(sessions => [
-    { id => 'a', vmid => 1 }, { id => 'b', vmid => 2 }, { id => 'c', vmid => 3 },
+    { id => 'a', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.10', expires_at => '2026-10-29T00:00:00Z' },
+    { id => 'b', target_vmid => 101, source_vmid => 101, vlan => 120, vm_ip => '10.20.120.11', expires_at => '2026-10-29T00:00:00Z' },
+    { id => 'c', target_vmid => 102, source_vmid => 102, vlan => 120, vm_ip => '10.20.120.12', expires_at => '2026-10-29T00:00:00Z' },
 ]);
 like($err, qr/limite de sessões atingido \(max_sessions=3, ativas=3\)/, 'max_sessions');
 
 # gateway devolve exit != 0
 ($res, $err) = run_publish(exitcode => 2, gw_out => 'map falhou');
-like($err, qr/gw-restore falhou \(exit 2\): map falhou/, 'erro do gateway propagado');
+like($err, qr/gw-restore falhou \(exit 2\)/, 'erro do gateway sem stdout');
+unlike($err, qr/map falhou/, 'stdout do gateway não vaza no erro');
 unlike($err, qr/SECRETA/, 'sem senha no erro do gateway');
+
+# caminho com acento e espaço: o input-data vai só em ASCII e o gateway
+# recebe a subpasta intacta (lab Rock 7: "Á" chegava como 0xC1)
+($res, $err) = run_publish(
+    path_b64 => encode_base64(Encode::encode('UTF-8', '/drive-scsi1.img.fidx/part/2/Área de Trabalho'), ''));
+ok($res && $res->{ok}, 'publica pasta com acento') or diag $err;
+my $raw = $RestoreTest::payloads[0];
+unlike($raw, qr/[^\x00-\x7f]/, 'input-data só ASCII');
+is(JSON::PP->new->decode($raw)->{subpath}, 'Área de Trabalho', 'subpasta intacta');
+
+# traceback longo no stderr: a exceção (no fim) aparece no erro
+my $trace = "Traceback (most recent call last):\n" . ("  File \"/usr/sbin/gw-restore\", line 1\n" x 40)
+    . "KeyError: 'loop'\n";
+($res, $err) = run_publish(exitcode => 1, gw_err => $trace);
+like($err, qr/KeyError: 'loop'/, 'fim do traceback preservado');
+like($err, qr/: \.\.\./, 'corte marcado no início');
 
 # timeout do poll
 ($res, $err) = run_publish(never_exit => 1, gw_timeout => 1);
 like($err, qr/timeou?t \(1s\) esperando o gateway/, 'timeout do poll');
 
 # resultado sem campo obrigatório
-($res, $err) = run_publish(gw_result => { unc => 'x', user => 'u', password => 'p' });
-like($err, qr/sem campo 'expires_at'/, 'resultado incompleto recusado');
+($res, $err) = run_publish(gw_result => { request_id => 'mock-request-id', unc => 'x', user => 'u', password => 'p' });
+like($err, qr/contract\.publish_response\.expires_at:/, 'resultado incompleto recusado');
 unlike($err, qr/\bp\b.*password/xs, 'senha não vazada no erro');    # campo nomeado apenas
 
 # ---------- resume: journal guarda vm_ip descoberto ----------

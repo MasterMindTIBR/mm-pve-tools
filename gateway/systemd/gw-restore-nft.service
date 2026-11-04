@@ -1,0 +1,13 @@
+[Unit]
+Description=MasterMind gw-restore: tabela nftables de isolamento
+After=network-pre.target
+Before=smbd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/sbin/nft list table inet gw_restore >/dev/null 2>&1 || /usr/sbin/nft -f /etc/gw-restore/gw-restore.conf'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

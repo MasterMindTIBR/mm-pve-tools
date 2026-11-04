@@ -1,0 +1,44 @@
+#!/bin/sh
+# Falso somente do proxmox-backup-client para o Rock 2 instalado.
+set -eu
+
+image=${GW_FAKE_PBS_IMAGE:-/var/lib/gw-restore-test/disk.img}
+
+create_partition_nodes() {
+    loop_name=${1##*/}
+    for dev_file in /sys/block/"$loop_name"/"$loop_name"p*/dev; do
+        [ -f "$dev_file" ] || continue
+        partition=$(dirname "$dev_file")
+        partition=${partition##*/}
+        dev=$(cat "$dev_file")
+        major=${dev%%:*}
+        minor=${dev#*:}
+        node="/dev/$partition"
+        # Loop partition minors are reassigned when a loop device is reused;
+        # without udev an old node would point at the wrong device.
+        if [ "$(stat -c '%t:%T' "$node" 2>/dev/null)" != "$(printf '%x:%x' "$major" "$minor")" ]; then
+            rm -f "$node"
+            mknod "$node" b "$major" "$minor"
+        fi
+    done
+}
+
+case "${1:-}" in
+    map)
+        [ -f "$image" ] || { echo "imagem PBS ausente: $image" >&2; exit 2; }
+        loop=$(losetup --find --show --partscan --read-only "$image")
+        create_partition_nodes "$loop"
+        printf 'mapped %s\n' "$loop"
+        ;;
+    unmap)
+        [ "$#" -eq 2 ] || { echo 'uso: proxmox-backup-client unmap /dev/loopN' >&2; exit 2; }
+        losetup --detach "$2"
+        ;;
+    list)
+        exit 0
+        ;;
+    *)
+        echo "fake-pbs-client: operação não suportada: ${1:-}" >&2
+        exit 2
+        ;;
+esac

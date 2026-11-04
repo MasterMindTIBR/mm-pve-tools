@@ -4,7 +4,7 @@
  * Estilo: Ext JS 6, mesmo padrão do pvemanagerlib.js.
  */
 
-Ext.define('MM.Version', { singleton: true, version: '0.1.0' });
+Ext.define('MM.Version', { singleton: true, version: '@MM_PVE_VERSION@' });
 
 /* Registro de abas da tela MasterMind (cada módulo adiciona a sua). */
 Ext.define('MM.Registry', {
@@ -38,6 +38,11 @@ Ext.define('MM.Api', {
 	    base.method = opts.method || 'PUT';
 	    base.data = opts.data;
 	}
+	if (opts.jsonData) {
+	    base.method = opts.method || 'PUT';
+	    base.jsonData = opts.jsonData;
+	    base.headers = Ext.apply({ 'Content-Type': 'application/json' }, opts.headers || {});
+	}
 	if (opts.success) {
 	    base.success = function (response) { opts.success(response.result, response); };
 	}
@@ -59,9 +64,12 @@ Ext.define('MM.Api', {
 
 Ext.define('MM.Utils', {
     singleton: true,
+    html: function (value) {
+	return Ext.String.htmlEncode(String(value ?? ''));
+    },
     checkIcon: function (ok, extra) {
 	let ico = ok ? '✔' : '✘';
-	return extra ? `${ico} ${extra}` : ico;
+	return extra ? `${ico} ${MM.Utils.html(extra)}` : ico;
     },
 });
 
@@ -119,12 +127,12 @@ Ext.define('MM.panel.General', {
 	    MM.Api.request({
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
-		    // endpoint: {config, digest, absent}
-		    let mods = (res.config || {}).modules || {};
+		    let data = res.data || {};
+		    let mods = (data.config || {}).modules || {};
 		    moduleGrid.getStore().setData(
 			Object.keys(mods).map((k) => ({ name: k, enabled: !!mods[k] })),
 		    );
-		    me.digest = res.digest || '';
+		    me.digest = data.digest || '';
 		},
 	    });
 	};
@@ -171,21 +179,23 @@ MM.fillDiag = function (grid) {
 	    MM.Api.request({
 		url: `/nodes/${n.name}/mm-tools/status`,
 		success: (res) => {
-		    let ap = res.applied || {};
+		    let data = res.data || {};
+		    let ap = data.applied || {};
 		    let patches = ap.patches || {};
 		    store.add({
-			node: res.node || n.name,
-			pkg: res.package_version,
-			pve: res.pve_version,
+			node: data.node || n.name,
+			pkg: data.package_version,
+			pve: data.pve_version,
 			patch_tpl: patches.index_tpl?.status,
 			patch_pm: patches.nodes_pm?.status,
 			state: ap.state,
 			applied: ap.applied_revision,
 			cfgrev: ap.config_revision,
-			ntfs3g_ok: !!res.ntfs3g?.ok,
-			ntfs3g: res.ntfs3g?.ok === undefined
+			branding_serves: !!data.branding?.serves_asset,
+			ntfs3g_ok: !!data.ntfs3g?.ok,
+			ntfs3g: data.ntfs3g?.ok === undefined
 			    ? gettext('skipped')
-			    : (res.ntfs3g.ok ? 'ok' : (res.ntfs3g.error || 'fail')),
+			    : (data.ntfs3g.ok ? 'ok' : (data.ntfs3g.error || 'fail')),
 		    });
 		},
 		failure: (msg) => {
@@ -207,7 +217,7 @@ Ext.define('MM.panel.Diag', {
 	    store: {
 		fields: [
 		    'node', 'pkg', 'pve', 'patch_tpl', 'patch_pm',
-		    'state', 'applied', 'cfgrev', 'ntfs3g', 'ntfs3g_ok',
+		    'state', 'applied', 'cfgrev', 'branding_serves', 'ntfs3g', 'ntfs3g_ok',
 		],
 	    },
 	    columns: [
@@ -225,7 +235,11 @@ Ext.define('MM.panel.Diag', {
 		{
 		    text: gettext('Revision'), dataIndex: 'state', width: 140,
 		    renderer: (v, md, rec) =>
-			`${rec.get('applied') ?? '-'}/${rec.get('cfgrev') ?? '-'} (${v})`,
+			`${MM.Utils.html(rec.get('applied') ?? '-')}/${MM.Utils.html(rec.get('cfgrev') ?? '-')} (${MM.Utils.html(v)})`,
+		},
+		{
+		    text: gettext('Branding'), dataIndex: 'branding_serves', width: 100,
+		    renderer: (v) => MM.Utils.checkIcon(v, v ? gettext('serving') : gettext('not serving')),
 		},
 		{
 		    text: 'ntfs3g', dataIndex: 'ntfs3g', flex: 1,
@@ -268,16 +282,21 @@ Ext.define('MM.panel.Tools', {
     },
 });
 
-/* Aba dentro do Datacenter: PVE.dc.Config adiciona as tabs conforme
- * permissões; nós entram por cima com override seguro (callParent + add). */
+/* Aba dentro do Datacenter. O upstream constrói a árvore em insertNodes()
+ * antes do callParent(); interceptamos esse ponto para a aba entrar no
+ * TreeStore real, em vez de adicioná-la tarde demais ao card panel. */
 Ext.define('PVE.dc.Config', {
     override: 'PVE.dc.Config',
-    initComponent: function () {
-	let me = this;
-	me.callParent(arguments);
-	let caps = Ext.state.Manager.get('GuiCap');
-	if (caps?.dc?.['Sys.Audit']) {
-	    me.add({ xtype: 'mmToolsPanel' });
+    insertNodes: function (items) {
+	let caps = Ext.state.Manager.get('GuiCap') || {};
+	if (caps.dc?.['Sys.Audit']) {
+	    items.push({
+		xtype: 'mmToolsPanel',
+		itemId: 'mastermind',
+		title: 'MasterMind',
+		iconCls: 'fa fa-fw fa-puzzle-piece',
+	    });
 	}
+	this.callParent(arguments);
     },
 });

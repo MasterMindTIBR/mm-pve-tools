@@ -3,12 +3,12 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 
 use lib "$Bin/../../lib";
 use MMPve::Journal;
 
-my $tmp = "$Bin/tmp-journal";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-journal-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 
 subtest 'ciclo de vida' => sub {
@@ -54,5 +54,4 @@ subtest 'id inválido recusado' => sub {
     like($@, qr/id inválido/, 'sem path traversal');
 };
 
-system("rm -rf $tmp");
 done_testing();

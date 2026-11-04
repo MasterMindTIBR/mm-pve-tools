@@ -26,7 +26,7 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            perl make libperl-critic-perl
+            perl make nodejs libperl-critic-perl
       - name: perl -c em tudo (com stubs PVE p/ endpoints)
         shell: bash
         run: |
@@ -50,15 +50,29 @@ jobs:
           python-version: '3.13'
       - run: make test-gateway
 
+  api-real-pve:
+    name: API (módulos Perl reais do PVE 9.2)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: testes contra PVE real
+        run: make test-api
+
   shellcheck:
     name: Shellcheck
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: shellcheck nos .sh
+      - name: shellcheck nos maintainer scripts e scripts shell
         run: |
-          find . -path ./.git -prune -o -name '*.sh' -print0 \
-            | xargs -0 -r shellcheck
+          find debian -type f \( -name '*.postinst' -o -name '*.prerm' -o -name '*.postrm' \) -print0 \
+            | xargs -0 -r shellcheck --shell=sh
+          find lib gateway -type f -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck --shell=sh
+          find t/gui -type f -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck --shell=sh
+          find scripts -type f -name '*.sh' -print0 \
+            | xargs -0 -r shellcheck --shell=bash
 
   eslint:
     name: JS lint
@@ -70,8 +84,65 @@ jobs:
           make js
           npx --yes eslint@8.57.1 -c .eslintrc.json js/src build/mm-tools.js
 
+  gui:
+    name: GUI PVE 9.2 (Playwright)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: extrai assets dos debs PVE fixados
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/pve-gui-assets"
+          scripts/fetch-pve-debs.sh "$root" \
+            pve-manager="$(cat ci/pve-manager.version)" \
+            proxmox-widget-toolkit=5.2.10 \
+            libjs-extjs=7.0.0-9 \
+            libjs-qrcodejs=1.20230525-pve1
+          mkdir -p "$root/assets"
+          find "$root/x/pve-manager" -name index.html.tpl -exec cp {} "$root/assets/" \;
+          find "$root/x/pve-manager" -name Nodes.pm -exec cp {} "$root/assets/" \;
+          find "$root/x/pve-manager" -name pvemanagerlib.js -exec cp {} "$root/assets/" \;
+          find "$root/x/pve-manager" -name u2f-api.js -exec cp {} "$root/assets/" \;
+          find "$root/x/pve-manager" -name ext6-pve.css -exec cp {} "$root/assets/" \;
+          find "$root/x/proxmox-widget-toolkit" -name proxmoxlib.js -exec cp {} "$root/assets/" \;
+          find "$root/x/proxmox-widget-toolkit" -name ext6-pmx.css -exec cp {} "$root/assets/" \;
+          find "$root/x/libjs-extjs" -name ext-all.js -exec cp {} "$root/assets/" \;
+          find "$root/x/libjs-extjs" -name charts.js -exec cp {} "$root/assets/" \;
+          find "$root/x/libjs-extjs" -name locale-en.js -exec cp {} "$root/assets/" \;
+          find "$root/x/libjs-qrcodejs" -name qrcode.min.js -exec cp {} "$root/assets/" \;
+          test -f "$root/assets/index.html.tpl"
+          test -f "$root/assets/Nodes.pm"
+          test -f "$root/assets/pvemanagerlib.js"
+          test -f "$root/assets/u2f-api.js"
+          test -f "$root/assets/ext6-pve.css"
+          test -f "$root/assets/proxmoxlib.js"
+          test -f "$root/assets/ext6-pmx.css"
+          test -f "$root/assets/ext-all.js"
+          test -f "$root/assets/charts.js"
+          test -f "$root/assets/locale-en.js"
+          test -f "$root/assets/qrcode.min.js"
+      - name: harness GUI em container Playwright fixado
+        run: t/gui/run.sh --assets "$RUNNER_TEMP/pve-gui-assets/assets"
+
   build:
     name: Build .deb + lintian
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: dependências de build
+        uses: ./.github/actions/debian-build-deps
+      - name: build
+        run: scripts/build-deb.sh --in-container --lintian
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: debs
+          path: dist/
+
+  anchors:
+    name: Âncoras de patch (pve-manager 9.2.24 fixado)
     runs-on: ubuntu-24.04
     container:
       image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
@@ -81,55 +152,90 @@ jobs:
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential debhelper lintian python3
-      - name: build
+            ca-certificates curl gpg gpgv python3 perl make \
+            libhttp-message-perl libio-socket-ssl-perl
+      - name: baixa o pve-manager fixado e o widget-toolkit atual
+        shell: bash
         run: |
-          # root é exigido pelo maintscripts do pacote
-          dpkg-buildpackage -us -uc -b
-          mkdir -p dist && mv ../*.deb ../*.changes dist/ 2>/dev/null || true
-      - name: lintian
-        run: lintian --fail-on error,warning --pedantic dist/*.changes
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: debs
-          path: dist/
+          set -euo pipefail
+          pve="$RUNNER_TEMP/pve"
+          scripts/fetch-pve-debs.sh "$pve" \
+            pve-manager="$(cat ci/pve-manager.version)" proxmox-widget-toolkit=latest
+          make -s js >/dev/null
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
+          # Só o Nodes.pm é compilado; os módulos do PVE viram stubs (t/lib-autostub).
+          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
+            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
+          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
 
-  anchors:
-    name: Âncoras de patch (pve-manager + widget-toolkit upstream)
+  anchors-latest:
+    name: Âncoras contra upstream mais recente (semanal, não bloqueante)
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: baixa pve-manager mais recente e testa apply-patches
+      - name: deps
         run: |
-          set -e
-          BASE=http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64
-          PKGS=$(curl -fsSL "$BASE/Packages")
-          VER=$(printf '%s\n' "$PKGS" | python3 -c '
-          import re
-          import sys
-          match = re.search(r"(?ms)^Package: pve-manager\n.*?^Version: (\S+)$", sys.stdin.read())
-          if not match:
-              raise SystemExit("pve-manager não encontrado em Packages")
-          print(match.group(1))
-          ')
-          echo "pve-manager $VER"
-          curl -fsSL -o pm.deb "$BASE/pve-manager_${VER}_all.deb"
-          rm -rf /tmp/root && mkdir -p /tmp/root
-          dpkg-deb -x pm.deb /tmp/root
-          # fixture do repo também precisa passar
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl gpg gpgv python3 perl make \
+            libhttp-message-perl libio-socket-ssl-perl
+      - name: aplica os patches no upstream mais recente
+        id: check
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          pve="$RUNNER_TEMP/pve"
+          scripts/fetch-pve-debs.sh "$pve" \
+            pve-manager=latest proxmox-widget-toolkit=latest
           make -s js >/dev/null
-          rc=0
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --check --root /tmp/root || rc=$?
-          case "$rc" in
-            0|3) ;;
-            *) exit "$rc" ;;
-          esac
-      - name: âncora do branding (Logo.js do widget-toolkit)
-        run: |
-          curl -fsSL -o Logo.js \
-            'https://git.proxmox.com/?p=proxmox-widget-toolkit.git;a=blob_plain;f=src/Logo.js;hb=HEAD'
-          grep -q "Ext.define('PMX.image.LogoSVG'" Logo.js
-          grep -q 'proxmox_logo.svg' Logo.js
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
+          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
+            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
+          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
+      - name: abre ou atualiza o issue único de upstream
+        if: steps.check.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'CI: âncoras upstream quebradas';
+            const body = [
+              'A verificação semanal contra o upstream mais recente falhou.',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Fechar este issue somente depois de atualizar as âncoras e a prova.'
+            ].join('\n');
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            const issue = existing.data.find(item => item.title === title);
+            if (issue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body
+              });
+            }
 
   ntfs3g-compat:
     name: Compatibilidade com releases do ntfs3g (APT MasterMind)

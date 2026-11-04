@@ -1,0 +1,1 @@
+{"exitstatus":"OK","id":"9000-scsi0>9001-scsi0","node":"node1","pid":195635,"pstart":5598785,"starttime":1793385747,"status":"stopped","type":"qmmove","upid":"UPID:node1:0002FC33:00556E41:6AE4E513:qmmove:9000-scsi0>9001-scsi0:root@pam:","user":"root@pam"}

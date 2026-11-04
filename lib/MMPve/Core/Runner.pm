@@ -10,10 +10,12 @@ package MMPve::Core::Runner;
 use strict;
 use warnings;
 use IPC::Open3 qw(open3);
+use IO::Select;
 use Symbol qw(gensym);
 use JSON::PP qw(decode_json);
+use MMPve::Core::Util qw(log_line);
 
-our $VERSION = '0.1.0';
+our $VERSION = '@MM_PVE_VERSION@';
 
 our $OVERRIDE;
 
@@ -34,7 +36,11 @@ sub run {
     my ($out, $err) = ('', '');
     my ($infh, $outfh, $errfh);
     $errfh = gensym;
-    my $pid = eval { open3($infh, $outfh, $errfh, @{$argv}) };
+    # pvedaemon/pveproxy rodam com perl -T: argumento vindo da requisição ou
+    # da config está contaminado e o exec morre ("Insecure dependency"). A
+    # execução é por lista, sem shell, então cada argumento chega literal.
+    my @argv = map { (defined $_ && /\A(.*)\z/s) ? $1 : $_ } @{$argv};
+    my $pid = eval { open3($infh, $outfh, $errfh, @argv) };
     if (!$pid) {
         return {
             ok => 0, rc => 127, out => '', err => '',
@@ -49,10 +55,20 @@ sub run {
             print {$infh} $opts{stdin};
         }
         close($infh);
-        while (defined(my $l = <$outfh>)) { $out .= $l }
-        while (defined(my $l = <$errfh>)) { $err .= $l }
-        close($outfh);
-        close($errfh);
+        my $ready = IO::Select->new($outfh, $errfh);
+        while ($ready->count) {
+            for my $fh ($ready->can_read) {
+                my $chunk = '';
+                my $read = sysread($fh, $chunk, 8192);
+                if (!defined($read) || $read == 0) {
+                    $ready->remove($fh);
+                    close($fh);
+                    next;
+                }
+                if ($fh == $outfh) { $out .= $chunk }
+                else               { $err .= $chunk }
+            }
+        }
         alarm(0);
         1;
     } or do { $died = 1 };
@@ -87,6 +103,43 @@ sub run_json {
     return decode_json($out);
 }
 
+sub extract_upid {
+    my ($class, $output) = @_;
+    for my $line (reverse split /\n/, $output // '') {
+        $line =~ s/^\s+|\s+$//g;
+        next unless length $line;
+        my $value = eval { decode_json($line) };
+        return $value if !$@ && defined($value) && !ref($value) && $value =~ /^UPID:/;
+        return $1 if $line =~ /^"?(UPID:[^"\r\n]+)"?,?$/;
+    }
+    die "saída do pvesh não contém UPID\n";
+}
+
+sub _last_json_line {
+    my ($class, $output) = @_;
+    for my $line (reverse split /\n/, $output // '') {
+        $line =~ s/^\s+|\s+$//g;
+        next unless length $line;
+        my $value = eval { decode_json($line) };
+        return ($value, $line) unless $@;
+    }
+    return (undef, undef);
+}
+
+sub pvesh_task {
+    my ($class, $method, $path, %args) = @_;
+    my $timeout = delete $args{__timeout} // 300;
+    my @cmd = ('pvesh', $method, $path, '--output-format', 'json');
+    for my $k (sort keys %args) {
+        push @cmd, "--$k";
+        push @cmd, $args{$k} if defined $args{$k};
+    }
+    my $res = $class->run(\@cmd, timeout => $timeout);
+    die join(' ', @cmd) . ': ' . ($res->{error} || $res->{err} || "rc=$res->{rc}") . "\n"
+        unless $res->{ok};
+    return $class->extract_upid($res->{out});
+}
+
 # pvesh <method> <path> [args] --output-format json
 # args com __timeout controlam o timeout; o resto vira --chave valor.
 sub pvesh {
@@ -98,7 +151,20 @@ sub pvesh {
         push @cmd, "--$k";
         push @cmd, $v if defined $v;
     }
-    return $class->run_json(\@cmd, timeout => $timeout);
+    my $res = $class->run(\@cmd, timeout => $timeout);
+    die join(' ', @cmd) . ': ' . ($res->{error} || $res->{err} || "rc=$res->{rc}") . "\n"
+        unless $res->{ok};
+    my ($value, $json_line) = $class->_last_json_line($res->{out});
+    return $value if defined $json_line;
+
+    if ($method =~ /^(?:create|set|delete)$/) {
+        my $task_text = $res->{out} // '';
+        $task_text =~ s/\s+/ /g;
+        $task_text =~ s/^\s+|\s+$//g;
+        log_line("pvesh $method $path: $task_text") if length $task_text;
+        return undef;
+    }
+    die join(' ', @cmd) . ": saída não contém JSON\n";
 }
 
 1;

@@ -1,3 +1,4 @@
+# Stub de compilação. Fonte upstream: pve-common/src/PVE/Exception.pm:1.
 package PVE::Exception;
 use strict;
 use warnings;

@@ -27,7 +27,7 @@ sub setup {
             200 => { gw_ip => '10.20.200.250', prefix => 24 },
         },
         session_default_hours => 24,
-        session_max_hours     => 72,
+        session_max_hours     => 168,
         max_sessions          => 3,
     };
     MMPve::Core::Config->save($cfg);
@@ -48,6 +48,7 @@ sub make_override {
     my $dest_tags  = $opt{dest_tags};
     my $gwvmid     = 9000;
     @payloads = (); @execs = (); @tag_sets = (); @calls = ();
+    my $last_input;
 
     return sub {
         my ($argv, $stdin) = @_;
@@ -57,8 +58,9 @@ sub make_override {
         if ($cmd =~ m{create /nodes/\S+/qemu/$gwvmid/agent/exec}) {
             my @cmds = grep { defined } map { $argv->[$_] eq '--command' ? $argv->[$_+1] : () } 0..$#$argv-1;
             push @execs, [@cmds];
-            my ($input) = $cmd =~ /--input-data (\S+)/;
-            push @payloads, $input if defined $input;
+            # argumento inteiro (o JSON pode ter espaços)
+            ($last_input) = map { $argv->[$_ + 1] } grep { $argv->[$_] eq '--input-data' } 0 .. $#$argv - 1;
+            push @payloads, $last_input if defined $last_input;
             return { ok => 1, rc => 0, out => encode_json({ pid => 4242 }), err => '' };
         }
         # exec-status poll
@@ -69,24 +71,31 @@ sub make_override {
             }
             my $out = '';
             my @c = @{ $execs[-1] // [] };
+            my $request_id;
+            $request_id = eval { decode_json($last_input)->{request_id} } if defined $last_input;
             if ($opt{exitcode}) {
                 $out = $opt{gw_out} // '';
             } elsif ($c[1] && $c[1] eq 'publish') {
-                $out = encode_json($opt{gw_result} // {
+                my $gw_result = { %{ $opt{gw_result} // {
                     unc => '\\\\10.20.120.250\\r-abc123',
                     user => 'gwr-abc123',
                     password => 'SECRETA-xyz',
                     expires_at => '2026-10-28T10:00:00-03:00',
-                });
+                } }, request_id => $request_id // 'mock-request-id' };
+                $out = encode_json($gw_result);
             } elsif ($c[1] && $c[1] eq 'list') {
-                $out = encode_json($opt{sessions} // []);
+                $out = encode_json({
+                    contract => 1,
+                    sessions => $opt{sessions} // [],
+                });
             } else {
                 $out = $opt{gw_out} // "\x{2714} plugin ntfs3g ok\n\x{2714} PBS alcancavel\n";
             }
             my $ec = $opt{exitcode} // 0;
             return {
                 ok => 1, rc => 0,
-                out => encode_json({ exited => 1, pid => $1, exitcode => $ec, out => $out, err => '' }),
+                out => encode_json({ exited => 1, pid => $1, exitcode => $ec, out => $out,
+                    err => $opt{gw_err} // '' }),
                 err => '',
             };
         }

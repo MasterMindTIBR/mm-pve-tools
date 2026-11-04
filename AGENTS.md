@@ -46,8 +46,10 @@ logs de CI, fixtures ou capturas.
 7. Testes rodam sem PVE instalado: `prove -Ilib -Iperl -r t` tem que passar em
    qualquer Debian 13. Gateway: `python3 -m unittest discover -s t/gateway -v`
    (top-level do repo) — sem samba/nft/PBS.
-8. Não atualize `debian/changelog` por commit; versão é `X.Y.Z` (SemVer) +
-   `CHANGELOG.md` com `[Unreleased]` até a release.
+8. Não atualize `debian/changelog` durante commits normais. Somente o commit de
+   release roda `scripts/bump-version.sh X.Y.Z`, que move as notas de
+   `CHANGELOG.md` `[Unreleased]` para a entrada Debian; consumidores de versão
+   são substituídos no staging pelo valor de `debian/changelog`.
 9. GUI JS: Ext JS 6 (estilo `pvemanagerlib.js`), namespace `MM.*`, registro de
    aba via `MM.registerTab(...)`. O arquivo final é concatenação na ordem do
    `Makefile` (`core.js, renumber.js, restore.js, branding.js`) — nunca edite
@@ -111,8 +113,7 @@ make test            # prove -Ilib -Iperl -r t  (exclui t/gateway)
 make test-gateway    # unittest python
 make js              # concatena js/src → build/mm-tools.js
 make lint            # perl -c em tudo + shellcheck se houver
-make build           # dpkg-buildpackage -us -uc -b (precisa debhelper)
-make pkg-direct      # staging + dpkg-deb --build (sem debhelper; smoke local)
+make build           # scripts/build-deb.sh no Debian 13 fixado
 make check-anchors   # apply-patches --check contra t/fixtures/pve-manager
 ```
 

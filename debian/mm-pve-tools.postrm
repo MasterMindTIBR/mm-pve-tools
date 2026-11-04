@@ -1,0 +1,15 @@
+#!/bin/sh
+# Limpeza final do mm-pve-tools; upgrades passam pelo prerm normalmente.
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /usr/share/pve-manager/images/mm-branding
+        rm -f /usr/share/pve-manager/js/mm-branding.json
+        rm -rf /var/lib/mm-pve-tools
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

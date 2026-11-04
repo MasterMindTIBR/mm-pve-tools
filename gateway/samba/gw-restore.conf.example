@@ -1,19 +1,20 @@
-# Exemplo do arquivo gerado pelo gw-restore e incluído UMA vez no [global]
-# do smb.conf pelo postinst:
+# Exemplo do arquivo gerado pelo gw-restore. O postinst grava, uma única
+# vez, a ÚLTIMA linha do smb.conf:
 #   include = /etc/samba/gw-restore.conf
-#
+# (nunca logo após "[global]": o Samba aplica os parâmetros ao último
+# cabeçalho de seção visto, e um include ali faria os parâmetros globais
+# seguintes do smb.conf original cair dentro do último share incluído)
 # Este arquivo de exemplo NÃO é usado pelo Samba. O real é regenerado pelo
 # gw-restore a cada sessão criada/revogada, com um bloco por sessão:
 #
 #   [r-8f3a2c]
 #     path = /srv/gw-restore/sessions/8f3a2c/mnt/<subpasta>
 #     read only = yes
-#     browseable = no
+#     browseable = yes
 #     valid users = gwr-8f3a2c
 #     hosts allow = 10.1.20.23
 #     hosts deny = ALL
 #     wide links = no
 #     smb encrypt = required
 #
-# No [global] do smb.conf (feito na instalação):
-#   server min protocol = SMB3
+#   server min protocol = SMB3   (inserido pelo postinst dentro de [global])

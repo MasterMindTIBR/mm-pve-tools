@@ -3,13 +3,13 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use JSON::PP;
 
 use lib "$Bin/../../lib", "$Bin/../../perl";
 use MMPve::Core::Config;
 
-my $tmp = "$Bin/tmp-config";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-config-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 $ENV{MM_PVE_ROOT} = "$tmp";
 
@@ -36,7 +36,7 @@ subtest 'validacao aceita bom' => sub {
             session_max_hours     => 72,
             max_sessions          => 10,
         },
-        branding => { title => 'Cliente — Virtualização', logo => 'logo.svg' },
+        branding => { title => 'Cliente — Virtualização', logo => '' },
     });
     is(scalar @e, 0, 'sem erros') or diag explain \@e;
 };
@@ -47,7 +47,7 @@ subtest 'validacao rejeita ruim' => sub {
         [ { modules => { renumber => 'sim' } },                qr/booleano/ ],
         [ { modules => { inexistente => 1 } },                 qr/desconhecido/ ],
         [ { chave_nova => 1 },                                 qr/desconhecida/ ],
-        [ { branding => { logo => 'logo.gif' } },             qr/svg ou \.png/ ],
+        [ { branding => { logo => 'logo.gif' } },             qr/só \.png|asset precisa/ ],
         [ { vmid_scheme => [ { label => 'A', from => 1000, to => 1999 },
                              { label => 'B', from => 1500, to => 2500 } ] }, qr/sobrepostas/ ],
         [ { vmid_scheme => [ { label => 'A', from => 2000, to => 1000 } ] }, qr/from/ ],
@@ -55,7 +55,7 @@ subtest 'validacao rejeita ruim' => sub {
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.999', prefix => 24 } } } }, qr/IPv4/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.1', prefix => 40 } } } },   qr/8\.\.32/ ],
         [ { restore => { session_default_hours => 100, session_max_hours => 50 } },       qr/default_hours/ ],
-        [ { restore => { session_max_hours => 99999 } },                                  qr/720/ ],
+        [ { restore => { session_max_hours => 99999 } },                                  qr/168/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.1', prefix => 24 },
                                       200 => { gw_ip => '10.0.0.1', prefix => 24 } } } }, qr/repetido/ ],
         [ { branding => { logo => '../../etc/passwd' } },     qr/nome de arquivo/ ],
@@ -105,5 +105,4 @@ subtest 'JSON inválido rejeitado' => sub {
     like($@, qr/inválido/, 'json quebrado → die');
 };
 
-system("rm -rf $tmp");
 done_testing();

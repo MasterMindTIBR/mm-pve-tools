@@ -1,0 +1,9 @@
+/var/log/gw-restore/audit.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

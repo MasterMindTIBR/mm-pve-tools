@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "sessions": [
+    {
+      "id": "abc123",
+      "target_vmid": 100,
+      "source_vmid": 100,
+      "vlan": 120,
+      "vm_ip": "10.20.120.77",
+      "expires_at": "2026-10-28T10:00:00-03:00"
+    }
+  ]
+}

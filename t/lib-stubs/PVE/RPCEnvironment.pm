@@ -1,3 +1,4 @@
+# Stub de compilação. Fonte upstream: pve-manager/PVE/RPCEnvironment.pm:1.
 package PVE::RPCEnvironment;
 use strict;
 use warnings;

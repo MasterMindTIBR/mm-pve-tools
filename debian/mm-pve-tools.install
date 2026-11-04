@@ -1,6 +1,7 @@
 bin/mm-pve usr/sbin
 lib/MMPve usr/share/perl5
 perl/PVE usr/share/perl5
+contract/gw-restore.v1.schema.json usr/share/mm-pve-tools/contract
 build/mm-tools.js usr/share/pve-manager/js
 lib/mm-pve-tools/apply-patches usr/lib/mm-pve-tools
 systemd/mm-pve-apply.service usr/lib/systemd/system

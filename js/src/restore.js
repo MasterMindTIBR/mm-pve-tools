@@ -8,7 +8,7 @@
  *     sessões (GET restore/sessions) e botão Revogar;
  *  d) em falha: passo/erro + comando pronto `mm-pve restore publish
  *     ... --resume` com botão copiar.
- * A senha NUNCA aparece no Task Log — só no GET restore/result/<upid>
+ * A senha NUNCA aparece no Task Log — só no GET restore/results/<result_key>
  * (one-shot, dono da tarefa).
  */
 
@@ -140,6 +140,74 @@ Ext.define('MM.window.RestoreResult', {
 	me.callParent();
     },
 });
+/* ---------------- Seletor de caminho do backup (tree PBS) ------------- */
+/* Proxmox.window.FileBrowser (widget-toolkit) é só download: não expõe
+ * nenhum gancho de seleção externo. Reaproveitamos o mesmo model/proxy
+ * ('proxmox-file-tree', já registrado globalmente pelo bundle do PVE)
+ * numa janela própria, com um botão "Select" que devolve o filepath
+ * (já em base64, mesmo formato aceito por path_b64) via callback. */
+Ext.define('MM.window.FilePathPicker', {
+    extend: 'Ext.window.Window',
+    alias: 'widget.mmFilePathPicker',
+
+    width: 800,
+    height: 600,
+    modal: true,
+    layout: 'fit',
+
+    // config: listURL, extraParams, archive, onSelect(filepathB64, text)
+    initComponent: function () {
+	let me = this;
+	let tree = Ext.create('Ext.tree.Panel', {
+	    scrollable: true,
+	    rootVisible: false,
+	    store: {
+		autoLoad: false,
+		model: 'proxmox-file-tree',
+		defaultRootId: '/',
+		nodeParam: 'filepath',
+		sorters: 'text',
+		proxy: {
+		    type: 'proxmox',
+		    appendId: false,
+		    url: me.listURL,
+		    extraParams: me.extraParams || {},
+		},
+	    },
+	    columns: [
+		{ text: gettext('Name'), xtype: 'treecolumn', flex: 1, dataIndex: 'text',
+		    renderer: Ext.String.htmlEncode },
+		{ text: gettext('Type'), dataIndex: 'type', width: 100 },
+	    ],
+	});
+	let selectBtn = Ext.create('Ext.Button', {
+	    text: gettext('Select'),
+	    disabled: true,
+	    handler: () => {
+		let rec = tree.getSelection()[0];
+		if (!rec) { return; }
+		me.onSelect?.(rec.data.filepath, atob(rec.data.filepath));
+		me.close();
+	    },
+	});
+	tree.on('selectionchange', (sm, sel) => selectBtn.setDisabled(!sel.length));
+	tree.getStore().load((root) => {
+	    let r = tree.getStore().getRoot();
+	    r.expand();
+	    if (me.archive === 'all') { r.expandChildren(false); }
+	    void root;
+	});
+	Ext.apply(me, {
+	    items: [tree],
+	    buttons: [
+		selectBtn,
+		{ text: gettext('Cancel'), handler: () => me.close() },
+	    ],
+	});
+	me.callParent();
+    },
+});
+
 
 /* ---------------- Diálogo de publicação ------------------------------ */
 
@@ -164,6 +232,10 @@ Ext.define('MM.window.RestorePublish', {
 	    width: 520,
 	    allowBlank: false,
 	    emptyText: '/drive-scsi1.img.fidx/part/2/Dados',
+	    listeners: {
+		// edição manual invalida o filepath (já em base64) vindo do Browse
+		change: () => { me.selectedPathB64 = null; },
+	    },
 	});
 
 	let vmidField = Ext.create('Ext.form.field.Number', {
@@ -200,7 +272,7 @@ Ext.define('MM.window.RestorePublish', {
 	let submit = () => {
 	    let spec = {
 		backup: volid,
-		path_b64: MM.Restore.utils.b64path(pathField.getValue().trim()),
+		path_b64: me.selectedPathB64 || MM.Restore.utils.b64path(pathField.getValue().trim()),
 		vmid: vmidField.getValue() || undefined,
 		hours: hoursField.getValue(),
 		ticket: ticketField.getValue() || undefined,
@@ -211,15 +283,17 @@ Ext.define('MM.window.RestorePublish', {
 		url: '/nodes/localhost/mm-tools/restore/publish',
 		params: spec,
 		success: (res) => {
-		    let upid = res?.data;
-		    if (!upid) { return; }
+		    let task = res?.data || res;
+		    let upid = task?.upid;
+		    let resultKey = task?.result_key;
+		    if (!upid || !resultKey) { return; }
 		    me.close();
 		    Ext.create('Proxmox.window.TaskViewer', {
 			upid,
 			autoShow: true,
 			listeners: {
 			    // busca única do resultado quando a janela fecha
-			    destroy: () => MM.Restore.fetchResult(upid),
+			    destroy: () => MM.Restore.fetchResult(resultKey),
 			},
 		    });
 		},
@@ -248,14 +322,18 @@ Ext.define('MM.window.RestorePublish', {
 			    iconCls: 'fa fa-folder-o',
 			    disabled: !storage,
 			    handler: () => {
-				// FileBrowser apenas-visual: escolha manual do
-				// caminho (seleção de pasta não é capturável)
-				Ext.create('Proxmox.window.FileBrowser', {
+				Ext.create('MM.window.FilePathPicker', {
 				    title: gettext('Browse backup') + ' - ' + volid,
 				    listURL:
 					`/api2/json/nodes/localhost/storage/${storage}/file-restore/list`,
 				    extraParams: { volume: volid },
 				    archive: 'all',
+				    onSelect: (filepathB64, text) => {
+					me.selectedPathB64 = filepathB64;
+					pathField.suspendEvent('change');
+					pathField.setValue(text);
+					pathField.resumeEvent('change');
+				    },
 				    autoShow: true,
 				});
 			    },
@@ -280,10 +358,10 @@ Ext.define('MM.window.RestorePublish', {
     },
 });
 
-/* GET restore/result/<upid> — uma única vez; arquivo apagado no servidor */
-MM.Restore.fetchResult = function (upid, attempt = 0) {
+/* GET restore/results/<result_key> — uma única vez; arquivo apagado no servidor */
+MM.Restore.fetchResult = function (resultKey, attempt = 0) {
     MM.Api.request({
-	url: `/nodes/localhost/mm-tools/restore/result/${encodeURIComponent(upid)}`,
+	url: `/nodes/localhost/mm-tools/restore/results/${encodeURIComponent(resultKey)}`,
 	success: (res) => {
 	    Ext.create('MM.window.RestoreResult', {
 		autoShow: true,
@@ -293,7 +371,7 @@ MM.Restore.fetchResult = function (upid, attempt = 0) {
 	failure: (msg, response) => {
 	    // tarefa pode ainda estar em execução quando o TaskViewer fecha
 	    if (response?.status === 503 && attempt < 30) {
-		Ext.defer(() => MM.Restore.fetchResult(upid, attempt + 1), 2000);
+		Ext.defer(() => MM.Restore.fetchResult(resultKey, attempt + 1), 2000);
 		return;
 	    }
 	    if (response?.status !== 404 && response?.status !== 403) {
@@ -347,17 +425,19 @@ Ext.define('MM.panel.Restore', {
 		},
 	    });
 	};
+	let sm = Ext.create('Ext.selection.RowModel', {});
 
 	Ext.apply(me, {
+	    selModel: sm,
 	    store: {
-		fields: ['id', 'vmid', 'vlan', 'expires_at', 'path', 'ticket'],
+		fields: ['id', 'target_vmid', 'vlan', 'expires_at', 'subpath', 'ticket'],
 	    },
 	    columns: [
 		{ text: 'ID', dataIndex: 'id', width: 130 },
-		{ text: gettext('VM'), dataIndex: 'vmid', width: 80 },
+		{ text: gettext('VM'), dataIndex: 'target_vmid', width: 80 },
 		{ text: 'VLAN', dataIndex: 'vlan', width: 80 },
 		{ text: gettext('Expires'), dataIndex: 'expires_at', width: 180 },
-		{ text: gettext('Folder'), dataIndex: 'path', flex: 1 },
+		{ text: gettext('Folder'), dataIndex: 'subpath', flex: 1 },
 		{ text: 'GLPI', dataIndex: 'ticket', width: 110 },
 	    ],
 	    tbar: [
@@ -365,7 +445,7 @@ Ext.define('MM.panel.Restore', {
 		    xtype: 'proxmoxButton',
 		    text: gettext('Revoke'),
 		    disabled: true,
-		    selModel: () => me.getSelectionModel(),
+		    selModel: sm,
 		    handler: revoke,
 		},
 		{ xtype: 'tbspacer', width: 10 },
@@ -384,7 +464,8 @@ Ext.define('MM.panel.Restore', {
 			MM.Api.request({
 			    url: '/nodes/localhost/mm-tools/restore/test-gateway',
 			    success: (res) => {
-				let lines = (res?.items || [])
+				let data = res.data || {};
+				let lines = (data.items || [])
 				    .map((it) => (it.ok ? '✔ ' : '✘ ') + it.line)
 				    .join('\n');
 				Ext.Msg.alert(
@@ -411,40 +492,26 @@ Ext.define('PVE.grid.BackupView', {
     initComponent: function () {
 	let me = this;
 	me.callParent(arguments);
-	let sm = me.getSelectionModel();
-	let btn = {
-	    xtype: 'proxmoxButton',
-	    text: gettext('Publish folder…'),
+	let caps = Ext.state.Manager.get('GuiCap') || {};
+	if (!caps.dc?.['Sys.Audit']) { return; }
+	let toolbar = me.getDockedItems('toolbar[dock="top"]')[0] || me.down('toolbar');
+	if (!toolbar) { return; }
+	let button = Ext.create('Proxmox.button.Button', {
+	    text: 'Publicar pasta…',
 	    disabled: true,
-	    selModel: sm,
+	    selModel: me.getSelectionModel(),
+	    enableFn: (rec) => !!rec && /:backup\/vm\//.test(rec.data?.volid || ''),
 	    handler: function (b, e, rec) {
 		let volid = rec?.data?.volid || '';
-		if (!volid.match(/:backup\/vm\//)) {
-		    Ext.Msg.alert(
-			gettext('Error'),
-			gettext('Select a PBS backup (storage:backup/vm/...).'),
-		    );
-		    return;
-		}
-		let storage = volid.split(':')[0];
-		MM.Api.request({
-		    url: '/nodes/localhost/mm-tools/config',
-		    failure: () => {}, // sem Sys.Audit: segue com padrão
-		    success: (res) => {
-			let r = (res?.config || {}).restore || {};
-			Ext.create('MM.window.RestorePublish', {
-			    autoShow: true,
-			    volid,
-			    defaultHours: r.session_default_hours || 24,
-			});
-			void storage;
-		    },
-		});
+		if (!volid.match(/:backup\/vm\//)) { return; }
+		// VLAN e IP são resolvidos no servidor (Restore.pm).
+		Ext.create('MM.window.RestorePublish', { autoShow: true, volid });
 	    },
-	};
-	if (Ext.isArray(me.tbar)) {
-	    me.tbar.push(btn);
-	    me.updateToolbar?.();
-	}
+	});
+	let insertAt = toolbar.items.length;
+	toolbar.items.each((item, index) => {
+	    if (item.getText?.() === gettext('File Restore')) { insertAt = index + 1; }
+	});
+	toolbar.insert(insertAt, button);
     },
 });

@@ -3,14 +3,14 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use File::Copy qw(copy);
 
 use lib "$Bin/../../lib";
 use MMPve::Core::Patch;
 
-my $tmp = "$Bin/tmp-patch";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-patch-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 
 sub fresh_root {
     my ($name) = @_;
@@ -103,11 +103,28 @@ subtest 'âncora quebrada → nada muda, status anchor_missing' => sub {
     is($c->{nodes_pm}{status},  'anchor_missing');
 };
 
+subtest 'falha no segundo arquivo → os dois ficam originais' => sub {
+    $ENV{MM_PVE_ROOT} = fresh_root('transaction');
+    my $tpl = "$ENV{MM_PVE_ROOT}/usr/share/pve-manager/index.html.tpl";
+    my $pm  = "$ENV{MM_PVE_ROOT}/usr/share/perl5/PVE/API2/Nodes.pm";
+    my $tpl_before = join('', lines_of($tpl));
+    my $pm_before  = join('', lines_of($pm));
+
+    no warnings 'redefine';
+    local *MMPve::Core::Patch::_perl_c = sub {
+        return { ok => 0, rc => 1, out => '', err => 'falha simulada no segundo arquivo' };
+    };
+    my $r = MMPve::Core::Patch->apply(syntax_check => 'always', no_restart => 1);
+    ok(!$r->{ok}, 'transação falha');
+    is(join('', lines_of($tpl)), $tpl_before, 'index.html.tpl restaurado');
+    is(join('', lines_of($pm)),  $pm_before,  'Nodes.pm restaurado');
+    ok((grep { $r->{targets}{$_}{restored} } qw(index_tpl nodes_pm)), 'rollback registrado');
+};
+
 sub first_index {
     my ($l, $re) = @_;
     for my $i (0 .. $#{$l}) { return $i if $l->[$i] =~ $re }
     return -1;
 }
 
-system("rm -rf $tmp");
 done_testing();

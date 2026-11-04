@@ -3,12 +3,12 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin qw($Bin);
+use File::Temp qw(tempdir);
 
 use lib "$Bin/../../lib";
 use MMPve::Core::Status;
 
-my $tmp = "$Bin/tmp-status";
-system("rm -rf $tmp") == 0 or die;
+my $tmp = tempdir('mm-pve-status-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_ROOT} = "$tmp";
 $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 
@@ -16,7 +16,7 @@ subtest 'collect com runner falso' => sub {
     no warnings 'once';
     local $MMPve::Core::Runner::OVERRIDE = sub {
         my ($argv) = @_;
-        if ($argv->[0] eq 'dpkg-query')   { return { rc => 0, out => "0.1.0-1\n" } }
+        if ($argv->[0] eq 'dpkg-query')   { return { rc => 0, out => "test-version-1\n" } }
         if ($argv->[0] eq 'pvesh')        { return { rc => 0, out => '{"version":"9.2.24"}' } }
         if ($argv->[0] eq 'pve-file-restore-ntfs3g-check') {
             return {
@@ -29,7 +29,7 @@ subtest 'collect com runner falso' => sub {
         return { rc => 1, out => '', err => 'comando não simulado' };
     };
     my $s = MMPve::Core::Status->collect;
-    is($s->{package_version}, '0.1.0-1', 'versão do pacote');
+    is($s->{package_version}, 'test-version-1', 'versão do pacote');
     is($s->{pve_version}, '9.2.24', 'versão do PVE');
     ok($s->{node}, 'node presente');
     ok($s->{ntfs3g}{ok}, 'ntfs3g ok (contrato do meta-pacote)');
@@ -54,5 +54,4 @@ subtest 'ntfs3g-check falho degrada sem explodir' => sub {
     like($s->{ntfs3g}{error}, qr/boom|rc=1/, 'erro registrado');
 };
 
-system("rm -rf $tmp");
 done_testing();

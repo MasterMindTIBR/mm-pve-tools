@@ -3,12 +3,19 @@
  * (a) MM.Branding.init(): lê /pve2/js/mm-branding.json (gravado pelo apply)
  *     e sobrescreve logo/favicon/título/texto do topo/texto de login.
  *     "Powered by Proxmox VE" permanece visível (regra do plano).
- * (b) Aba Branding (MM.registerTab): upload base64 via API, textos,
+ * (b) Aba Branding (MM.registerTab): upload PNG base64 via JSON, textos,
  *     pré-visualização, Salvar/Restaurar padrão.
  */
 
 Ext.define('MM.Branding', {
     singleton: true,
+
+    RAW_ASSET_MAX_BYTES: 256 * 1024,
+    REQUEST_MAX_BYTES: (512 * 1024) - (16 * 1024),
+
+    requestBytes: function (payload) {
+	return new TextEncoder().encode(JSON.stringify(payload)).length;
+    },
 
     cfg: null,
 
@@ -69,48 +76,19 @@ Ext.define('MM.Branding', {
 		    let cur = c.getValue ? c.getValue() : (c.getHtml?.() ?? '');
 	    let m = String(cur ?? '').match(/\d[\w.-]*/);    // versão
 		    let txt = cfg.header_text + (m ? ` ${m[0]}` : '');
-		    if (c.setValue) { c.setValue(txt); } else { c.setHtml(txt); }
+		    if (c.setValue) { c.setValue(txt); } else { c.setHtml(Ext.String.htmlEncode(txt)); }
 		});
 	    };
 	    setHeader();
 	    // janelas/views criadas depois
 	    Ext.on('resize', setHeader);
 	}
+	Ext.ComponentQuery.query('#mm-login-text').forEach((c) => {
+	    c.setHtml(Ext.String.htmlEncode(cfg.login_text || ''));
+	    c.setHidden(!cfg.login_text);
+	});
+	Ext.ComponentQuery.query('#mm-login-powered').forEach((c) => c.setHidden(!cfg.login_text));
 
-	// Tela de login: mostra login_text abaixo do logo, sem esconder o
-	// branding do Proxmox.
-	if (cfg.login_text && Ext.ClassManager.get('PVE.window.LoginWindow')) {
-	    Ext.define('MM.override.LoginWindow', {
-		override: 'PVE.window.LoginWindow',
-		initComponent: function () {
-		    let me2 = this;
-		    me2.callParent(arguments);
-		    let items = me2.items;
-		    if (items && items.length && cfg.logo_url) {
-			// substitui o logo do login pelo da MasterMind
-			Ext.each(items, (it) => {
-			    if (it.xtype === 'proxmoxLogoSvg' || it.xtype === 'proxmoxlogo') {
-				it.src = cfg.logo_url.replace(/^\/pve2/, '');
-			    }
-			});
-		    }
-		    let panel = items?.[0];
-		    if (panel) {
-			panel.items = (panel.items || []).concat([{
-			    xtype: 'box',
-			    html: Ext.String.htmlEncode(cfg.login_text),
-			    padding: '5 0',
-			    style: { 'text-align': 'center', color: '#555' },
-			}, {
-			    xtype: 'box',
-			    html: 'Powered by Proxmox VE',
-			    padding: '2 0 5 0',
-			    style: { 'text-align': 'center', 'font-size': '11px', color: '#888' },
-			}]);
-		    }
-		},
-	    });
-	}
     },
 
     /* Sem branding.json (revert): devolve favicon/título ao padrão. */
@@ -118,9 +96,41 @@ Ext.define('MM.Branding', {
 	let me = this;
 	if (!me.cfg) { return; }
 	me.cfg = null;
+	Ext.ComponentQuery.query('#mm-login-text').forEach((c) => c.setHidden(true));
+	Ext.ComponentQuery.query('#mm-login-powered').forEach((c) => c.setHidden(true));
 	document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]').forEach((l) => {
 	    l.href = '/pve2/images/logo-128.png';
 	});
+    },
+});
+
+/* O LoginWindow é criado no primeiro render do workspace. O override precisa
+ * existir no carregamento do bundle, não depois do fetch assíncrono do JSON. */
+Ext.define('MM.override.LoginWindow', {
+    override: 'PVE.window.LoginWindow',
+    initComponent: function () {
+	let me = this;
+	me.callParent(arguments);
+	let cfg = MM.Branding.cfg || {};
+	let form = me.down('form[reference=loginForm]');
+	if (form) {
+	    form.add({
+		xtype: 'box',
+		itemId: 'mm-login-text',
+		hidden: !cfg.login_text,
+		html: Ext.String.htmlEncode(cfg.login_text),
+		padding: '5 0',
+		style: { 'text-align': 'center', color: '#555' },
+	    });
+	    form.add({
+		xtype: 'box',
+		itemId: 'mm-login-powered',
+		hidden: !cfg.login_text,
+		html: 'Powered by Proxmox VE',
+		padding: '2 0 5 0',
+		style: { 'text-align': 'center', 'font-size': '11px', color: '#888' },
+	    });
+	}
     },
 });
 
@@ -138,15 +148,19 @@ Ext.define('MM.panel.Branding', {
 	let me = this;
 
 	let readFile = (file, cb) => {
+	    if (!file || file.size > MM.Branding.RAW_ASSET_MAX_BYTES) {
+		Ext.Msg.alert(gettext('Error'), gettext('O PNG excede 256 KiB.'));
+		return;
+	    }
 	    let fr = new FileReader();
 	    fr.onload = () => cb(String(fr.result).split(',').pop()); // base64 puro
 	    fr.readAsDataURL(file);
 	};
 
 	let logoField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Logo') + ' (SVG/PNG, 200 KB)',
+	    fieldLabel: gettext('Logo') + ' (PNG, 256 KiB)',
 	    name: 'logo',
-	    accept: '.svg,.png',
+	    accept: '.png',
 	    listeners: {
 		change: (f, v) => {
 		    me.pendingLogoName = f.fileInputEl.dom.files[0]?.name;
@@ -156,9 +170,9 @@ Ext.define('MM.panel.Branding', {
 	    },
 	});
 	let faviconField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Favicon') + ' (SVG/PNG, 200 KB)',
+	    fieldLabel: gettext('Favicon') + ' (PNG, 256 KiB)',
 	    name: 'favicon',
-	    accept: '.svg,.png',
+	    accept: '.png',
 	    listeners: {
 		change: (f) => {
 		    me.pendingFaviconName = f.fileInputEl.dom.files[0]?.name;
@@ -185,8 +199,7 @@ Ext.define('MM.panel.Branding', {
 	me.preview = function () {
 	    let src = null;
 	    if (me.pendingLogo) {
-		let ext = (me.pendingLogoName || 'x.svg').split('.').pop().toLowerCase();
-		src = `data:image/${ext === 'png' ? 'png' : 'svg+xml'};base64,${me.pendingLogo}`;
+		src = `data:image/png;base64,${me.pendingLogo}`;
 	    } else if (me.state?.branding?.logo) {
 		src = `/pve2/images/mm-branding/${me.state.branding.logo}?v=${me.state.state?.config_hash || '0'}`;
 	    }
@@ -197,14 +210,16 @@ Ext.define('MM.panel.Branding', {
 
 	me.reload = function () {
 	    MM.Api.request({
+		method: 'GET',
 		url: '/nodes/localhost/mm-tools/branding',
 		success: (res) => {
-		    me.state = res;
-		    let b = res.branding || {};
+		    let data = res.data || {};
+		    me.state = data;
+		    let b = data.branding || {};
 		    titleField.setValue(b.title || '');
 		    headerField.setValue(b.header_text || '');
 		    loginField.setValue(b.login_text || '');
-		    me.digest = res.digest;
+		    me.digest = data.digest;
 		    me.preview();
 		},
 	    });
@@ -221,11 +236,19 @@ Ext.define('MM.panel.Branding', {
 		data.favicon_b64 = me.pendingFavicon;
 		data.favicon_name = me.pendingFaviconName;
 	    }
+	    let requestBytes = MM.Branding.requestBytes(data);
+	    if (requestBytes > MM.Branding.REQUEST_MAX_BYTES) {
+		Ext.Msg.alert(gettext('Error'), gettext('A requisição JSON excede o limite seguro do pveproxy.'));
+		return;
+	    }
 	    MM.Api.request({
 		method: 'PUT',
 		url: '/nodes/localhost/mm-tools/branding/upload',
-		data: data,
-		success: () => cb(),
+		jsonData: data,
+		success: (res) => {
+		    me.digest = res?.data?.digest || me.digest;
+		    cb();
+		},
 		failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 	    });
 	};
@@ -258,24 +281,16 @@ Ext.define('MM.panel.Branding', {
 			    MM.Api.request({
 				method: 'PUT',
 				url: '/nodes/localhost/mm-tools/branding/set',
-				data: {
+				params: {
 				    title: titleField.getValue(),
 				    header_text: headerField.getValue(),
 				    login_text: loginField.getValue(),
+				    digest: me.digest,
 				},
 				success: () => {
 				    me.pendingLogo = me.pendingFavicon = null;
 				    me.reload();
-				    // aplica já neste node (imagens copiadas + json)
-				    MM.Api.request({
-					method: 'POST',
-					url: '/nodes/localhost/mm-tools/apply',
-					success: (res) => {
-					    if (res?.data) {
-						Ext.create('Proxmox.window.TaskViewer', { upid: res.data, autoShow: true });
-					    }
-					},
-				    });
+				    MM.applyAll();
 				},
 				failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 			    });
@@ -289,11 +304,12 @@ Ext.define('MM.panel.Branding', {
 			MM.Api.request({
 			    method: 'PUT',
 			    url: '/nodes/localhost/mm-tools/branding/set',
-			    data: { digest: me.digest, clear: true },
+			    params: { digest: me.digest, clear: true },
 			    success: () => {
 				me.pendingLogo = me.pendingFavicon = null;
 				MM.Branding.clear();
 				me.reload();
+				MM.applyAll();
 			    },
 			    failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
 			});

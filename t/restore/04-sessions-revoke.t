@@ -17,7 +17,8 @@ RestoreTest::setup();
 local $MMPve::Module::Restore::POLL_DELAY = 0;
 
 # ---------- resultado: dono + one-shot ----------
-my $key = 'UPID:pve1:0000012:0000AB:1:mmrestore:restore:100:root@pam:';
+my $upid = 'UPID:pve1:0000012:0000AB:1:mmrestore:restore:100:root@pam:';
+my $key = $R->result_key_for_upid($upid);
 $R->save_result($key, 'admin@pve', { unc => 'u', password => 'x' });
 my $f = "$ENV{MM_PVE_ROOT}/run/mm-pve-tools/results/$key.json";
 is((stat($f))[2] & 0777, 0600, 'resultado 0600');
@@ -32,7 +33,7 @@ like($@, qr/já foi lido|não existe/, 'one-shot');
 
 # ---------- sessions ----------
 local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(sessions => [
-    { id => 'abc123', vmid => 100, vlan => 120, expires_at => '2026-10-28T10:00:00-03:00' },
+    { id => 'abc123', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.77', expires_at => '2026-10-28T10:00:00-03:00' },
 ]);
 my @s = $R->sessions;
 is(scalar @s, 1, 'uma sessão listada');
@@ -43,7 +44,7 @@ is_deeply($list[0], ['gw-restore', 'list', '--json'], 'argv do list');
 # ---------- revoke: última sessão → remove tag ----------
 local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
     dest_tags => 'producao;restore-ativo',
-    sessions => [ { id => 'abc123', vmid => 100, vlan => 120 } ],
+    sessions => [ { id => 'abc123', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.77', expires_at => '2026-10-28T10:00:00-03:00' } ],
 );
 # make_override devolve sempre a mesma lista; para simular "última sessão"
 # (lista pré com a sessão, pós vazia) usamos um mock local com estado.
@@ -57,11 +58,15 @@ local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
         }
         if ($cmd =~ /exec-status/) {
             state $n = 0; $n++;
-            # 1ª chamada: list pré-revoke (com a sessão); depois: '[]'
+            my $out = $n == 1
+                ? encode_json({ contract => 1, sessions => [
+                    { id => 'abc123', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.77', expires_at => '2026-10-28T10:00:00Z' },
+                ] })
+                : $n == 2
+                    ? encode_json({ contract => 1, revoked => 'abc123' })
+                    : encode_json({ contract => 1, sessions => [] });
             return { ok => 1, rc => 0, out => encode_json({
-                exited => 1, pid => 77, exitcode => 0,
-                out => $n == 1 ? encode_json([ { id => 'abc123', vmid => 100 } ]) : '[]',
-                err => '' }), err => '' };
+                exited => 1, pid => 77, exitcode => 0, out => $out, err => '' }), err => '' };
         }
         if ($cmd =~ /cluster\/resources/) {
             return { ok => 1, rc => 0, out => encode_json([
@@ -98,10 +103,17 @@ local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
         }
         if ($cmd =~ /exec-status/) {
             state $n = 0; $n++;
-            # 1ª consulta (list pré) e 2ª (list pós) ainda têm sessão da VM 100
+            my $out = $n == 1
+                ? encode_json({ contract => 1, sessions => [
+                    { id => 'abc123', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.77', expires_at => '2026-10-28T10:00:00Z' },
+                ] })
+                : $n == 2
+                    ? encode_json({ contract => 1, revoked => 'abc123' })
+                    : encode_json({ contract => 1, sessions => [
+                        { id => 'outro', target_vmid => 100, source_vmid => 100, vlan => 120, vm_ip => '10.20.120.78', expires_at => '2026-10-28T10:00:00Z' },
+                    ] });
             return { ok => 1, rc => 0, out => encode_json({
-                exited => 1, pid => 78, exitcode => 0,
-                out => encode_json([ { id => 'outro', vmid => 100 } ]), err => '' }), err => '' };
+                exited => 1, pid => 78, exitcode => 0, out => $out, err => '' }), err => '' };
         }
         if ($cmd =~ /cluster\/resources/) {
             return { ok => 1, rc => 0, out => encode_json([

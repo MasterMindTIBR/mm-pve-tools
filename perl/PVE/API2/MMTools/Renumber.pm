@@ -26,7 +26,8 @@ __PACKAGE__->register_method({
     name => 'index',
     path => '',
     method => 'GET',
-    permissions => { user => 'all' },
+    proxyto => 'node',
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Índice do módulo renumber.',
     parameters => {
         additionalProperties => 0,
@@ -49,8 +50,9 @@ __PACKAGE__->register_method({
     name => 'precheck',
     path => 'precheck',
     method => 'GET',
-    permissions => { check => ['/', ['Sys.Audit']] },
-    protected => 0,
+    proxyto => 'node',
+    permissions => { check => ['perm', '/', ['Sys.Audit']] },
+    protected => 1,
     description => 'Pré-checagens da troca de VMID (somente leitura).',
     parameters => {
         additionalProperties => 0,
@@ -119,7 +121,8 @@ __PACKAGE__->register_method({
     name => 'run',
     path => 'run',
     method => 'POST',
-    permissions => { check => ['/', ['Sys.Modify']] },
+    proxyto => 'node',
+    permissions => { check => ['perm', '/', ['Sys.Modify']] },
     protected => 1,
     description => 'Executa a troca de VMID (tarefa em worker; acompanhe no Task Log).',
     parameters => {
@@ -186,7 +189,7 @@ __PACKAGE__->register_method({
             }
             print $res->{summary}, "\n" if $res->{summary};
         };
-        return $rpcenv->fork_worker('mmrenumber', "vmid:$param->{from}-$param->{to}", $authuser, $realcmd);
+        return $rpcenv->fork_worker('mmrenumber', "vmid-$param->{from}-$param->{to}", $authuser, $realcmd);
     },
 });
 
