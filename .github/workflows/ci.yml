@@ -154,20 +154,28 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl gpg gpgv python3 perl make \
             libhttp-message-perl libio-socket-ssl-perl
-      - name: baixa o pve-manager fixado e o widget-toolkit atual
+      - name: baixa bundles fixados e mais recentes
         shell: bash
         run: |
           set -euo pipefail
-          pve="$RUNNER_TEMP/pve"
-          scripts/fetch-pve-debs.sh "$pve" \
-            pve-manager="$(cat ci/pve-manager.version)" proxmox-widget-toolkit=latest
+          pinned="$RUNNER_TEMP/pve-pinned"
+          newest="$RUNNER_TEMP/pve-newest"
+          scripts/fetch-pve-debs.sh "$pinned" \
+            pve-manager="$(cat ci/pve-manager.version)" proxmox-widget-toolkit=5.2.10
+          scripts/fetch-pve-debs.sh "$newest" \
+            pve-manager=latest proxmox-widget-toolkit=latest
           make -s js >/dev/null
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
+          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pinned/x/pve-manager"
           # Só o Nodes.pm é compilado; os módulos do PVE viram stubs (t/lib-autostub).
           perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
-            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
-          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
-          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
+            "$pinned/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
+          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pinned/x/proxmox-widget-toolkit"
+          grep -R -q 'proxmox_logo.svg' "$pinned/x/proxmox-widget-toolkit"
+          scripts/check-ui-bundles.sh \
+            "$pinned/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
+            "$pinned/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js" \
+            "$newest/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
+            "$newest/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 
   anchors-latest:
     name: Âncoras contra upstream mais recente (semanal, não bloqueante)

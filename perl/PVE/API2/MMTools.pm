@@ -11,7 +11,8 @@ package PVE::API2::MMTools;
 #   PUT  mm-tools/config           salva (digest obrigatório p/ CAS)
 #   POST mm-tools/apply            aplica neste node (worker → Task Log)
 #   GET  mm-tools/status           diagnóstico deste node
-# Módulos (subclass): mm-tools/renumber, mm-tools/restore, mm-tools/branding
+# Módulos (subclass): mm-tools/renumber, mm-tools/restore, mm-tools/branding,
+# mm-tools/ui
 
 use strict;
 use warnings;
@@ -248,6 +249,12 @@ use PVE::API2::MMTools::Branding;
 __PACKAGE__->register_method({
     subclass => "PVE::API2::MMTools::Branding",
     path => 'branding',
+});
+
+use PVE::API2::MMTools::Ui;
+__PACKAGE__->register_method({
+    subclass => "PVE::API2::MMTools::Ui",
+    path => 'ui',
 });
 
 1;

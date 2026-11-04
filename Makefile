@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PERL_INC   = -Ilib -Iperl
 PROVE      = prove $(PERL_INC)
 
-JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js
+JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js
 JS_OUT     = build/mm-tools.js
 
 .PHONY: all js test test-api test-gateway test-gui lint build build-dir check-anchors clean
@@ -23,7 +23,7 @@ build-dir:
 	mkdir -p build
 
 test:
-	$(PROVE) -r t/core t/renumber t/restore t/branding t/contract
+	$(PROVE) -r t/core t/renumber t/restore t/branding t/ui t/contract
 
 test-api:
 	./scripts/test-pve-env.sh
@@ -58,18 +58,31 @@ build:
 # Valida as âncoras contra o fixture upstream: antes (espera 3=aplicável),
 # aplica (espera 0), depois (espera 0=aplicado). 4=âncora quebrada=falha.
 check-anchors: js
-	@set -e; root=$$(mktemp -d); \
-	mkdir -p "$$root/usr/share/pve-manager" "$$root/usr/share/perl5/PVE/API2"; \
-	cp t/fixtures/pve-manager/index.html.tpl "$$root/usr/share/pve-manager/"; \
-	cp t/fixtures/pve-manager/Nodes.pm "$$root/usr/share/perl5/PVE/API2/"; \
-	rc=0; perl $(PERL_INC) lib/mm-pve-tools/apply-patches --check --root "$$root" >/dev/null || rc=$$?; \
-	[ $$rc -eq 3 ] || { echo "esperava 3 (aplicável), veio $$rc"; rm -rf "$$root"; exit 1; }; \
-	perl $(PERL_INC) lib/mm-pve-tools/apply-patches --no-restart --root "$$root" >/dev/null; \
-	rc=0; perl $(PERL_INC) lib/mm-pve-tools/apply-patches --check --root "$$root" >/dev/null || rc=$$?; \
-	rm -rf "$$root"; \
-	if [ $$rc -eq 0 ]; then echo "ÂNCORAS OK (aplicou e verificou no fixture upstream)"; \
+	@set -e; \
+	fixture_root=$$(mktemp -d); \
+	owned_newest=; \
+	newest_root='$(NEWEST_PVE_ROOT)'; \
+	cleanup() { rm -rf -- "$$fixture_root"; if [ -n "$$owned_newest" ]; then rm -rf -- "$$owned_newest"; fi; }; \
+	trap cleanup EXIT HUP INT TERM; \
+	mkdir -p "$$fixture_root/usr/share/pve-manager" "$$fixture_root/usr/share/perl5/PVE/API2"; \
+	cp t/fixtures/pve-manager/index.html.tpl "$$fixture_root/usr/share/pve-manager/"; \
+	cp t/fixtures/pve-manager/Nodes.pm "$$fixture_root/usr/share/perl5/PVE/API2/"; \
+	rc=0; perl $(PERL_INC) lib/mm-pve-tools/apply-patches --check --root "$$fixture_root" >/dev/null || rc=$$?; \
+	[ $$rc -eq 3 ] || { echo "esperava 3 (aplicável), veio $$rc"; exit 1; }; \
+	perl $(PERL_INC) lib/mm-pve-tools/apply-patches --no-restart --root "$$fixture_root" >/dev/null; \
+	rc=0; perl $(PERL_INC) lib/mm-pve-tools/apply-patches --check --root "$$fixture_root" >/dev/null || rc=$$?; \
+	if [ $$rc -eq 0 ]; then echo "ÂNCORAS PVE MANAGER OK (aplicou e verificou no fixture upstream)"; \
 	elif [ $$rc -eq 4 ]; then echo "ÂNCORA QUEBROU no upstream"; exit 1; \
-	else exit 1; fi
+	else exit 1; fi; \
+	if [ -z "$$newest_root" ]; then \
+		owned_newest=$$(mktemp -d); newest_root="$$owned_newest"; \
+		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest proxmox-widget-toolkit=latest; \
+	fi; \
+	grep -Fq "MM.Ui" build/mm-tools.js; \
+	grep -Fq "checked_command" build/mm-tools.js; \
+	scripts/check-ui-bundles.sh refs/upstream/pve-9.2.24/pvemanagerlib.js refs/upstream/pve-9.2.24/proxmoxlib.js \
+		"$$newest_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
+		"$$newest_root/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 
 clean:
 	rm -rf build

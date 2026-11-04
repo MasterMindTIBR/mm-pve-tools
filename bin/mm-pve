@@ -53,6 +53,7 @@ comandos por módulo:
   renumber ...                 troca de VMID   (mm-pve renumber --help)
   restore ...                  publicação de pasta (mm-pve restore --help)
   branding ...                 identidade visual (mm-pve branding --help)
+  ui ...                       padrão de console e popup (mm-pve ui --help)
 
 global: --json  saída em JSON
 EOF
@@ -177,6 +178,8 @@ sub cmd_status {
         print "patch Nodes.pm:  " . ($pc->{nodes_pm}{status} // '?') . "\n";
         my $nt = $s->{ntfs3g};
         print "ntfs3g:          " . (defined $nt->{ok} ? ($nt->{ok} ? 'OK' : 'FALHOU: ' . ($nt->{error} // '')) : '(pulou)') . "\n";
+        my $ui = $s->{modules}{ui}{check} // {};
+        print "ui bundles:      " . ($ui->{ok} ? 'OK' : ($ui->{note} // 'FALHOU')) . "\n";
     }
     return 0;
 }
@@ -220,6 +223,7 @@ my %MODULE_CMD = (
     renumber => 'MMPve::Module::Renumber',
     restore  => 'MMPve::Module::Restore',
     branding => 'MMPve::Module::Branding',
+    ui       => 'MMPve::Module::Ui',
 );
 
 my $rc;
@@ -272,7 +276,7 @@ B<mm-pve> [B<--json>] I<comando> [opções]
 
 Comandos: version, config (get|set|set-module), apply, status, patch
 (check|apply|revert) e os subcomandos dos módulos: renumber, restore,
-branding.
+branding, ui.
 
 =head1 DESCRIPTION
 

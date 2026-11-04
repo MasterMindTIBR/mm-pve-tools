@@ -19,6 +19,7 @@ my @classes = qw(
     PVE::API2::MMTools::Renumber
     PVE::API2::MMTools::Restore
     PVE::API2::MMTools::Branding
+    PVE::API2::MMTools::Ui
 );
 my %methods;
 for my $class (@classes) {
@@ -28,11 +29,20 @@ for my $class (@classes) {
         next if $info->{subclass};
         my $name = "$class/$info->{path} [$info->{method}]";
         $methods{$name} = $info;
-        my $check = $info->{permissions}{check};
-        ok($check && $check->[0] eq 'perm' && $check->[1] eq '/',
-            "$name usa perm real em /") or diag explain $info->{permissions};
-        ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',
-            "$name não usa user=all") or diag explain $info->{permissions};
+        my $is_ui_pref = $class eq 'PVE::API2::MMTools::Ui'
+            && ($info->{name} eq 'preference' || $info->{name} eq 'set_preference');
+        if ($is_ui_pref) {
+            is($info->{permissions}{user}, 'all', "$name está aberto a usuário logado")
+                or diag explain $info->{permissions};
+            ok(!$info->{permissions}{check}, "$name não exige permissão de cluster")
+                or diag explain $info->{permissions};
+        } else {
+            my $check = $info->{permissions}{check};
+            ok($check && $check->[0] eq 'perm' && $check->[1] eq '/',
+                "$name usa perm real em /") or diag explain $info->{permissions};
+            ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',
+                "$name não usa user=all") or diag explain $info->{permissions};
+        }
         if ($info->{name} eq 'set' || $info->{name} eq 'upload') {
             ok($info->{parameters}{properties}{digest}{optional},
                 "$name aceita digest ausente no primeiro write");

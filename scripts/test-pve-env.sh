@@ -48,8 +48,8 @@ if grep -Eqi 'skipped|skip:' /tmp/mm-pve-tools-api.tap; then
 fi
 files=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\1/p' /tmp/mm-pve-tools-api.tap)
 tests=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\2/p' /tmp/mm-pve-tools-api.tap)
-if [[ $files != 4 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
-    echo 't/api não executou exatamente 4 arquivos com testes bem-sucedidos' >&2
+if [[ $files != 5 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
+    echo 't/api não executou exatamente 5 arquivos com testes bem-sucedidos' >&2
     exit 4
 fi
 CONTAINER

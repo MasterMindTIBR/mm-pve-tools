@@ -33,7 +33,7 @@ sub default {
     my ($class) = @_;
     return {
         revision => 1,
-        modules => { renumber => 1, restore => 0, branding => 0 },
+        modules => { renumber => 1, restore => 0, branding => 0, ui => 0 },
         vmid_scheme => [],
         restore => {
             gateway_vmid => undef,
@@ -49,6 +49,10 @@ sub default {
             favicon => '',
             login_text => '',
             assets_hash => '',
+        },
+        ui => {
+            console => { qemu => 'default', lxc => 'default' },
+            hide_subscription_popup => 0,
         },
     };
 }
@@ -131,7 +135,7 @@ sub validate_structure {
     my @e;
     return ('config não é um objeto') unless ref $data eq 'HASH';
 
-    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding);
+    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding ui);
     for my $k (sort keys %{$data}) {
         _err(\@e, "chave desconhecida '$k'") unless $known{$k};
     }
@@ -148,7 +152,7 @@ sub validate_structure {
         if (ref $m ne 'HASH') {
             _err(\@e, 'modules precisa ser objeto');
         } else {
-            my %mk = map { $_ => 1 } qw(renumber restore branding);
+            my %mk = map { $_ => 1 } qw(renumber restore branding ui);
             for my $k (sort keys %{$m}) {
                 if (!$mk{$k}) { _err(\@e, "módulo desconhecido '$k'"); next }
                 _err(\@e, "modules.$k precisa ser booleano") unless _is_bool($m->{$k});
@@ -279,6 +283,36 @@ sub validate_structure {
         }
     }
 
+    # ui (detalhes dos valores também são validados pelo módulo Ui)
+    if (exists $data->{ui}) {
+        my $u = $data->{ui};
+        if (ref $u ne 'HASH') {
+            _err(\@e, 'ui precisa ser objeto');
+        } else {
+            my %uk = map { $_ => 1 } qw(console hide_subscription_popup);
+            for my $k (sort keys %{$u}) {
+                _err(\@e, "ui: chave desconhecida '$k'") unless $uk{$k};
+            }
+            if (exists $u->{console}) {
+                if (ref $u->{console} ne 'HASH') {
+                    _err(\@e, 'ui.console precisa ser objeto');
+                } else {
+                    for my $k (sort keys %{ $u->{console} }) {
+                        _err(\@e, "ui.console: chave desconhecida '$k'")
+                            unless $k eq 'qemu' || $k eq 'lxc';
+                        _err(\@e, "ui.console.$k precisa ser texto")
+                            if $k eq 'qemu' || $k eq 'lxc'
+                                ? ref($u->{console}{$k}) || !defined($u->{console}{$k})
+                                : 0;
+                    }
+                }
+            }
+            _err(\@e, 'ui.hide_subscription_popup precisa ser booleano')
+                if exists $u->{hide_subscription_popup}
+                    && !_is_bool($u->{hide_subscription_popup});
+        }
+    }
+
     return @e;
 }
 
@@ -333,12 +367,18 @@ sub _write_locked {
     delete $data->{revision};
 
     my $def = $class->default;
-    for my $k (qw(modules vmid_scheme restore branding)) {
+    for my $k (qw(modules vmid_scheme restore branding ui)) {
         if (!exists $data->{$k}) {
             $data->{$k} = $def->{$k};
         } elsif (ref $def->{$k} eq 'HASH' && ref $data->{$k} eq 'HASH') {
             for my $kk (keys %{$def->{$k}}) {
                 $data->{$k}{$kk} = $def->{$k}{$kk} unless exists $data->{$k}{$kk};
+            }
+            if ($k eq 'ui' && ref $data->{$k}{console} eq 'HASH') {
+                for my $kk (keys %{ $def->{ui}{console} }) {
+                    $data->{$k}{console}{$kk} = $def->{ui}{console}{$kk}
+                        unless exists $data->{$k}{console}{$kk};
+                }
             }
         }
     }
@@ -409,7 +449,7 @@ sub save {
 
 sub save_section {
     my ($class, $section, $value, %opt) = @_;
-    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding);
+    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding ui);
     die "seção inválida '$section'\n" unless $allowed{$section};
     my $lock_domain = delete $opt{lock_domain} // 'mm-tools';
     my $before_write = delete $opt{before_write};
