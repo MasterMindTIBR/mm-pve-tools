@@ -6,50 +6,38 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+Primeira versão publicada. Provada num cluster PVE 9 de três nodes com PBS e
+gateway Debian 13 (`docs/lab-evidence/2026-11-03.md`).
+
 ### Adicionado
 
-- Núcleo `mm-pve`: `config`/`apply`/`status`/`patch`, estado desejado em
-  `/etc/pve/mm-tools/config.json` (digest + revision calculada no servidor,
-  gravação via `cfs_lock_domain` do pmxcfs quando disponível), aplicação por
-  node com `applied.json`, timer `mm-pve-apply` (boot + 5 min) e trigger dpkg
-  que reaplica os patches do `pve-manager` (reload-or-restart fora do
-  processo do `pvedaemon` via `systemd-run`).
-- Patch mínimo de 1 linha em `index.html.tpl` e `Nodes.pm` com verificação
-  `perl -c`, restart seguro e reversão automática.
-- API `/nodes/{node}/mm-tools/...` (`PVE::API2::MMTools`) com `proxyto =>
-  'node'` em todos os endpoints, permissões `Sys.Audit`/`Sys.Modify`
-  consistentes, IDs de tarefa compatíveis com `PVE::UPID` e tarefas em
-  worker (Task Log).
-- GUI `mm-tools.js`: aba Datacenter → MasterMind (Geral e Diagnóstico),
-  consumindo o envelope `{data: ...}` das respostas da API.
-- Módulo **renumber**: troca de VMID via `move_disk` com pré-checagens que
-  tratam erro de API como falha dura, journal com `--resume`/`--rollback`
-  que relêem o estado real das duas VMs (nunca confiam cegamente no
-  journal), `protection` preservada entre origem/destino, suporte a
-  qualquer storage com a feature `rename` (`PVE::Storage::volume_has_feature`,
-  incluindo LVM e RBD), ACLs de usuário/grupo/token preservadas por tipo,
-  menu "Trocar ID…" na VM e validação de faixa no wizard.
-- Módulo **restore**: publicação de pasta de backup PBS por VM gateway
-  (SMB3 obrigatório, credencial por sessão, expiração máxima de 168h),
-  resultado fora do Task Log, botão "Publicar pasta…" com seletor de
-  caminho real do backup, e "Publicações ativas".
-- Contrato node↔gateway versionado (`contract/gw-restore.v1.schema.json`,
-  `contract: 1`), com fixtures compartilhadas entre os testes Perl e Python
-  (`contract/fixtures/*.json`) validadas contra o mesmo schema dos dois
-  lados.
-- Pacote **mm-gw-restore**: `gw-restore` (publish/revoke/list/gc/selfcheck)
-  validando o contrato, refcounts invalidados por `boot_id` após reboot,
-  `gc --boot` ligado ao boot, sysctl de hardening, tabela nftables com
-  `iifname`, include do Samba como última linha do `smb.conf` (nunca logo
-  após `[global]`) e `server min protocol = SMB3`.
-- Módulo **branding**: logo/favicon apenas PNG (≤200 KiB, assinatura
-  verificada) com override de componentes, imagens em
-  `/usr/share/pve-manager/images/mm-branding/`, texto do topo escapado
-  (sem XSS), e inconsistência de assets em disco nunca derruba a leitura
-  da configuração.
-- CI: lint (perl -c + perlcritic + eslint + shellcheck nos maintainer
-  scripts), testes, build+lintian em `debian:13` publicando `.deb`+
-  `.changes`+`.buildinfo`, teste de âncoras aplicando os patches de verdade
-  contra o `pve-manager`/`proxmox-widget-toolkit` mais recentes, workflows
-  de release (pre-release `testing`) e promoção (`stable`, aprovação do
-  Jung via environment `production`).
+- Núcleo `mm-pve` (`config`, `apply`, `status`, `patch`): estado desejado do
+  cluster em `/etc/pve/mm-tools/config.json` (replicado pelo pmxcfs) e
+  aplicação por node no boot, a cada 5 minutos e quando o `pve-manager` é
+  atualizado (trigger do dpkg). O patch de `index.html.tpl` e `Nodes.pm` é
+  transacional e recarrega o pveproxy/pvedaemon só quando algo muda.
+- API `/nodes/{node}/mm-tools/...` com as permissões reais do PVE e tarefas
+  no Task Log; GUI com a aba MasterMind no Datacenter.
+- Módulo **renumber**: troca o VMID com `move_disk`, sem copiar dados.
+  Journal com `--resume` e `--rollback`; trata HA (regras do PVE 9), backup
+  jobs, replicação, pools, ACLs e cloud-init. Menu "Trocar ID…" na VM.
+- Módulo **restore**: publica uma pasta de um backup PBS para a VM do
+  cliente por SMB3 somente leitura, por até 168 horas, através da VM gateway.
+  Botão "Publicar pasta…" nos backups e lista de publicações ativas.
+- Pacote **mm-gw-restore** para a VM gateway: contrato versionado com o node
+  (`contract/gw-restore.v1.schema.json`), Samba e nftables isolando cada VM,
+  retomada segura depois de falha ou reboot.
+- Módulo **branding**: logo e título em todos os nodes; só PNG de até
+  256 KiB, gravado pelo sha256 junto com a configuração.
+- Pacotes Debian (`debhelper`) com lintian limpo, release em pre-release
+  (canal `testing` do APT) e promoção para `stable` com aprovação no
+  environment `production`.
+
+### Limites conhecidos
+
+- O restore de arquivos deduplicados grandes do Windows depende do
+  `pve-file-restore-ntfs3g` com o plugin de dedup corrigido.
+- Duas sessões de restore na mesma VLAN usam o mesmo IP do gateway, e o
+  Windows recusa uma segunda credencial no mesmo servidor (erro 1219).
