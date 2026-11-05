@@ -12,7 +12,7 @@ package PVE::API2::MMTools;
 #   POST mm-tools/apply            aplica neste node (worker → Task Log)
 #   GET  mm-tools/status           diagnóstico deste node
 # Módulos (subclass): mm-tools/renumber, mm-tools/restore, mm-tools/branding,
-# mm-tools/ui, mm-tools/updates
+# mm-tools/ui, mm-tools/updates, mm-tools/poollimits
 
 use strict;
 use warnings;
@@ -116,7 +116,7 @@ __PACKAGE__->register_method({
             node => get_standard_option('pve-node'),
             section => {
                 type => 'string',
-                pattern => '^(modules|vmid_scheme|restore|branding)$',
+                pattern => '^(modules|vmid_scheme|restore|branding|ui|updates|poollimits)$',
             },
             digest => {
                 type => 'string',
@@ -262,6 +262,12 @@ use PVE::API2::MMTools::Updates;
 __PACKAGE__->register_method({
     subclass => "PVE::API2::MMTools::Updates",
     path => 'updates',
+});
+
+use PVE::API2::MMTools::Poollimits;
+__PACKAGE__->register_method({
+    subclass => "PVE::API2::MMTools::Poollimits",
+    path => 'poollimits',
 });
 
 1;

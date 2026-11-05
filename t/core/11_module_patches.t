@@ -33,11 +33,11 @@ MMPve::Core::Patch->register_module('MMPve::Module::TestPatchFixture');
 sub files_for {
     my ($root) = @_;
     return (
-        "$root/usr/share/perl5/PVE/GuestHelpers.pm" => "package PVE::GuestHelpers;\nsub exec_hookscript { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/AccessControl.pm" => "package PVE::AccessControl;\nsub add_vm_to_pool { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/AbstractConfig.pm" => "package PVE::AbstractConfig;\nsub write_config { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/Storage.pm" => "package PVE::Storage;\nsub vdisk_alloc { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/API2/Pool.pm" => "package PVE::API2::Pool;\nsub register_method { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestGuestHelpers.pm" => "package PVE::GuestHelpers;\nsub exec_hookscript { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestAccessControl.pm" => "package PVE::AccessControl;\nsub add_vm_to_pool { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestAbstractConfig.pm" => "package PVE::AbstractConfig;\nsub write_config { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestStorage.pm" => "package PVE::Storage;\nsub vdisk_alloc { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/API2/MMTestPool.pm" => "package PVE::API2::Pool;\nsub register_method { return; }\n1;\n",
     );
 }
 
@@ -81,7 +81,7 @@ subtest 'fixture de teste não entra no registro produtivo nem instala autostub'
         'regras de pacote não instalam stubs');
 };
 
-subtest 'módulo desligado não deixa patch; ligado aplica os quatro owners' => sub {
+subtest 'módulo desligado não deixa patch; ligado aplica os owners' => sub {
     my $root = fresh_root('on-off');
     local $ENV{MM_PVE_ROOT} = $root;
     my $off = MMPve::Core::Patch->apply(core => 0, active_modules => {}, no_restart => 1, syntax_check => 'never');
@@ -113,19 +113,19 @@ subtest 'upstream atualizado reaplica e âncora ausente não muda nada' => sub {
         no_restart => 1, syntax_check => 'never');
     ok($first->{ok}, 'primeiro apply');
     MMPve::Core::Patch->apply(core => 0, active_modules => {}, no_restart => 1, syntax_check => 'never');
-    open(my $fh, '>>', $root . '/usr/share/perl5/PVE/GuestHelpers.pm') or die $!;
+    open(my $fh, '>>', $root . '/usr/share/perl5/PVE/MMTestGuestHelpers.pm') or die $!;
     print {$fh} "# upstream update\n";
     close($fh);
     my $reapply = MMPve::Core::Patch->apply(core => 0,
         active_modules => { testpatchfixture => 1 }, no_restart => 1, syntax_check => 'never');
     ok($reapply->{ok}, 'reaplica depois de update');
-    like(slurp($root . '/usr/share/perl5/PVE/GuestHelpers.pm'), qr/upstream update/,
+    like(slurp($root . '/usr/share/perl5/PVE/MMTestGuestHelpers.pm'), qr/upstream update/,
         'conteúdo upstream preservado');
 
     my $broken = fresh_root('missing-anchor');
     local $ENV{MM_PVE_ROOT} = $broken;
     my %before = snapshots($broken);
-    my $path = $broken . '/usr/share/perl5/PVE/AccessControl.pm';
+    my $path = $broken . '/usr/share/perl5/PVE/MMTestAccessControl.pm';
     my $raw = slurp($path);
     $raw =~ s/sub add_vm_to_pool/sub removed_anchor/;
     open($fh, '>', $path) or die $!;

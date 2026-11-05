@@ -5,3 +5,5 @@ interest-noawait /usr/share/perl5/PVE/AbstractConfig.pm
 interest-noawait /usr/share/perl5/PVE/AccessControl.pm
 interest-noawait /usr/share/perl5/PVE/Storage.pm
 interest-noawait /usr/share/perl5/PVE/API2/Pool.pm
+interest-noawait /usr/share/perl5/PVE/API2/Qemu.pm
+interest-noawait /usr/share/perl5/PVE/API2/LXC.pm

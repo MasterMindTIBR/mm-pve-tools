@@ -57,7 +57,14 @@ sub collect {
     $s{ntfs3g} = $opts{skip_ntfs3g} ? { ok => undef, skipped => 1 } : $class->_ntfs3g_state;
 
     my %mods;
-    my $cfg = $opts{config} // MMPve::Core::Config->load;
+    my $cfg_error;
+    my $cfg = $opts{config};
+    if (!$cfg) {
+        $cfg = eval { MMPve::Core::Config->load };
+        $cfg_error = $@ if $@;
+        $cfg ||= MMPve::Core::Config->default;
+    }
+    $s{config_error} = $cfg_error if $cfg_error;
     for my $m (MMPve::Core::Modules->all) {
         $mods{ $m->name } = { check => eval { $m->check($cfg) } || { ok => 0, error => $@ } };
     }

@@ -36,7 +36,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \
     libpve-access-control=$(pve_version libpve-access-control) \\
     libpve-cluster-perl=$(pve_version libpve-cluster-perl) \\
     libpve-rs-perl=$(pve_version libpve-rs-perl) \\
-    libpve-storage-perl=$(pve_version libpve-storage-perl) && rm -rf /var/lib/apt/lists/*
+    libpve-storage-perl=$(pve_version libpve-storage-perl) \\
+    qemu-server=$(pve_version qemu-server) \\
+    pve-container=$(pve_version pve-container) && rm -rf /var/lib/apt/lists/*
 EOF
 
 run_rc=0
@@ -56,8 +58,8 @@ if grep -Eqi 'skipped|skip:' /tmp/mm-pve-tools-api.tap; then
 fi
 files=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\1/p' /tmp/mm-pve-tools-api.tap)
 tests=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\2/p' /tmp/mm-pve-tools-api.tap)
-if [[ $files != 6 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
-    echo 't/api não executou exatamente 6 arquivos com testes bem-sucedidos' >&2
+if [[ $files != 7 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
+    echo 't/api não executou exatamente 7 arquivos com testes bem-sucedidos' >&2
     exit 4
 fi
 CONTAINER

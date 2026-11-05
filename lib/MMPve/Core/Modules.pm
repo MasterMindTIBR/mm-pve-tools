@@ -14,6 +14,7 @@ my @REGISTRY = qw(
     MMPve::Module::Branding
     MMPve::Module::Ui
     MMPve::Module::Updates
+    MMPve::Module::Poollimits
 );
 
 sub all {

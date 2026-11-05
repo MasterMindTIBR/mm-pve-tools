@@ -21,6 +21,7 @@ my @classes = qw(
     PVE::API2::MMTools::Branding
     PVE::API2::MMTools::Ui
     PVE::API2::MMTools::Updates
+    PVE::API2::MMTools::Poollimits
 );
 my %methods;
 for my $class (@classes) {
@@ -39,7 +40,9 @@ for my $class (@classes) {
                 or diag explain $info->{permissions};
         } else {
             my $check = $info->{permissions}{check};
-            my $scope = $class eq 'PVE::API2::MMTools::Updates' ? '/nodes/{node}' : '/';
+            my $scope = $class eq 'PVE::API2::MMTools::Updates' ? '/nodes/{node}'
+                : ($class eq 'PVE::API2::MMTools::Poollimits'
+                    && $info->{name} eq 'read_pool' ? '/pool/{poolid}' : '/');
             ok($check && $check->[0] eq 'perm' && $check->[1] eq $scope,
                 "$name usa perm real em $scope") or diag explain $info->{permissions};
             ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',

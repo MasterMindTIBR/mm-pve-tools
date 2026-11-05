@@ -59,9 +59,17 @@ sub apply_all {
     my $version_changed = $patches_requested
         && (!$previous || ($previous->{package_version} // '') ne $VERSION);
     my $mode = $cfg->{modules} || {};
+    my $patch_mode = { %{$mode} };
+    if ($cfg_err) {
+        eval {
+            require MMPve::Module::Poollimits;
+            $patch_mode->{poollimits} = MMPve::Module::Poollimits->patch_enabled_for_invalid ? 1 : 0;
+            1;
+        };
+    }
     if ($patches_requested) {    # garante patches (idempotente), conforme estado efetivo
         $res{patches} = MMPve::Core::Patch->apply(
-            active_modules => $mode,
+            active_modules => $patch_mode,
             no_restart => $opts{no_reload} ? 1 : 0,
         );
     }

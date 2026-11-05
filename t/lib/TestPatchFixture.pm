@@ -10,7 +10,7 @@ sub patch_targets {
         {
             id => 'guest_helpers',
             owner => 'libpve-guest-common-perl',
-            path => '/usr/share/perl5/PVE/GuestHelpers.pm',
+            path => '/usr/share/perl5/PVE/MMTestGuestHelpers.pm',
             anchor => qr/^\s*sub\s+exec_hookscript\b/,
             line => '# mm-pve-test guest_helpers',
             daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm)],
@@ -19,7 +19,7 @@ sub patch_targets {
         {
             id => 'access_control',
             owner => 'libpve-access-control',
-            path => '/usr/share/perl5/PVE/AccessControl.pm',
+            path => '/usr/share/perl5/PVE/MMTestAccessControl.pm',
             anchor => qr/^\s*sub\s+add_vm_to_pool\b/,
             line => '# mm-pve-test access_control',
             daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
@@ -28,7 +28,7 @@ sub patch_targets {
         {
             id => 'abstract_config',
             owner => 'libpve-guest-common-perl',
-            path => '/usr/share/perl5/PVE/AbstractConfig.pm',
+            path => '/usr/share/perl5/PVE/MMTestAbstractConfig.pm',
             anchor => qr/^\s*sub\s+write_config\b/,
             line => '# mm-pve-test abstract_config',
             daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
@@ -37,7 +37,7 @@ sub patch_targets {
         {
             id => 'storage',
             owner => 'libpve-storage-perl',
-            path => '/usr/share/perl5/PVE/Storage.pm',
+            path => '/usr/share/perl5/PVE/MMTestStorage.pm',
             anchor => qr/^\s*sub\s+vdisk_alloc\b/,
             line => '# mm-pve-test storage',
             daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
@@ -46,7 +46,7 @@ sub patch_targets {
         {
             id => 'pool',
             owner => 'pve-manager',
-            path => '/usr/share/perl5/PVE/API2/Pool.pm',
+            path => '/usr/share/perl5/PVE/API2/MMTestPool.pm',
             anchor => qr/^package\s+PVE::API2::Pool;/,
             line => '# mm-pve-test pool',
             daemons => [qw(pvedaemon pveproxy)],

@@ -26,7 +26,7 @@ build-dir:
 	mkdir -p build
 
 test:
-	$(PROVE) -r t/core t/renumber t/restore t/branding t/ui t/updates t/contract
+	$(PROVE) -r t/core t/renumber t/restore t/branding t/ui t/updates t/poollimits t/contract
 
 test-api:
 	./scripts/test-pve-env.sh
@@ -85,10 +85,13 @@ check-anchors: js
 		libpve-guest-common-perl=$(call pve_package_version,libpve-guest-common-perl) \
 		libpve-access-control=$(call pve_package_version,libpve-access-control) \
 		libpve-storage-perl=$(call pve_package_version,libpve-storage-perl) \
+		qemu-server=$(call pve_package_version,qemu-server) \
+		pve-container=$(call pve_package_version,pve-container) \
 		proxmox-widget-toolkit=$(call pve_package_version,proxmox-widget-toolkit); \
 	if [ -z "$$newest_root" ]; then owned_newest=$$(mktemp -d); newest_root="$$owned_newest"; \
 		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest \
 			libpve-guest-common-perl=latest libpve-access-control=latest libpve-storage-perl=latest \
+			qemu-server=latest pve-container=latest \
 			proxmox-widget-toolkit=latest; \
 	fi; \
 	for bundle in "$$pinned_root" "$$newest_root"; do \
@@ -98,7 +101,7 @@ check-anchors: js
 		grep -R -q "Ext.define('PMX.image.LogoSVG'" "$$bundle/x/proxmox-widget-toolkit"; \
 		grep -R -q 'proxmox_logo.svg' "$$bundle/x/proxmox-widget-toolkit"; \
 		combined=$$(mktemp -d); \
-		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl; do \
+		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl qemu-server pve-container; do \
 			cp -a "$$bundle/x/$$package/." "$$combined/"; \
 		done; \
 		perl -Ilib -Iperl -It/lib t/anchors/module-patches-check.pl "$$combined"; \

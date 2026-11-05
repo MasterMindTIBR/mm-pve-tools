@@ -22,6 +22,8 @@ sub root_path {
     my ($path) = @_;
     my $root = $ENV{MM_PVE_ROOT} || '';
     return $path if $root eq '' || $path eq '';
+    ($root) = $root =~ m{\A(\/[A-Za-z0-9_.+/-]+)\z};
+    die "MM_PVE_ROOT inválido\n" unless defined $root;
     return "$root$path";
 }
 
@@ -45,7 +47,9 @@ sub random_uuid {
     my @bytes = unpack('C16', $raw);
     $bytes[6] = ($bytes[6] & 0x0f) | 0x40;
     $bytes[8] = ($bytes[8] & 0x3f) | 0x80;
-    return sprintf('%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x', @bytes);
+    my $uuid = sprintf('%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x', @bytes);
+    ($uuid) = $uuid =~ /\A([0-9a-f-]+)\z/;
+    return $uuid;
 }
 
 sub read_file {

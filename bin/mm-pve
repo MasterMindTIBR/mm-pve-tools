@@ -56,6 +56,7 @@ comandos por módulo:
   branding ...                 identidade visual (mm-pve branding --help)
   ui ...                       padrão de console e popup (mm-pve ui --help)
   updates ...                  atualizações dos nodes (mm-pve updates --help)
+  poollimits ...               limites por pool (mm-pve poollimits --help)
 
 global: --json  saída em JSON
 EOF
@@ -243,6 +244,7 @@ my %MODULE_CMD = (
     branding => 'MMPve::Module::Branding',
     ui       => 'MMPve::Module::Ui',
     updates  => 'MMPve::Module::Updates',
+    poollimits => 'MMPve::Module::Poollimits',
 );
 
 my $rc;

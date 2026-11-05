@@ -101,6 +101,8 @@ sub register_targets {
             unless !ref($t{line}) && $t{line} !~ /\n/;
         die "target $id sem âncora\n" unless exists $t{anchor};
         die "âncora do target $id precisa ser regexp\n" unless ref($t{anchor}) eq 'Regexp';
+        die "escopo do target $id precisa ser regexp\n"
+            if exists($t{scope_anchor}) && ref($t{scope_anchor}) ne 'Regexp';
         for my $field (qw(daemons processes)) {
             die "$field do target $id precisa ser arrayref\n" unless ref($t{$field}) eq 'ARRAY';
             die "$field do target $id vazio\n" unless @{ $t{$field} };
@@ -110,7 +112,6 @@ sub register_targets {
             }
         }
         my $path_key = $t{path};
-        die "arquivo $path_key já pertence a $module\n" if $new_paths{$path_key};
         die "arquivo $path_key já pertence a outro módulo\n"
             if exists($PATH_MODULE{$path_key}) && $PATH_MODULE{$path_key} ne $module;
         for my $other (keys %MODULE_TARGETS) {
@@ -174,6 +175,7 @@ sub _state_target {
     my ($target) = @_;
     my %copy = %{$target};
     delete $copy{anchor};
+    delete $copy{scope_anchor};
     $copy{anchor_text} = "$target->{anchor}" if ref($target->{anchor}) eq 'Regexp';
     return \%copy;
 }
@@ -233,8 +235,7 @@ sub check {
                 owner => $target->{owner},
             };
         } else {
-            my $has_anchor = exists($target->{anchor}) && ref($target->{anchor}) eq 'Regexp'
-                && grep { $_ =~ $target->{anchor} } @{$lines};
+            my $has_anchor = defined($class->_anchor_index($target, $lines));
             my $previous_failure = $state->{$id}{previous_failure}
                 && ($state->{$id}{source_hash} // '') eq sha256_hex(join('', @{$lines}));
             $res{$id} = {
@@ -250,6 +251,30 @@ sub check {
 }
 
 # ---------------------------------------------------------------- content
+
+sub _anchor_index {
+    my ($class, $target, $lines) = @_;
+    my ($start, $end) = (0, $#{$lines});
+    if (exists($target->{scope_anchor})) {
+        my @scope = grep { $lines->[$_] =~ $target->{scope_anchor} } 0 .. $#{$lines};
+        return undef unless @scope == 1;
+        $start = $scope[0];
+        for my $i ($start + 1 .. $#{$lines}) {
+            if ($lines->[$i] =~ /^\s*__PACKAGE__->register_method\s*\(/) {
+                $end = $i - 1;
+                last;
+            }
+        }
+    }
+    my $wanted = $target->{occurrence} // 1;
+    my $seen = 0;
+    for my $i ($start .. $end) {
+        next unless $lines->[$i] =~ $target->{anchor};
+        $seen++;
+        return $i if $seen == $wanted;
+    }
+    return undef;
+}
 
 sub _index_insert {
     return '<!-- mm-pve-tools --><script type="text/javascript" src="/pve2/js/mm-tools.js?ver='
@@ -292,7 +317,7 @@ sub _generic_desired {
         $lines[$i] = $line;
         return { ok => 1, content => join('', @lines) };
     }
-    my ($at) = grep { $lines[$_] =~ $target->{anchor} } 0 .. $#lines;
+    my $at = $class->_anchor_index($target, \@lines);
     return { ok => 0, status => 'anchor_missing', note => "âncora ausente em $target->{id}" }
         unless defined $at;
     splice @lines, $at + 1, 0, $line;
@@ -414,7 +439,8 @@ sub _validate_staged {
 
 sub _sync_group {
     my ($class, $module, $ids, $all, $want_on, %opts) = @_;
-    my $state = _patch_state(); my (%out, %raw, %desired, %backup, %staged, @changed);
+    my $state = _patch_state();
+    my (%out, %raw, %desired, %backup, %staged, %path_raw, %path_desired, @changed);
     my $group = { module => $module, enabled => $want_on ? 1 : 0, target_ids => [ @{$ids} ],
         targets => \%out, changed => 0, daemons => [], processes => [], ok => 1 };
     my (%daemons, %processes);
@@ -423,14 +449,16 @@ sub _sync_group {
         my $raw_now = eval { read_file($path) };
         if ($@) { $out{$id} = { status => 'file_missing', owner => $target->{owner}, module => $module };
             $group->{ok} = 0 if $want_on; next; }
+        $path_raw{$path} //= $raw_now;
         $raw{$id} = $raw_now;
+        my $working = exists($path_desired{$path}) ? $path_desired{$path} : $raw_now;
         if ($want_on) {
-            my $source_hash = sha256_hex($raw_now);
+            my $source_hash = sha256_hex($path_raw{$path});
             if ($state->{$id} && ($state->{$id}{source_hash} // '') eq $source_hash && $state->{$id}{previous_failure}) {
                 $out{$id} = { status => 'previous_failure', error => $state->{$id}{error} };
                 $group->{ok} = 0; next;
             }
-            my $want = $class->_desired_content($target, $raw_now);
+            my $want = $class->_desired_content($target, $working);
             if (!$want->{ok}) {
                 $out{$id} = { status => $want->{status}, note => $want->{note}, owner => $target->{owner} };
                 $state->{$id} = { source_hash => $source_hash, previous_failure => 1, error => $want->{note}, target => _state_target($target) }
@@ -438,14 +466,16 @@ sub _sync_group {
                 $group->{ok} = 0; next;
             }
             $desired{$id} = $want->{content};
-            if ($desired{$id} eq $raw_now) { $out{$id} = { status => 'version_current', changed => 0, owner => $target->{owner} };
+            $path_desired{$path} = $desired{$id};
+            if ($desired{$id} eq $working) { $out{$id} = { status => 'version_current', changed => 0, owner => $target->{owner} };
                 delete $state->{$id} if $state->{$id} && $state->{$id}{previous_failure}; next; }
-            my $bak = $class->_backup_for($target, $raw_now, $path);
+            my $bak = $class->_backup_for($target, $path_raw{$path}, $path);
             if (!$bak) { $out{$id} = { status => 'failed', error => "backup: $!", owner => $target->{owner} };
                 $group->{ok} = 0; next; }
             $backup{$id} = $bak;
         } else {
-            my $rev = $class->_revert_content($target, $raw_now); $desired{$id} = $rev->{content};
+            my $rev = $class->_revert_content($target, $working); $desired{$id} = $rev->{content};
+            $path_desired{$path} = $desired{$id};
             if (!$rev->{changed}) { $out{$id} = { status => 'not_applied', changed => 0, owner => $target->{owner} }; next; }
             my $bak = $class->_transaction_backup($target, $path);
             if (!$bak) { $out{$id} = { status => 'failed', error => "backup de rollback: $!", owner => $target->{owner} };
@@ -458,21 +488,31 @@ sub _sync_group {
     if (!$group->{ok}) { $class->_save_patch_state($state) if $want_on; return $group; }
 
     my $transaction_error;
+    my %changed_paths;
+    $changed_paths{root_path($all->{$_}{path})} = 1 for @changed;
     eval {
-        for my $id (@changed) { my $stage = root_path($all->{$id}{path}) . ".mm-stage-$$-" . random_uuid();
-            $staged{$id} = $stage; write_file_atomic($stage, $desired{$id}, 0644); }
+        for my $path (keys %changed_paths) {
+            my $stage = $path . ".mm-stage-$$-" . random_uuid();
+            $staged{$path} = $stage;
+            write_file_atomic($stage, $path_desired{$path}, 0644);
+        }
         for my $id (@changed) { my %validate_opts = (%opts, reverting => !$want_on);
-            my $valid = $class->_validate_staged($all->{$id}, $staged{$id}, \%validate_opts);
+            my $valid = $class->_validate_staged($all->{$id}, $staged{root_path($all->{$id}{path})}, \%validate_opts);
             die "$id: $valid->{error}\n" unless $valid->{ok}; }
-        for my $id (@changed) { rename($staged{$id}, root_path($all->{$id}{path}))
-            or die "rename do stage para $all->{$id}{path}: $!\n"; }
-        for my $id (@changed) { my $after = read_file(root_path($all->{$id}{path}));
-            die "$id: verificação pós-commit falhou\n" unless $after eq $desired{$id}; }
+        for my $path (keys %changed_paths) { rename($staged{$path}, $path)
+            or die "rename do stage para $path: $!\n"; }
+        for my $path (keys %changed_paths) { my $after = read_file($path);
+            die "$path: verificação pós-commit falhou\n" unless $after eq $path_desired{$path}; }
         1;
     } or do { $transaction_error = $@ || 'falha desconhecida na transação' };
     if ($transaction_error) {
         unlink($_) for values %staged; my @rollback_errors;
-        for my $id (@changed) { push @rollback_errors, "$id: $!" unless copy($backup{$id}, root_path($all->{$id}{path})); }
+        my %rolled;
+        for my $id (@changed) {
+            my $path = $all->{$id}{path};
+            next if $rolled{$path}++;
+            push @rollback_errors, "$id: $!" unless copy($backup{$id}, root_path($path));
+        }
         my $error = $transaction_error; $error .= ' rollback: ' . join('; ', @rollback_errors) if @rollback_errors;
         $out{$_} = { status => 'failed', error => $error, restored => @rollback_errors ? 0 : 1 } for @changed;
         $group->{ok} = 0; $group->{error} = $error;
