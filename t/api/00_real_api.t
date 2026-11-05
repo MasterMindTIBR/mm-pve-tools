@@ -20,6 +20,7 @@ my @classes = qw(
     PVE::API2::MMTools::Restore
     PVE::API2::MMTools::Branding
     PVE::API2::MMTools::Ui
+    PVE::API2::MMTools::Updates
 );
 my %methods;
 for my $class (@classes) {
@@ -38,8 +39,9 @@ for my $class (@classes) {
                 or diag explain $info->{permissions};
         } else {
             my $check = $info->{permissions}{check};
-            ok($check && $check->[0] eq 'perm' && $check->[1] eq '/',
-                "$name usa perm real em /") or diag explain $info->{permissions};
+            my $scope = $class eq 'PVE::API2::MMTools::Updates' ? '/nodes/{node}' : '/';
+            ok($check && $check->[0] eq 'perm' && $check->[1] eq $scope,
+                "$name usa perm real em $scope") or diag explain $info->{permissions};
             ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',
                 "$name não usa user=all") or diag explain $info->{permissions};
         }

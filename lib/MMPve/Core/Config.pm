@@ -33,7 +33,7 @@ sub default {
     my ($class) = @_;
     return {
         revision => 1,
-        modules => { renumber => 1, restore => 0, branding => 0, ui => 0 },
+        modules => { renumber => 1, restore => 0, branding => 0, ui => 0, updates => 0 },
         vmid_scheme => [],
         restore => {
             gateway_vmid => undef,
@@ -53,6 +53,11 @@ sub default {
         ui => {
             console => { qemu => 'default', lxc => 'default' },
             hide_subscription_popup => 0,
+        },
+        updates => {
+            job_timeout => 3600,
+            dpkg_lock_timeout => 300,
+            retention => 10,
         },
     };
 }
@@ -91,6 +96,12 @@ sub _numify_schema {
                 next unless ref $vlan eq 'HASH';
                 $vlan->{prefix} = $numify->($vlan->{prefix}) if exists $vlan->{prefix};
             }
+        }
+    }
+    my $updates = $data->{updates};
+    if (ref $updates eq 'HASH') {
+        for my $field (qw(job_timeout dpkg_lock_timeout retention)) {
+            $updates->{$field} = $numify->($updates->{$field}) if exists $updates->{$field};
         }
     }
     return $data;
@@ -135,7 +146,7 @@ sub validate_structure {
     my @e;
     return ('config não é um objeto') unless ref $data eq 'HASH';
 
-    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding ui);
+    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding ui updates);
     for my $k (sort keys %{$data}) {
         _err(\@e, "chave desconhecida '$k'") unless $known{$k};
     }
@@ -152,7 +163,7 @@ sub validate_structure {
         if (ref $m ne 'HASH') {
             _err(\@e, 'modules precisa ser objeto');
         } else {
-            my %mk = map { $_ => 1 } qw(renumber restore branding ui);
+            my %mk = map { $_ => 1 } qw(renumber restore branding ui updates);
             for my $k (sort keys %{$m}) {
                 if (!$mk{$k}) { _err(\@e, "módulo desconhecido '$k'"); next }
                 _err(\@e, "modules.$k precisa ser booleano") unless _is_bool($m->{$k});
@@ -313,6 +324,21 @@ sub validate_structure {
         }
     }
 
+    # updates (detalhes dos limites também são validados pelo módulo Updates)
+    if (exists $data->{updates}) {
+        my $u = $data->{updates};
+        if (ref $u ne 'HASH') {
+            _err(\@e, 'updates precisa ser objeto');
+        } else {
+            my %uk = map { $_ => 1 } qw(job_timeout dpkg_lock_timeout retention);
+            for my $k (sort keys %{$u}) {
+                _err(\@e, "updates: chave desconhecida '$k'") unless $uk{$k};
+                _err(\@e, "updates.$k precisa ser inteiro >= 1")
+                    if $uk{$k} && (!_is_int($u->{$k}) || $u->{$k} < 1);
+            }
+        }
+    }
+
     return @e;
 }
 
@@ -367,7 +393,7 @@ sub _write_locked {
     delete $data->{revision};
 
     my $def = $class->default;
-    for my $k (qw(modules vmid_scheme restore branding ui)) {
+    for my $k (qw(modules vmid_scheme restore branding ui updates)) {
         if (!exists $data->{$k}) {
             $data->{$k} = $def->{$k};
         } elsif (ref $def->{$k} eq 'HASH' && ref $data->{$k} eq 'HASH') {
@@ -449,7 +475,7 @@ sub save {
 
 sub save_section {
     my ($class, $section, $value, %opt) = @_;
-    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding ui);
+    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding ui updates);
     die "seção inválida '$section'\n" unless $allowed{$section};
     my $lock_domain = delete $opt{lock_domain} // 'mm-tools';
     my $before_write = delete $opt{before_write};

@@ -54,6 +54,7 @@ comandos por módulo:
   restore ...                  publicação de pasta (mm-pve restore --help)
   branding ...                 identidade visual (mm-pve branding --help)
   ui ...                       padrão de console e popup (mm-pve ui --help)
+  updates ...                  atualizações dos nodes (mm-pve updates --help)
 
 global: --json  saída em JSON
 EOF
@@ -118,7 +119,7 @@ sub cmd_config_set_module {
     local @ARGV = @argv;
     GetOptions('enable' => \$enable, 'disable' => \$disable) or return 2;
     my $name = shift @ARGV;
-    fail 'uso: config set-module <renumber|restore|branding> --enable|--disable' unless $name;
+    fail 'uso: config set-module <renumber|restore|branding|ui|updates> --enable|--disable' unless $name;
     my ($cfg, $digest) = MMPve::Core::Config->load;
     my %known = map { $_ => 1 } MMPve::Core::Modules->names;
     fail "módulo desconhecido '$name' (conhecidos: " . join(', ', sort keys %known) . ')'
@@ -224,6 +225,7 @@ my %MODULE_CMD = (
     restore  => 'MMPve::Module::Restore',
     branding => 'MMPve::Module::Branding',
     ui       => 'MMPve::Module::Ui',
+    updates  => 'MMPve::Module::Updates',
 );
 
 my $rc;
@@ -276,7 +278,7 @@ B<mm-pve> [B<--json>] I<comando> [opções]
 
 Comandos: version, config (get|set|set-module), apply, status, patch
 (check|apply|revert) e os subcomandos dos módulos: renumber, restore,
-branding, ui.
+branding, ui, updates.
 
 =head1 DESCRIPTION
 

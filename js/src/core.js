@@ -28,7 +28,10 @@ Ext.define('MM.Api', {
 	    url: opts.url,
 	    params: opts.params,
 	    failure: function (response) {
-		let msg = response?.result?.errors?.toString?.() ||
+		let msg = response?.htmlStatus ||
+		    (Proxmox.Utils.extractRequestError
+			? Proxmox.Utils.extractRequestError(response?.result || {}, true) : '') ||
+		    response?.result?.errors?.toString?.() ||
 		    response?.statusText || `HTTP ${response.status}`;
 		if (opts.failure) { opts.failure(msg, response); return; }
 		Ext.Msg.alert(gettext('Error'), msg);

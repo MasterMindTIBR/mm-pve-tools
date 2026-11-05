@@ -28,6 +28,18 @@ sub _now { return strftime('%Y-%m-%dT%H:%M:%S%z', localtime) }
 # opts: patches => 0|1 (default 1), dry_run => 1
 sub apply_all {
     my ($class, %opts) = @_;
+    if (!$opts{allow_updates}) {
+        my $busy = eval {
+            require MMPve::Module::Updates;
+            MMPve::Module::Updates->active_job || MMPve::Module::Updates->dpkg_locked;
+        };
+        if ($busy) {
+            return {
+                ok => 1, skipped => 1, reason => 'update em execução ou lock do dpkg',
+                revision => eval { MMPve::Core::Config->load->{revision} },
+            };
+        }
+    }
     my $previous = eval { decode_json(read_file(state_path())) };
     my $cfg = eval { MMPve::Core::Config->load };
     my $cfg_err = $@;

@@ -49,7 +49,7 @@ def build_js():
         shutil.copy2(OLD_JS, output)
         return output
     chunks = ['/* mm-tools.js — harness build */\n']
-    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js'):
+    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'updates.js'):
         source = (REPO / 'js/src' / name).read_text(encoding='utf-8')
         chunks.append(f'\n/* ===== js/src/{name} ===== */\n')
         chunks.append(source.replace('@MM_PVE_VERSION@', VERSION))
@@ -86,6 +86,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     index = ''
     mm_js = pathlib.Path()
     requests = []
+    bulk_refused = False
 
     def log_message(self, fmt, *args):
         return
@@ -153,6 +154,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         self.record('POST', path)
+        size = int(self.headers.get('Content-Length', '0'))
+        self.post_body = self.rfile.read(size) if size else b''
         self.api(path)
 
     def do_PUT(self):
@@ -189,6 +192,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def api(self, path):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        post = {}
+        if self.command == 'POST' and getattr(self, 'post_body', b''):
+            raw = self.post_body.decode('utf-8')
+            if 'application/json' in self.headers.get('Content-Type', ''):
+                post = json.loads(raw or '{}')
+            else:
+                post = {key: values[-1] for key, values in urllib.parse.parse_qs(raw).items()}
         if path.endswith('/access/ticket'):
             self.send_json({'ticket': 'PVE:root@pam:harness', 'username': 'root@pam', 'cap': {
                 'dc': {'Sys.Audit': 1, 'Sys.Modify': 1},
@@ -196,7 +207,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'nodes': {'Sys.Audit': 1, 'Sys.Modify': 1},
             }})
         elif path.endswith('/cluster/status'):
-            self.send_json([{'type': 'node', 'node': 'localhost', 'name': 'localhost', 'online': 1}])
+            self.send_json([{'type': 'node', 'node': 'localhost', 'name': 'localhost', 'online': 1},
+                            {'type': 'node', 'node': 'offline-node', 'name': 'offline-node', 'online': 0}])
         elif path.endswith('/cluster/resources'):
             self.send_json([{'type': 'node', 'node': 'localhost', 'status': 'online'},
                             {'type': 'qemu', 'vmid': 100, 'node': 'localhost', 'name': 'harness'}])
@@ -219,6 +231,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({'node': 'localhost', 'package_version': VERSION,
                             'pve_version': '9.2.24', 'applied': {'state': 'applied'},
                             'modules': {'ui': {'check': {'ok': True, 'note': 'símbolos compatíveis'}}}})
+        elif path.endswith('/mm-tools/updates/status'):
+            self.send_json({'node': 'localhost', 'online': 1, 'pending': [
+                            {'Package': 'pve-manager', 'Version': '9.2.25'}],
+                            'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': True},
+                            'reboot_suggested': True, 'job': None, 'results': [],
+                            'reboot_context': {'running_guests': [{'type': 'qemu', 'vmid': 100,
+                                                                    'name': 'harness'}],
+                                               'ha': {'state': 'started'}}})
+        elif path.endswith('/mm-tools/updates/run'):
+            self.send_json('UPID:harness:updates-run')
+        elif path.endswith('/mm-tools/updates/refresh'):
+            self.send_json('apt-get update concluído')
+        elif path.endswith('/mm-tools/updates/bulk'):
+            override = post.get('override_preflight', query.get('override_preflight', ['0'])[-1]) in ('1', 'true')
+            if not override and not Handler.bulk_refused:
+                Handler.bulk_refused = True
+                self.send_raw_json({'data': None, 'success': 0, 'message': 'preflight: HA migrando'})
+            else:
+                self.send_json({'bulk_id': '11111111-1111-4111-8111-111111111111',
+                                'mode': 'parallel', 'nodes': ['localhost'],
+                                'override': override})
+        elif path.endswith('/mm-tools/updates/log'):
+            self.send_json({'lines': ['job de teste'], 'total': 1})
+        elif path.endswith('/mm-tools/updates/reboot'):
+            self.send_json({'node': 'localhost', 'running_guests': [{'type': 'qemu', 'vmid': 100,
+                                                                     'name': 'harness'}],
+                            'ha': {'state': 'started'}})
         elif path.endswith('/mm-tools/ui/preference'):
             if self.command == 'PUT':
                 size = int(self.headers.get('Content-Length', '0'))

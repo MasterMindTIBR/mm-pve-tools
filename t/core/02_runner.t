@@ -32,6 +32,20 @@ subtest 'stdin' => sub {
     is($r->{out}, "linha1\n", 'stdin chega ao comando');
 };
 
+subtest 'run_stream entrega saída incremental e suporta sem timeout' => sub {
+    my @chunks;
+    my $r = MMPve::Core::Runner->run_stream(
+        ['sh', '-c', 'printf primeiro; printf segundo >&2'],
+        timeout => 5, on_output => sub { push @chunks, [@_] },
+    );
+    ok($r->{ok}, 'comando streaming conclui');
+    is($r->{out}, 'primeiro', 'stdout completo');
+    is($r->{err}, 'segundo', 'stderr completo');
+    is_deeply([map { $_->[1] } @chunks], [qw(stdout stderr)], 'callback identifica os streams');
+    my $slow = MMPve::Core::Runner->run_stream(['sleep', '1']);
+    ok($slow->{ok}, 'sem timeout explícito não interrompe o comando');
+};
+
 subtest 'executável ausente' => sub {
     my $r = MMPve::Core::Runner->run(['binario-que-nao-existe-xyz']);
     ok(!$r->{ok}, 'falha');

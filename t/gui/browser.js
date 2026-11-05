@@ -37,6 +37,7 @@ async function main() {
     const pageErrors = [];
     const assetFailures = [];
     let mmRequests = 0;
+    let updateRequests = [];
     page.on('console', (message) => browserConsole.push(`${message.type()}: ${message.text()}`));
     page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)));
     page.on('response', (response) => {
@@ -53,6 +54,10 @@ async function main() {
     });
     page.on('request', (request) => {
         if (new URL(request.url()).pathname === '/pve2/js/mm-tools.js') { mmRequests++; }
+        if (new URL(request.url()).pathname.includes('/mm-tools/updates/')) {
+            updateRequests.push({ url: request.url(), path: new URL(request.url()).pathname,
+                postData: request.postData() || '' });
+        }
     });
     try {
         await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: TIMEOUT });
@@ -122,6 +127,64 @@ async function main() {
         await page.locator('.x-treelist-item-text', { hasText: 'MasterMind' }).first()
             .waitFor({ state: 'visible', timeout: TIMEOUT });
         console.log('GUI: tree found');
+        const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
+            let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
+            let started = Date.now();
+            while (panel.getStore().getCount() < 2) {
+                if (Date.now() - started > assertionTimeout) { throw new Error('grade de updates não carregou todos os nodes'); }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            let local = panel.getStore().findRecord('node', 'localhost');
+            let offline = panel.getStore().findRecord('node', 'offline-node');
+            if (!local || !offline || local.get('reboot_suggested') !== true || offline.get('online') !== false) {
+                throw new Error('status de updates por node incompleto');
+            }
+            if (!local.get('reboot_context')?.running_guests?.some((guest) => guest.vmid === 100)) {
+                throw new Error('contexto de reboot não expõe guest ligado');
+            }
+            let mode = panel.down('combo').setValue('parallel');
+            Ext.Msg.confirm = (title, text, callback) => callback('yes');
+            panel.getSelectionModel().select(local);
+            panel.runRow(local);
+            panel.refreshRow(local);
+            panel.refreshSelected();
+            panel.down('button[text=Atualizar selecionados]').handler();
+            let rebootDone = false;
+            MM.Updates.tripleReboot(local, () => { rebootDone = true; });
+            let win = Ext.WindowManager.getActive();
+            let contextVisible = win.down('displayfield').getValue().includes('100');
+            let understand = win.down('checkbox');
+            let field = win.down('textfield');
+            let rebootButton = win.down('#mm-confirm-reboot');
+            let blocked = rebootButton.isDisabled();
+            understand.setValue(true); field.setValue('outro');
+            let wrongNameBlocked = rebootButton.isDisabled();
+            field.setValue('localhost');
+            let exactNameEnabled = !rebootButton.isDisabled();
+            rebootButton.handler();
+            return { rows: panel.getStore().getCount(), blocked, wrongNameBlocked, exactNameEnabled,
+                rebootDone, contextVisible };
+        }, TIMEOUT);
+        if (updatesAssertions.rows !== 2 || !updatesAssertions.blocked
+            || !updatesAssertions.wrongNameBlocked || !updatesAssertions.exactNameEnabled
+            || !updatesAssertions.rebootDone || !updatesAssertions.contextVisible) {
+            throw new Error(`updates assertions failed: ${JSON.stringify(updatesAssertions)}`);
+        }
+        await page.waitForTimeout(100);
+        const updateRuns = updateRequests.filter((request) => request.path.endsWith('/updates/run'));
+        const updateRefreshes = updateRequests.filter((request) => request.path.endsWith('/updates/refresh'));
+        const bulkRequests = updateRequests.filter((request) => request.path.endsWith('/updates/bulk'));
+        if (updateRuns.length < 1 || updateRefreshes.length < 2 || bulkRequests.length < 2
+            || !bulkRequests.some((request) => request.url.includes('override_preflight=1')
+                || request.postData.includes('override_preflight=1'))
+            || !bulkRequests.some((request) => request.url.includes('mode=parallel')
+                || request.postData.includes('mode=parallel'))
+            || !bulkRequests.some((request) => request.path.endsWith('/updates/bulk')
+            && (/(?:^|[?&])mode=parallel(?:&|$)/.test(request.url)
+                || /(?:^|&)mode=parallel(?:&|$)/.test(request.postData)))) {
+            throw new Error(`bulk paralelo não foi enviado: ${JSON.stringify(updateRequests)}`);
+        }
+        console.log('GUI OK: grade Updates, ações de linha/seleção, override de preflight, contexto e confirmação tripla');
         await page.locator('.x-btn-inner', { hasText: 'Publicar pasta…' }).first()
             .waitFor({ state: 'visible', timeout: TIMEOUT });
         console.log('GUI: button found');

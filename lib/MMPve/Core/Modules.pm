@@ -12,6 +12,7 @@ my @REGISTRY = qw(
     MMPve::Module::Restore
     MMPve::Module::Branding
     MMPve::Module::Ui
+    MMPve::Module::Updates
 );
 
 sub all {

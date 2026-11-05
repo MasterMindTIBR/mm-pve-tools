@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PERL_INC   = -Ilib -Iperl
 PROVE      = prove $(PERL_INC)
 
-JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js
+JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/updates.js
 JS_OUT     = build/mm-tools.js
 
 .PHONY: all js test test-api test-gateway test-gui lint build build-dir check-anchors clean
@@ -23,7 +23,7 @@ build-dir:
 	mkdir -p build
 
 test:
-	$(PROVE) -r t/core t/renumber t/restore t/branding t/ui t/contract
+	$(PROVE) -r t/core t/renumber t/restore t/branding t/ui t/updates t/contract
 
 test-api:
 	./scripts/test-pve-env.sh
@@ -79,6 +79,7 @@ check-anchors: js
 		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest proxmox-widget-toolkit=latest; \
 	fi; \
 	grep -Fq "MM.Ui" build/mm-tools.js; \
+	grep -Fq "MM.panel.Updates" build/mm-tools.js; \
 	grep -Fq "checked_command" build/mm-tools.js; \
 	scripts/check-ui-bundles.sh refs/upstream/pve-9.2.24/pvemanagerlib.js refs/upstream/pve-9.2.24/proxmoxlib.js \
 		"$$newest_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
