@@ -175,9 +175,9 @@ __PACKAGE__->register_method({
         my $node = $param->{node};
         my $realcmd = sub {
             my ($upid) = @_;
-            my $res = MMPve::Core::Runner->run([
-                '/usr/sbin/mm-pve', '--json', 'apply', '--no-reload',
-            ], timeout => 240);
+            my @cmd = ('/usr/sbin/mm-pve', '--json', 'apply', '--no-reload');
+            push @cmd, '--no-patches' if exists($param->{patches}) && !$param->{patches};
+            my $res = MMPve::Core::Runner->run(\@cmd, timeout => 240);
             die "mm-pve apply falhou (rc=$res->{rc}): "
                 . ($res->{err} || $res->{error} || 'sem diagnóstico') . "\n"
                 unless $res->{ok};
@@ -191,7 +191,8 @@ __PACKAGE__->register_method({
                 my $unit = 'mm-pve-reload-' . substr(random_uuid(), 0, 12);
                 my $reload = MMPve::Core::Runner->run([
                     'systemd-run', '--no-block', '--collect', "--unit=$unit",
-                    'systemctl', 'reload', 'pveproxy.service', 'pvedaemon.service',
+                    '/usr/sbin/mm-pve', '--json', 'patch', 'reload-verify',
+                    '--fallback-daemons', 'pveproxy,pvedaemon',
                 ], timeout => 30);
                 die "não consegui agendar reload pós-apply (unit $unit): "
                     . ($reload->{err} || $reload->{error} || "rc=$reload->{rc}") . "\n"

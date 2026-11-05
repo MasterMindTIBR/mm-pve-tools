@@ -4,10 +4,12 @@ use warnings;
 use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
-use JSON::PP qw(decode_json);
+use JSON::PP qw(decode_json encode_json);
 
 use lib "$Bin/../../lib", "$Bin/../../perl";
 use MMPve::Core::Apply;
+use MMPve::Core::Patch;
+use MMPve::Core::Util qw(write_file_atomic);
 
 my $tmp = tempdir('mm-pve-apply-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 $ENV{MM_PVE_ROOT} = "$tmp";
@@ -58,6 +60,20 @@ subtest 'módulo desligado roda revert' => sub {
     local *MMPve::Module::Branding::revert = sub { $revertiu++; { ok => 1 } };
     MMPve::Core::Apply->apply_all(patches => 0);
     ok($revertiu, 'revert chamado p/ branding desligado');
+};
+
+subtest 'versão instalada diferente exige reload mesmo sem patch novo' => sub {
+    write_file_atomic(MMPve::Core::Apply->state_path, encode_json({
+        package_version => 'versao-anterior', revision => 1, modules => {},
+    }) . "\n");
+    my $reloads = 0;
+    no warnings 'redefine';
+    local $MMPve::Core::Apply::VERSION = 'versao-atual';
+    local *MMPve::Core::Patch::apply = sub { return { ok => 1, changed => 0 } };
+    local *MMPve::Core::Patch::reload_services = sub { $reloads++; return { ok => 1 } };
+    my $r = MMPve::Core::Apply->apply_all(patches => 1);
+    ok($r->{reload_required}, 'version_changed exige reload');
+    is($reloads, 1, 'reload executado uma vez');
 };
 
 done_testing();

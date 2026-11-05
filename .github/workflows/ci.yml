@@ -32,7 +32,9 @@ jobs:
         run: |
           rc=0
           while IFS= read -r f; do
-            perl -Ilib -Iperl -It/lib-stubs -c "$f" || rc=1
+            extra=()
+            if [[ "$f" == perl/PVE/MMTools/* ]]; then extra=(-It/lib-autostub -MMMAutoStub); fi
+            perl -Ilib -Iperl -It/lib-stubs "${extra[@]}" -c "$f" || rc=1
           done < <(find bin lib perl -type f ! -name '*.py' ! -name '*.pod' ! -path '*/t/*' | sort)
           exit $rc
       - name: lint Perl
@@ -96,7 +98,7 @@ jobs:
           root="$RUNNER_TEMP/pve-gui-assets"
           scripts/fetch-pve-debs.sh "$root" \
             pve-manager="$(cat ci/pve-manager.version)" \
-            proxmox-widget-toolkit=5.2.10 \
+            proxmox-widget-toolkit="$(awk -F= '$1 == "proxmox-widget-toolkit" { print $2 }' ci/pve-package-versions)" \
             libjs-extjs=7.0.0-9 \
             libjs-qrcodejs=1.20230525-pve1
           mkdir -p "$root/assets"
@@ -142,7 +144,7 @@ jobs:
           path: dist/
 
   anchors:
-    name: Âncoras de patch (pve-manager 9.2.24 fixado)
+    name: Âncoras de patch (owners PVE fixados e mais recentes)
     runs-on: ubuntu-24.04
     container:
       image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
@@ -154,28 +156,11 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl gpg gpgv python3 perl make \
             libhttp-message-perl libio-socket-ssl-perl
-      - name: baixa bundles fixados e mais recentes
+      - name: verifica owners fixados e mais recentes
         shell: bash
         run: |
           set -euo pipefail
-          pinned="$RUNNER_TEMP/pve-pinned"
-          newest="$RUNNER_TEMP/pve-newest"
-          scripts/fetch-pve-debs.sh "$pinned" \
-            pve-manager="$(cat ci/pve-manager.version)" proxmox-widget-toolkit=5.2.10
-          scripts/fetch-pve-debs.sh "$newest" \
-            pve-manager=latest proxmox-widget-toolkit=latest
-          make -s js >/dev/null
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pinned/x/pve-manager"
-          # Só o Nodes.pm é compilado; os módulos do PVE viram stubs (t/lib-autostub).
-          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
-            "$pinned/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
-          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pinned/x/proxmox-widget-toolkit"
-          grep -R -q 'proxmox_logo.svg' "$pinned/x/proxmox-widget-toolkit"
-          scripts/check-ui-bundles.sh \
-            "$pinned/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
-            "$pinned/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js" \
-            "$newest/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
-            "$newest/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+          make check-anchors
 
   anchors-latest:
     name: Âncoras contra upstream mais recente (semanal, não bloqueante)
@@ -194,21 +179,13 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl gpg gpgv python3 perl make \
             libhttp-message-perl libio-socket-ssl-perl
-      - name: aplica os patches no upstream mais recente
+      - name: verifica owners no upstream mais recente
         id: check
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          pve="$RUNNER_TEMP/pve"
-          scripts/fetch-pve-debs.sh "$pve" \
-            pve-manager=latest proxmox-widget-toolkit=latest
-          make -s js >/dev/null
-          perl -Ilib -Iperl lib/mm-pve-tools/apply-patches --no-restart --root "$pve/x/pve-manager"
-          perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
-            "$pve/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"
-          grep -R -q "Ext.define('PMX.image.LogoSVG'" "$pve/x/proxmox-widget-toolkit"
-          grep -R -q 'proxmox_logo.svg' "$pve/x/proxmox-widget-toolkit"
+          make check-anchors
       - name: abre ou atualiza o issue único de upstream
         if: steps.check.outcome == 'failure'
         uses: actions/github-script@v7

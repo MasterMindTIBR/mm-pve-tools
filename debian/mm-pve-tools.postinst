@@ -28,7 +28,7 @@ case "$1" in
         apply_state
         ;;
     triggered)
-        # Trigger dpkg: pve-manager atualizado → reaplica patch + estado.
+        # Trigger dpkg: qualquer pacote owner atualizado → reaplica patches + estado.
         apply_state
         ;;
 esac

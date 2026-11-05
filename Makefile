@@ -5,6 +5,9 @@ PROVE      = prove $(PERL_INC)
 
 JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/updates.js
 JS_OUT     = build/mm-tools.js
+PVE_PACKAGE_VERSIONS = ci/pve-package-versions
+
+pve_package_version = $(shell awk -F= -v package="$(1)" '$$1 == package { print $$2 }' $(PVE_PACKAGE_VERSIONS))
 
 .PHONY: all js test test-api test-gateway test-gui lint build build-dir check-anchors clean
 
@@ -37,8 +40,9 @@ test-gui:
 lint:
 	@rc=0; \
 	while IFS= read -r f; do \
-	    perl -Ilib -Iperl -It/lib-stubs -c "$$f" >/dev/null 2>&1 \
-	      || { echo "perl -c FALHOU: $$f"; perl -Ilib -Iperl -It/lib-stubs -c "$$f"; rc=1; }; \
+	    extra=''; case "$$f" in perl/PVE/MMTools/*) extra='-It/lib-autostub -MMMAutoStub';; esac; \
+	    perl -Ilib -Iperl -It/lib-stubs $$extra -c "$$f" >/dev/null 2>&1 \
+	      || { echo "perl -c FALHOU: $$f"; perl -Ilib -Iperl -It/lib-stubs $$extra -c "$$f"; rc=1; }; \
 	done < <(find bin lib perl -type f ! -name '*.py' ! -name '*.pod' ! -path '*/t/*' | sort); \
 	if command -v shellcheck >/dev/null 2>&1; then \
 	    find . -path ./.git -prune -o -name '*.sh' -print0 | xargs -0 -r shellcheck || rc=1; \
@@ -55,14 +59,16 @@ lint:
 build:
 	./scripts/build-deb.sh
 
-# Valida as âncoras contra o fixture upstream: antes (espera 3=aplicável),
-# aplica (espera 0), depois (espera 0=aplicado). 4=âncora quebrada=falha.
+# Valida o fixture upstream e os alvos de módulo contra pacotes reais fixados
+# e mais recentes: cada owner é combinado em um root temporário e aplicado,
+# conferido e revertido pelo fixture de teste.
 check-anchors: js
 	@set -e; \
 	fixture_root=$$(mktemp -d); \
+	pinned_root=$$(mktemp -d); \
 	owned_newest=; \
 	newest_root='$(NEWEST_PVE_ROOT)'; \
-	cleanup() { rm -rf -- "$$fixture_root"; if [ -n "$$owned_newest" ]; then rm -rf -- "$$owned_newest"; fi; }; \
+	cleanup() { rm -rf -- "$$fixture_root" "$$pinned_root"; if [ -n "$$owned_newest" ]; then rm -rf -- "$$owned_newest"; fi; }; \
 	trap cleanup EXIT HUP INT TERM; \
 	mkdir -p "$$fixture_root/usr/share/pve-manager" "$$fixture_root/usr/share/perl5/PVE/API2"; \
 	cp t/fixtures/pve-manager/index.html.tpl "$$fixture_root/usr/share/pve-manager/"; \
@@ -74,10 +80,30 @@ check-anchors: js
 	if [ $$rc -eq 0 ]; then echo "ÂNCORAS PVE MANAGER OK (aplicou e verificou no fixture upstream)"; \
 	elif [ $$rc -eq 4 ]; then echo "ÂNCORA QUEBROU no upstream"; exit 1; \
 	else exit 1; fi; \
-	if [ -z "$$newest_root" ]; then \
-		owned_newest=$$(mktemp -d); newest_root="$$owned_newest"; \
-		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest proxmox-widget-toolkit=latest; \
+	scripts/fetch-pve-debs.sh "$$pinned_root" \
+		pve-manager=$$(cat ci/pve-manager.version) \
+		libpve-guest-common-perl=$(call pve_package_version,libpve-guest-common-perl) \
+		libpve-access-control=$(call pve_package_version,libpve-access-control) \
+		libpve-storage-perl=$(call pve_package_version,libpve-storage-perl) \
+		proxmox-widget-toolkit=$(call pve_package_version,proxmox-widget-toolkit); \
+	if [ -z "$$newest_root" ]; then owned_newest=$$(mktemp -d); newest_root="$$owned_newest"; \
+		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest \
+			libpve-guest-common-perl=latest libpve-access-control=latest libpve-storage-perl=latest \
+			proxmox-widget-toolkit=latest; \
 	fi; \
+	for bundle in "$$pinned_root" "$$newest_root"; do \
+		perl $(PERL_INC) lib/mm-pve-tools/apply-patches --no-restart --root "$$bundle/x/pve-manager"; \
+		perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
+			"$$bundle/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"; \
+		grep -R -q "Ext.define('PMX.image.LogoSVG'" "$$bundle/x/proxmox-widget-toolkit"; \
+		grep -R -q 'proxmox_logo.svg' "$$bundle/x/proxmox-widget-toolkit"; \
+		combined=$$(mktemp -d); \
+		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl; do \
+			cp -a "$$bundle/x/$$package/." "$$combined/"; \
+		done; \
+		perl -Ilib -Iperl -It/lib t/anchors/module-patches-check.pl "$$combined"; \
+		rm -rf -- "$$combined"; \
+	done; \
 	grep -Fq "MM.Ui" build/mm-tools.js; \
 	grep -Fq "MM.panel.Updates" build/mm-tools.js; \
 	grep -Fq "checked_command" build/mm-tools.js; \

@@ -4,6 +4,7 @@ package MMPve::Core::Modules;
 
 use strict;
 use warnings;
+use MMPve::Core::Patch;
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -27,6 +28,11 @@ sub all {
             MMPve::Core::Util->can('log_line') and MMPve::Core::Util::log_line("módulo $m indisponível: $@");
             next;
         };
+        my $targets = eval { $m->patch_targets };
+        die "registro de patches do módulo $m falhou: $@\n" if $@;
+        if (ref($targets) eq 'ARRAY' && @{$targets}) {
+            MMPve::Core::Patch->register_module($m);
+        }
         push @ok, $m;
     }
     return @ok;

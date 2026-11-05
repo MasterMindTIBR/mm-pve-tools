@@ -10,6 +10,10 @@ key_url='https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gp
 key_sha256='136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45'
 tag="mm-pve-tools-api:${key_sha256:0:12}"
 
+pve_version() {
+    awk -F= -v package="$1" '$1 == package { print $2 }' "$repo_dir/ci/pve-package-versions"
+}
+
 if ! command -v docker >/dev/null 2>&1; then
     echo 'test-api requer Docker no ambiente do Visionary/CI' >&2
     exit 2
@@ -27,8 +31,12 @@ RUN curl -fsSL '$key_url' -o /tmp/proxmox-archive-keyring-trixie.gpg \\
     && install -m 0644 /tmp/proxmox-archive-keyring-trixie.gpg /usr/share/keyrings/proxmox-archive-keyring-trixie.gpg \\
     && printf '%s\\n' 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring-trixie.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription' > /etc/apt/sources.list.d/pve.list
 RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \\
-    libpve-common-perl=9.2.5 libpve-access-control=9.1.2 libpve-cluster-perl=9.1.7 \\
-    libpve-rs-perl=0.15.3 libpve-storage-perl=9.1.13 && rm -rf /var/lib/apt/lists/*
+    libpve-common-perl=$(pve_version libpve-common-perl) \\
+    libpve-guest-common-perl=$(pve_version libpve-guest-common-perl) \\
+    libpve-access-control=$(pve_version libpve-access-control) \\
+    libpve-cluster-perl=$(pve_version libpve-cluster-perl) \\
+    libpve-rs-perl=$(pve_version libpve-rs-perl) \\
+    libpve-storage-perl=$(pve_version libpve-storage-perl) && rm -rf /var/lib/apt/lists/*
 EOF
 
 run_rc=0

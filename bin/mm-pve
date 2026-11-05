@@ -46,7 +46,8 @@ comandos do núcleo:
   config set-module <nome> --enable|--disable
   apply [--no-patches] [--no-reload] aplica patches + módulos neste node
   status                       diagnóstico deste node
-  patch check|apply|revert     patch do pve-manager
+  patch check|apply|revert     patch do pve-manager e dos módulos
+  patch reload-verify          recarrega/verifica os alvos pendentes
   help                         esta ajuda
 
 comandos por módulo:
@@ -175,8 +176,15 @@ sub cmd_status {
         my $ap = $s->{applied};
         print "estado:          $ap->{state} (aplicada r" . ($ap->{applied_revision} // '-') . ', config r' . ($ap->{config_revision} // '-') . ")\n";
         my $pc = $ap->{patches} // {};
-        print "patch index.tpl: " . ($pc->{index_tpl}{status} // '?') . "\n";
-        print "patch Nodes.pm:  " . ($pc->{nodes_pm}{status} // '?') . "\n";
+        for my $target (sort keys %{$pc}) {
+            my $p = $pc->{$target} // {};
+            my $extra = join(' ', grep { defined && length } (
+                (defined($p->{module}) ? "module=$p->{module}" : ()),
+                (defined($p->{owner}) ? "owner=$p->{owner}" : ()),
+            ));
+            print "patch $target: " . ($p->{status} // '?')
+                . (length($extra) ? " [$extra]" : '') . "\n";
+        }
         my $nt = $s->{ntfs3g};
         print "ntfs3g:          " . (defined $nt->{ok} ? ($nt->{ok} ? 'OK' : 'FALHOU: ' . ($nt->{error} // '')) : '(pulou)') . "\n";
         my $ui = $s->{modules}{ui}{check} // {};
@@ -204,7 +212,16 @@ sub cmd_patch {
         out_json($r) if $JSON;
         return 0;
     }
-    print STDERR "uso: mm-pve patch check|apply|revert\n";
+    if ($sub eq 'reload-verify') {
+        my $fallback;
+        local @ARGV = @argv;
+        GetOptions('fallback-daemons=s' => \$fallback) or return 2;
+        my @daemons = defined($fallback) && length($fallback) ? split(/,/, $fallback) : ();
+        my $r = MMPve::Core::Patch->reload_verify(fallback_daemons => \@daemons);
+        out_json($r) if $JSON;
+        return $r->{ok} ? 0 : 1;
+    }
+    print STDERR "uso: mm-pve patch check|apply|revert|reload-verify\n";
     return 2;
 }
 

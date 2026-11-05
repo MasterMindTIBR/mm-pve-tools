@@ -1,6 +1,7 @@
 #!/bin/sh
-# prerm do mm-pve-tools: na remoção, tira as duas linhas de patch e deixa o
-# PVE original. Em upgrade (upgrade/failed-upgrade) não mexe.
+# prerm do mm-pve-tools: na remoção, tira os patches do núcleo e os manifestos
+# de módulos persistidos, deixando os pacotes PVE originais. Em upgrade
+# (upgrade/failed-upgrade) não mexe.
 
 set -e
 

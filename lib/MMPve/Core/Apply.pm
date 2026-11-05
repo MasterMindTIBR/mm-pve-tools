@@ -40,7 +40,6 @@ sub apply_all {
             };
         }
     }
-    my $previous = eval { decode_json(read_file(state_path())) };
     my $cfg = eval { MMPve::Core::Config->load };
     my $cfg_err = $@;
     if ($cfg_err) {
@@ -54,16 +53,19 @@ sub apply_all {
         revision => $cfg->{revision},
         modules => {},
     );
+    my @modules = MMPve::Core::Modules->all;
+    my $previous = eval { decode_json(read_file(state_path())) };
     my $patches_requested = !exists $opts{patches} || $opts{patches};
     my $version_changed = $patches_requested
         && (!$previous || ($previous->{package_version} // '') ne $VERSION);
-
-    if ($patches_requested) {    # garante patches (idempotente)
-        $res{patches} = MMPve::Core::Patch->apply(no_restart => 1);
-    }
-
     my $mode = $cfg->{modules} || {};
-    for my $m (MMPve::Core::Modules->all) {
+    if ($patches_requested) {    # garante patches (idempotente), conforme estado efetivo
+        $res{patches} = MMPve::Core::Patch->apply(
+            active_modules => $mode,
+            no_restart => $opts{no_reload} ? 1 : 0,
+        );
+    }
+    for my $m (@modules) {
         my $name = $m->name;
         my $enabled = $mode->{$name} ? 1 : 0;
         my $out;
@@ -87,7 +89,7 @@ sub apply_all {
         $res{ok} = 0 if !$res{modules}{$n}{ok};
     }
     $res{reload_required} = ($version_changed
-        || ($res{patches} && $res{patches}{changed})
+        || ($res{patches} && $res{patches}{changed} && $opts{no_reload})
         || ($res{modules}{branding} && $res{modules}{branding}{changed})
         || ($res{modules}{ui} && $res{modules}{ui}{changed})) ? 1 : 0;
     if ($res{reload_required} && !$opts{no_reload} && $res{ok}) {
@@ -105,6 +107,7 @@ sub apply_all {
 # estado p/ diagnóstico: aplicado / pendente / erro (com mensagem)
 sub status {
     my ($class) = @_;
+    MMPve::Core::Modules->all;
     my $cfg = eval { [MMPve::Core::Config->load] };
     my $rev_cfg = $cfg ? $cfg->[0]{revision} : undef;
     my $state = eval { decode_json(read_file(state_path())) };

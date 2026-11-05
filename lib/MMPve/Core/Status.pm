@@ -52,6 +52,7 @@ sub collect {
 
     $s{applied} = eval { MMPve::Core::Apply->status };
     $s{applied} = { state => 'error', error => $@ } if $@;
+    $s{patches} = ref($s{applied}) eq 'HASH' ? ($s{applied}{patches} // {}) : {};
 
     $s{ntfs3g} = $opts{skip_ntfs3g} ? { ok => undef, skipped => 1 } : $class->_ntfs3g_state;
 

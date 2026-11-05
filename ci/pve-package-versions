@@ -1,0 +1,9 @@
+# PVE package versions used by the pinned API/anchor proofs.
+# Keep pve-manager in ci/pve-manager.version; all other package pins live here.
+libpve-common-perl=9.2.5
+libpve-guest-common-perl=6.0.5
+libpve-access-control=9.1.2
+libpve-cluster-perl=9.1.7
+libpve-rs-perl=0.15.3
+libpve-storage-perl=9.1.13
+proxmox-widget-toolkit=5.2.10
