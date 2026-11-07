@@ -19,6 +19,7 @@ $ENV{MM_PVE_DISABLE_CFS_LOCK} = 1;
 $ENV{MM_PVE_BIN} = '/usr/sbin/mm-pve';
 my $active = 1;
 my $apt_ok = 1;
+my @systemd_runs;
 my $kernel_output = "install ok installed\tpve-kernel-6.8.0-1-pve\t6.8.0\n"
     . "install ok installed\tpve-kernel-6.8.1-1-pve\t6.8.1\n";
 local $MMPve::Core::Runner::OVERRIDE = sub {
@@ -30,10 +31,43 @@ local $MMPve::Core::Runner::OVERRIDE = sub {
         return { ok => 1, rc => ($argv->[2] gt $argv->[4] ? 0 : 1), out => '', err => '' };
     }
     return { ok => $active ? 1 : 0, rc => $active ? 0 : 3, out => '', err => '' } if $cmd eq 'systemctl';
-    return { ok => 1, rc => 0, out => '', err => '' } if $cmd eq 'systemd-run';
+    if ($cmd eq 'systemd-run') {
+        push @systemd_runs, [ @{$argv} ];
+        return { ok => 1, rc => 0, out => '', err => '' };
+    }
     return { ok => $apt_ok ? 1 : 0, rc => $apt_ok ? 0 : 1, out => "apt output\n", err => $apt_ok ? '' : "apt error\n" }
         if $cmd eq 'apt-get' || $cmd eq 'env';
     return { ok => 1, rc => 0, out => '[]', err => '' };
+};
+
+# Os argumentos que run_bulk e request_run passam à unit precisam ser aceitos
+# pela própria CLI (um --bulk desconhecido derrubava todo bulk na unit).
+subtest 'a CLI aceita exatamente os argumentos que a unit recebe' => sub {
+    my $cli_args = sub {
+        my ($cmd) = @_;
+        my ($at) = grep { $cmd->[$_] eq 'updates' } 0 .. $#{$cmd};
+        return [ @{$cmd}[ $at + 1 .. $#{$cmd} ] ];
+    };
+    my ($seen_bulk, $seen_job);
+    no warnings 'redefine';
+    local *MMPve::Module::Updates::bulk_worker = sub { $seen_bulk = $_[1]; return { state => 'succeeded' } };
+    local *MMPve::Module::Updates::run_job = sub { $seen_job = $_[2]; return { ok => 1 } };
+    use warnings 'redefine';
+
+    @systemd_runs = ();
+    my $bulk = MMPve::Module::Updates->run_bulk(['node-cli'], mode => 'sequential', actor => 'root@pam',
+        preflight_cb => sub { { ok => 1 } });
+    my $args = $cli_args->($systemd_runs[-1]);
+    is($args->[0], 'bulk-worker', 'unit do bulk chama bulk-worker');
+    is(MMPve::Module::Updates->cli($args), 0, 'CLI aceita os argumentos do bulk');
+    is($seen_bulk, $bulk->{bulk_id}, 'bulk-worker recebe o id do bulk');
+
+    @systemd_runs = ();
+    my $job = MMPve::Module::Updates->request_run('node-cli', actor => 'root@pam');
+    $args = $cli_args->($systemd_runs[-1]);
+    is($args->[0], 'worker', 'unit do job chama worker');
+    is(MMPve::Module::Updates->cli($args), 0, 'CLI aceita os argumentos do job');
+    is($seen_job, $job, 'worker recebe o id do job');
 };
 
 subtest 'defaults e schema estrito' => sub {

@@ -679,11 +679,11 @@ sub cli {
     my ($class, $argv) = @_;
     require Getopt::Long;
     my $sub = shift @{$argv} // '';
-    my ($node, $nodes, $mode, $job, $confirm, $start, $limit, $override);
+    my ($node, $nodes, $mode, $job, $bulk, $confirm, $start, $limit, $override);
     local @ARGV = @{$argv};
     Getopt::Long::GetOptions(
         'node=s' => \$node, 'nodes=s' => \$nodes, 'mode=s' => \$mode,
-        'job=s' => \$job, 'confirm=s' => \$confirm, 'start=i' => \$start,
+        'job=s' => \$job, 'bulk=s' => \$bulk, 'confirm=s' => \$confirm, 'start=i' => \$start,
         'limit=i' => \$limit, 'override-preflight' => \$override,
     ) or return 2;
     $node //= hostname();
@@ -695,7 +695,7 @@ sub cli {
         else { $out = { job => $class->request_run($node, actor => 'root@pam') } }
     }
     elsif ($sub eq 'worker') { return $class->run_job($node, $job)->{ok} ? 0 : 1 }
-    elsif ($sub eq 'bulk-worker') { return $class->bulk_worker($job)->{state} eq 'succeeded' ? 0 : 1 }
+    elsif ($sub eq 'bulk-worker') { return $class->bulk_worker($bulk // $job)->{state} eq 'succeeded' ? 0 : 1 }
     elsif ($sub eq 'log') { $out = $class->log_page($node, $job, start => $start, limit => $limit) }
     elsif ($sub eq 'reboot') { $out = $class->reboot($node, confirm => $confirm) }
     else { print STDERR "uso: mm-pve updates status|refresh|run|log|reboot\n"; return 2 }
