@@ -10,6 +10,7 @@ use base qw(MMPve::Core::ModuleBase);
 use Fcntl qw(:flock);
 use JSON::PP qw(decode_json encode_json);
 use POSIX qw(strftime);
+use Time::HiRes ();
 use Sys::Hostname qw(hostname);
 
 use MMPve::Core::Apply;
@@ -287,7 +288,8 @@ sub _reserve {
         my $id = random_uuid();
         my $state = {
             id => $id, node => $node, requested_by => $actor,
-            state => 'queued', created => _now(), unit => _unit_name($id),
+            state => 'queued', created => _now(), created_epoch => Time::HiRes::time(),
+            unit => _unit_name($id),
             launching => 1, launch_deadline => time + 60,
             log => log_dir() . '/' . $id . '.log',
         };
@@ -304,6 +306,7 @@ sub _finish {
         delete $state->{launching};
         $state->{state} = $result->{ok} ? 'succeeded' : 'failed';
         $state->{finished} = _now();
+        $state->{finished_epoch} = Time::HiRes::time();
         $state->{result} = $result;
         $state->{error} = $result->{error} if !$result->{ok};
         _write_json(_current_path($node), $state);
@@ -315,7 +318,15 @@ sub _finish {
             @files = grep { /^\Q$node\E-[0-9a-f-]+\.json\z/ } readdir($dh);
             closedir($dh);
         }
-        @files = sort { (stat(state_dir() . '/' . $b))[9] <=> (stat(state_dir() . '/' . $a))[9] } @files;
+        # Mais novo primeiro pelo epoch de alta resolução gravado no job (o
+        # mtime em segundos empata quando dois jobs terminam no mesmo
+        # segundo); o job que acabou de terminar nunca é podado.
+        my %epoch = map {
+            my $data = eval { _read_json(state_dir() . '/' . $_) } || {};
+            ($_ => $data->{finished_epoch} // $data->{created_epoch} // 0)
+        } @files;
+        my $mine = "$node-$id.json";
+        @files = sort { ($b eq $mine) <=> ($a eq $mine) || $epoch{$b} <=> $epoch{$a} || $b cmp $a } @files;
         if (@files > $keep) {
             for my $file (@files[$keep .. $#files]) {
                 my $old = eval { _read_json(state_dir() . '/' . $file) } || {};
@@ -335,7 +346,11 @@ sub _prune_bulk {
     return unless opendir(my $dh, state_dir());
     @files = grep { /\Abulk-[0-9a-f-]+\.json\z/ } readdir($dh);
     closedir($dh);
-    @files = sort { (stat(state_dir() . '/' . $b))[9] <=> (stat(state_dir() . '/' . $a))[9] } @files;
+    my %epoch = map {
+        my $data = eval { _read_json(state_dir() . '/' . $_) } || {};
+        ($_ => $data->{created_epoch} // 0)
+    } @files;
+    @files = sort { $epoch{$b} <=> $epoch{$a} || $b cmp $a } @files;
     if (@files > $keep) {
         unlink(state_dir() . '/' . $_) for @files[$keep .. $#files];
     }
@@ -481,7 +496,8 @@ sub run_bulk {
     ensure_dir(state_dir());
     my $state = { id => $id, state => 'queued', requested_by => _safe_actor($opts{actor}),
         mode => $mode, nodes => \@authorized, override => $opts{override} ? 1 : 0,
-        preflight => $pf, created => _now(), heartbeat => _now(), heartbeat_epoch => time, results => {} };
+        preflight => $pf, created => _now(), created_epoch => Time::HiRes::time(),
+        heartbeat => _now(), heartbeat_epoch => time, results => {} };
     _write_json(state_dir() . '/bulk-' . $id . '.json', $state);
     my $cfg = eval { MMPve::Core::Config->load } || MMPve::Core::Config->default;
     _prune_bulk($cfg->{updates}{retention} // DEFAULT_RETENTION);
