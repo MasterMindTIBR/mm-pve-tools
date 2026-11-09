@@ -399,9 +399,43 @@ sub _syntax_check_mode {
     return $_can_syntax;
 }
 
+# Valida o stage de um módulo como o módulo que ele é: um hook no @INC entrega
+# o stage quando alguém pede o caminho do módulo, e o require resolve os ciclos
+# de use como nos daemons. Compilar o arquivo solto (perl -c) quebra nesses
+# ciclos: PVE/Storage.pm usa DirPlugin, que usa GuestImport::OVF, que usa
+# PVE::Storage e carrega o Storage.pm original no meio da compilação ("Can't
+# locate object method register via package PVE::Storage::DirPlugin") mesmo
+# sem patch nenhum, e o poollimits nunca ligava num PVE real.
+my $STAGED_LOADER = <<'PERL';
+my ($rel, $staged) = @ARGV;
+unshift @INC, sub {
+    my (undef, $file) = @_;
+    return unless $file eq $rel;
+    open(my $fh, '<', $staged) or die "não consegui abrir $staged: $!\n";
+    return $fh;
+};
+require $rel;
+print "$rel OK\n";
+PERL
+
 sub _perl_c {
-    my ($class, $path) = @_;
-    return MMPve::Core::Runner->run(['perl', '-c', $path], timeout => 120);
+    my ($class, $path, $target) = @_;
+    my ($rel) = ref($target) eq 'HASH'
+        ? ($target->{path} // '') =~ m{\A/usr/share/perl5/((?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.pm)\z}
+        : ();
+    return MMPve::Core::Runner->run(['perl', '-c', $path], timeout => 120) unless defined($rel);
+    return MMPve::Core::Runner->run(['perl', '-e', $STAGED_LOADER, $rel, $path], timeout => 120);
+}
+
+# Esquece falhas anteriores de patch. Roda na instalação do pacote: código novo
+# merece uma nova tentativa, sem o timer martelar a mesma falha a cada ciclo.
+sub clear_failures {
+    my ($class) = @_;
+    my $state = _patch_state();
+    my @cleared = sort grep { ref($state->{$_}) eq 'HASH' && $state->{$_}{previous_failure} } keys %{$state};
+    delete @{$state}{@cleared};
+    $class->_save_patch_state($state) if @cleared;
+    return { cleared => \@cleared };
 }
 
 sub _safe_name {
@@ -444,7 +478,7 @@ sub _validate_staged {
     }
     my $syntax = $target->{syntax} // (($target->{path} // '') =~ /\.pm\z/ ? 1 : 0);
     if ($syntax && $class->_syntax_check_mode($opts) ne 'never') {
-        my $can = $class->_perl_c($path);
+        my $can = $class->_perl_c($path, $target);
         return { ok => 0, error => ($can->{err} // $can->{error} // "rc=$can->{rc}") } unless $can->{ok};
     }
     return { ok => 1 };

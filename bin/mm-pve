@@ -213,6 +213,12 @@ sub cmd_patch {
         out_json($r) if $JSON;
         return 0;
     }
+    if ($sub eq 'clear-failures') {
+        my $r = MMPve::Core::Patch->clear_failures;
+        out_json($r) if $JSON;
+        print 'falhas anteriores esquecidas: ' . (join(', ', @{ $r->{cleared} }) || 'nenhuma') . "\n" unless $JSON;
+        return 0;
+    }
     if ($sub eq 'reload-verify') {
         my $fallback;
         local @ARGV = @argv;
@@ -222,7 +228,7 @@ sub cmd_patch {
         out_json($r) if $JSON;
         return $r->{ok} ? 0 : 1;
     }
-    print STDERR "uso: mm-pve patch check|apply|revert|reload-verify\n";
+    print STDERR "uso: mm-pve patch check|apply|revert|clear-failures|reload-verify\n";
     return 2;
 }
 

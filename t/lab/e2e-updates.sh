@@ -22,9 +22,15 @@ state_dir=/etc/pve/mm-tools/updates
 job_node=${LAB_UPDATES_JOB_NODE:-$LAB_NODE3}
 lost_node=${LAB_UPDATES_LOST_NODE:-$LAB_NODE2}
 reboot_node=${LAB_UPDATES_REBOOT_NODE:-$LAB_NODE3}
-target_pkg=${LAB_UPDATES_TARGET_PACKAGE:-pve-manager}
+# Pacote alvo: dono de arquivos com patch de módulo que desce um passo sem
+# arrastar dependências (o pve-manager 9.2.26 sobe em conjunto com libs que
+# declaram Breaks). O poollimits fica ligado sem limite: hooks sem efeito.
+target_pkg=${LAB_UPDATES_TARGET_PACKAGE:-qemu-server}
+target_module=${LAB_UPDATES_TARGET_MODULE:-poollimits}
+read -r -a target_patches <<<"${LAB_UPDATES_TARGET_PATCHES:-qemu_create_pool qemu_clone_pool}"
 lost_backup=/run/mm-pve-e2e-updates-lost.json
 module_was_on=''
+target_module_was_on=''
 
 jget() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
@@ -109,7 +115,22 @@ for n, r in sorted((d.get('results') or {}).items()):
 # Com o node desligando o ssh pode travar: sempre com timeout.
 boot_id() { timeout 20 ssh -F "$LAB_SSH_CONFIG" -o ConnectTimeout=5 "$1" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; }
 
+patches_applied() {
+    local node=$1 out id
+    out=$(lab_ssh "$node" mm-pve status)
+    for id in "${target_patches[@]}"; do
+        grep -Eq "^patch ${id}: applied" <<<"$out" || return 1
+    done
+}
+
+module_on() {
+    lab_ssh "$LAB_NODE1" python3 -c "import json; print(1 if (json.load(open('/etc/pve/mm-tools/config.json')).get('modules') or {}).get('$1') else 0)"
+}
+
 restore_state() {
+    if [[ -n $target_module_was_on && $target_module_was_on == 0 ]]; then
+        lab_ssh "$LAB_NODE1" mm-pve config set-module "$target_module" --disable >/dev/null 2>&1 || true
+    fi
     if [[ -n $module_was_on && $module_was_on == 0 ]]; then
         lab_ssh "$LAB_NODE1" mm-pve config set-module updates --disable >/dev/null 2>&1 || true
     fi
@@ -119,7 +140,7 @@ restore_state() {
 trap restore_state EXIT
 
 lab_step 'updates: liga o módulo'
-module_was_on=$(lab_ssh "$LAB_NODE1" python3 -c "import json; print(1 if (json.load(open('/etc/pve/mm-tools/config.json')).get('modules') or {}).get('updates') else 0)")
+module_was_on=$(module_on updates)
 lab_ssh "$LAB_NODE1" mm-pve config set-module updates --enable >/dev/null
 lab_pass "módulo updates ligado (antes: $module_was_on)"
 
@@ -133,6 +154,13 @@ lab_pass 'status responde nos 3 nodes'
 lab_step "updates: refresh no $LAB_NODE2"
 api_ok POST "nodes/${LAB_NODE2}/mm-tools/updates/refresh" >/dev/null
 lab_pass 'refresh aceito'
+
+lab_step "updates: liga $target_module (sem limites) para ter patches de $target_pkg"
+target_module_was_on=$(module_on "$target_module")
+lab_ssh "$LAB_NODE1" mm-pve config set-module "$target_module" --enable >/dev/null
+for _ in $(seq 1 36); do patches_applied "$job_node" && break; sleep 5; done
+patches_applied "$job_node" || lab_fail "patches ${target_patches[*]} não aplicaram no $job_node"
+lab_pass "$target_module ligado (antes: $target_module_was_on); patches ${target_patches[*]} aplicados"
 
 lab_step "updates: rebaixa $target_pkg no $job_node"
 read -r installed older < <(lab_ssh "$job_node" bash -s -- "$target_pkg" <<'REMOTE'
@@ -149,8 +177,7 @@ lab_ssh "$job_node" env DEBIAN_FRONTEND=noninteractive apt-get install -y --allo
     -o Dpkg::Options::=--force-confold "${target_pkg}=${older}" >/dev/null
 now=$(lab_ssh "$job_node" dpkg-query -W -f='${Version}' "$target_pkg")
 [[ $now == "$older" ]] || lab_fail "$target_pkg ficou em $now, esperado $older"
-lab_ssh "$job_node" mm-pve status | grep -E '^patch (index_tpl|nodes_pm): applied' >/dev/null \
-    || lab_fail 'patches do núcleo não ficaram aplicados depois do downgrade'
+patches_applied "$job_node" || lab_fail "trigger não reaplicou ${target_patches[*]} depois do downgrade"
 lab_pass "$target_pkg $installed -> $older; trigger reaplicou os patches"
 
 lab_step "updates: job avulso no $job_node pela API, segundo job recusado"
@@ -174,17 +201,16 @@ final=$(wait_job_done "$job_node" "$job_id")
 [[ $final == succeeded ]] || lab_fail "job terminou em $final"
 back=$(lab_ssh "$job_node" dpkg-query -W -f='${Version}' "$target_pkg")
 [[ $back == "$installed" ]] || lab_fail "$target_pkg voltou para $back, esperado $installed"
-lab_ssh "$job_node" mm-pve status | grep -E '^patch (index_tpl|nodes_pm): applied' >/dev/null \
-    || lab_fail 'patches do núcleo não ficaram aplicados depois do job'
-# O postinst do pve-manager faz reload (o timestamp da unit não muda): o
-# journal do pveproxy desde o início do job mostra o restart do servidor.
-lab_ssh "$job_node" journalctl -u pveproxy --since "@${job_start}" -o cat --no-pager \
-    | grep -Eiq 'restart|reload' || lab_fail 'pveproxy não foi recarregado pelo upgrade'
+patches_applied "$job_node" || lab_fail "${target_patches[*]} não ficaram aplicados depois do job"
+# Reload não muda o timestamp da unit: o journal do pvedaemon desde o início
+# do job mostra o restart do servidor (postinst e reload-verify do patch).
+lab_ssh "$job_node" journalctl -u pvedaemon --since "@${job_start}" -o cat --no-pager \
+    | grep -Eiq 'restart|reload' || lab_fail 'pvedaemon não foi recarregado pelo upgrade'
 lab_ssh "$job_node" systemctl is-active --quiet pveproxy pvedaemon || lab_fail 'pveproxy/pvedaemon inativos'
 log_body=$(api_ok GET "nodes/${job_node}/mm-tools/updates/log?job=${job_id}&start=0&limit=1000")
 jget "$log_body" "any('$target_pkg' in l for l in d['data']['lines'])" | grep -qx True \
     || lab_fail "log do job não cita $target_pkg"
-lab_pass "job $final; $target_pkg $older -> $back; patches aplicados; pveproxy recarregado; log pela API"
+lab_pass "job $final; $target_pkg $older -> $back; patches aplicados; pvedaemon recarregado; log pela API"
 
 lab_step "updates: bulk sequencial $LAB_NODE1,$job_node (remoto) pela API"
 body=$(api_ok POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk" \
