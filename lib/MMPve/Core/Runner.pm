@@ -175,14 +175,22 @@ sub run_json {
     return decode_json($out);
 }
 
+my $UPID_RE = qr/UPID:[A-Za-z0-9][A-Za-z0-9.-]*:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,9}:[0-9A-Fa-f]{8}:[^:\s"]+:[^:\s"]*:[^:\s"]+:/;
+
 sub extract_upid {
     my ($class, $output) = @_;
     for my $line (reverse split /\n/, $output // '') {
         $line =~ s/^\s+|\s+$//g;
         next unless length $line;
+        # Para outro node o pvesh faz proxy e devolve a saída inteira do worker
+        # remoto numa única string JSON, sem quebras de linha, com a UPID no
+        # fim ("job ... agendado\"UPID:node:...\""). Vale a última UPID da linha.
         my $value = eval { decode_json($line) };
-        return $value if !$@ && defined($value) && !ref($value) && $value =~ /^UPID:/;
-        return $1 if $line =~ /^"?(UPID:[^"\r\n]+)"?,?$/;
+        my @texts = (!$@ && defined($value) && !ref($value)) ? ($value, $line) : ($line);
+        for my $text (@texts) {
+            my @all = $text =~ /($UPID_RE)/g;
+            return $all[-1] if @all;
+        }
     }
     die "saída do pvesh não contém UPID\n";
 }
