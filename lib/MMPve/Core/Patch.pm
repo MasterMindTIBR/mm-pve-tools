@@ -677,7 +677,12 @@ sub _restart_and_verify {
     return { ok => 1, daemons => [] } unless @services;
     my $unit = 'mm-pve-patch-reload-' . substr(random_uuid(), 0, 12);
     my @units = map { "$_.service" } @services;
-    my $restart = MMPve::Core::Runner->run(['systemd-run', '--wait', '--collect', "--unit=$unit", 'systemctl', 'reload', @units], timeout => 120);
+    # try-reload-or-restart: pve-ha-lrm e pve-ha-crm não aceitam reload ("Job
+    # type reload is not applicable") e o pós-reload falhava, revertendo o
+    # poollimits. Reinicia só esses (como o upgrade do pacote do PVE faz) e
+    # nunca sobe um serviço que estava parado.
+    my $restart = MMPve::Core::Runner->run(['systemd-run', '--wait', '--collect', "--unit=$unit",
+        'systemctl', 'try-reload-or-restart', @units], timeout => 120);
     my $v = { restart_rc => $restart->{rc}, ok => 0, daemons => \@services };
     for my $svc (@services) { my $a = MMPve::Core::Runner->run(['systemctl', 'is-active', "$svc.service"], timeout => 30);
         $v->{"active_$svc"} = ($a->{out} // '') =~ /^active\s*$/m ? 1 : 0; }

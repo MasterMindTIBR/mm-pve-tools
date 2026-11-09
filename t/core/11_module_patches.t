@@ -291,4 +291,24 @@ subtest 'escopo de sub plain não procura âncora na função seguinte' => sub {
         'âncora ausente dentro do sub retorna undef');
 };
 
+# Achado do lab: pve-ha-lrm/pve-ha-crm não aceitam "systemctl reload"; o
+# pós-reload falhava e o poollimits era revertido em todo node real.
+subtest 'pós-patch recarrega ou reinicia, nunca só reload' => sub {
+    my @calls;
+    no warnings 'redefine';
+    local $MMPve::Core::Runner::OVERRIDE = sub {
+        my ($argv) = @_;
+        push @calls, [ @{$argv} ];
+        return { ok => 1, rc => 0, out => "active\n", err => '' };
+    };
+    my $v = MMPve::Core::Patch->_restart_and_verify([qw(pve-ha-lrm pvedaemon)]);
+    ok($v->{ok}, 'verificação ok');
+    my ($run) = grep { $_->[0] eq 'systemd-run' } @calls;
+    ok($run, 'reload numa unit transitória');
+    my @tail = @{$run}[ -3 .. -1 ];
+    is_deeply(\@tail, [qw(try-reload-or-restart pve-ha-lrm.service pvedaemon.service)],
+        'try-reload-or-restart para todos os daemons') or diag explain $run;
+    ok(!(grep { $_ eq 'reload' } @{$run}), 'sem reload puro');
+};
+
 done_testing();
