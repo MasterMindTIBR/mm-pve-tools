@@ -485,4 +485,30 @@ subtest 'clone de template é guest comum e a entrada não soma o próprio guest
     like($@, qr/uso atual 2, pedido 1, limite 2/, 'mesma conta no update do pool');
 };
 
+subtest 'move com --delete não deixa capacidade presa no storage de origem' => sub {
+    clear_reservation();
+    save_pool({ mode => 'allocated',
+        cpu => { enabled => 0 }, memory_mib => { enabled => 0 },
+        disk_total_gib => { enabled => 0 },
+        disk_storage => { enabled => 1, limits => { local => 4, fast => 10 } } });
+    local *PVE::MMTools::PoolLimits::_with_pool_lock = sub { return $_[1]->() };
+    my $old = { %{ $configs{'qemu:102'} } };
+    # move do scsi0 do 102 de local para fast: o vdisk_alloc reserva o destino
+    PVE::MMTools::PoolLimits->check_storage_alloc($PVE::MMTools::PoolLimits::TEST_STORAGE_CFG,
+        'fast', 102, 'raw', undef, $gib / 1024);
+    my $moved = { %{$old}, scsi0 => 'fast:vm-102-disk-9,size=1G' };
+    ok(eval { PVE::MMTools::PoolLimits->check_write_config('PVE::QemuConfig', 102, $moved); 1 },
+        'gravação final do move aceita') or diag $@;
+    local $configs{'qemu:102'} = $moved;
+    my $res = no_reservation()->{'qemu:102'} || {};
+    is($res->{target}{disk_storage_bytes}{local} // 0, 0, 'reserva não guarda o volume apagado no storage de origem');
+    # local: 101 (1 GiB + cloud-init) + 201 (1 GiB) = ~2 GiB; +1 GiB cabe em 4
+    ok(eval {
+        PVE::MMTools::PoolLimits->check_storage_alloc($PVE::MMTools::PoolLimits::TEST_STORAGE_CFG,
+            'local', 102, 'raw', undef, $gib / 1024);
+        1;
+    }, 'alocação de volta no storage de origem cabe no limite') or diag $@;
+    clear_reservation();
+};
+
 done_testing();

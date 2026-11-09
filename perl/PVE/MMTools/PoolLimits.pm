@@ -812,7 +812,13 @@ sub _check_guest_locked {
         _limit_error($pool, 'RAM MiB', $base_memory + ($shown->{memory_mib} // 0), $target_memory, $limits->{memory_mib}{max});
     }
     my $old_res = $reservations->{$key};
-    my $disk_target = _disk_reservation_target($target_disk, $old_res);
+    # Na gravação da config ela é o estado final da operação: o disco do guest é
+    # o da config. Com o máximo contra a reserva, a capacidade de um volume já
+    # apagado (move com --delete) ficava presa no storage de origem e cada
+    # gravação renovava o TTL (achado do e2e no lab).
+    my $disk_target = $opts{config_is_final}
+        ? { total => $target_disk->{total} || 0, by_storage => { %{ $target_disk->{by_storage} || {} } } }
+        : _disk_reservation_target($target_disk, $old_res);
     if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}) {
         if ($limits->{disk_total_gib}{enabled}
             && $base_disk_total + $disk_target->{total} > $limits->{disk_total_gib}{max} * GIB) {
@@ -1072,7 +1078,7 @@ sub check_write_config {
         return $class->_check_guest_locked($pool, $vmid, $type, $conf, $state,
             usercfg => $ucfg, vmlist => $vmlist, entry => $vmlist->{$vmid} || {},
             running => $running, current_metrics => $current,
-            skip_disk => $skip_disk);
+            skip_disk => $skip_disk, config_is_final => 1);
     });
 }
 
