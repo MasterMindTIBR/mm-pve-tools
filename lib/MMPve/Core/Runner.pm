@@ -175,7 +175,9 @@ sub run_json {
     return decode_json($out);
 }
 
-my $UPID_RE = qr/UPID:[A-Za-z0-9][A-Za-z0-9.-]*:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8,9}:[0-9A-Fa-f]{8}:[^:\s"]+:[^:\s"]*:[^:\s"]+:/;
+# Token UPID até espaço, aspas ou barra invertida (o \" da string JSON do
+# proxy); não exige o formato hexadecimal para aceitar o que o PVE devolver.
+my $UPID_RE = qr/UPID:[^\s"\\]+/;
 
 sub extract_upid {
     my ($class, $output) = @_;
