@@ -784,6 +784,10 @@ sub _check_guest_locked {
     };
     my $base_cpu = $usage->{usage}{cpu} - ($old->{cpu} // 0);
     my $base_memory = $usage->{usage}{memory_mib} - ($old->{memory_mib} // 0);
+    # Guest entrando no pool já está em members para a conta, mas o "uso atual"
+    # da mensagem é o do pool sem ele (antes saía somado ao pedido).
+    my $shown = $opts{entering}
+        ? { cpu => 0, memory_mib => 0, disk_total_bytes => 0, disk_storage_bytes => {} } : $old;
     my $base_disk_total = ($usage->{usage}{disk_total_bytes} || 0)
         - ($old->{disk_total_bytes} || 0);
     my %base_disk_storage = %{ $usage->{usage}{disk_storage_bytes} || {} };
@@ -794,18 +798,18 @@ sub _check_guest_locked {
         _fail_closed($pool, 'recursos', 'configuração atual inválida');
     }
     if ($count_cpu_memory && $limits->{cpu}{enabled} && $base_cpu + $target_cpu > $limits->{cpu}{max}) {
-        _limit_error($pool, 'vCPU', $base_cpu + ($old->{cpu} // 0), $target_cpu, $limits->{cpu}{max});
+        _limit_error($pool, 'vCPU', $base_cpu + ($shown->{cpu} // 0), $target_cpu, $limits->{cpu}{max});
     }
     if ($count_cpu_memory && $limits->{memory_mib}{enabled}
         && $base_memory + $target_memory > $limits->{memory_mib}{max}) {
-        _limit_error($pool, 'RAM MiB', $base_memory + ($old->{memory_mib} // 0), $target_memory, $limits->{memory_mib}{max});
+        _limit_error($pool, 'RAM MiB', $base_memory + ($shown->{memory_mib} // 0), $target_memory, $limits->{memory_mib}{max});
     }
     my $old_res = $reservations->{$key};
     my $disk_target = _disk_reservation_target($target_disk, $old_res);
     if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}) {
         if ($limits->{disk_total_gib}{enabled}
             && $base_disk_total + $disk_target->{total} > $limits->{disk_total_gib}{max} * GIB) {
-            _limit_error($pool, 'disco total', $base_disk_total + ($old->{disk_total_bytes} || 0),
+            _limit_error($pool, 'disco total', $base_disk_total + ($shown->{disk_total_bytes} || 0),
                 $disk_target->{total}, $limits->{disk_total_gib}{max} * GIB);
         }
         if ($limits->{disk_storage}{enabled}) {
@@ -813,7 +817,7 @@ sub _check_guest_locked {
             for my $storeid (keys %{ $disk_target->{by_storage} }) {
                 next unless defined($store_limits->{$storeid});
                 my $requested = $disk_target->{by_storage}{$storeid} || 0;
-                my $old_store = $old->{disk_storage_bytes}{$storeid} || 0;
+                my $old_store = $shown->{disk_storage_bytes}{$storeid} || 0;
                 _limit_error($pool, "disco em $storeid", ($base_disk_storage{$storeid} || 0) + $old_store,
                     $requested, $store_limits->{$storeid} * GIB)
                     if ($base_disk_storage{$storeid} || 0) + $requested
@@ -1099,7 +1103,7 @@ sub check_pool_entry {
         $class->_check_guest_locked($pool, $vmid, $type, $conf, $state,
             usercfg => $ucfg, vmlist => $vmlist, entry => $vmlist->{$vmid} || {},
             running => _running($type, $vmid, $vmlist->{$vmid} || {}, {}),
-            current_metrics => { cpu => 0, memory_mib => 0 }, members => \%members);
+            current_metrics => { cpu => 0, memory_mib => 0 }, members => \%members, entering => 1);
     });
 }
 
@@ -1126,18 +1130,22 @@ sub check_pool_update {
             $class->_check_guest_locked($pool, $vmid, $type, $conf, $class->_state,
                 usercfg => $usercfg, vmlist => $vmlist, entry => $vmlist->{$vmid} || {},
                 running => _running($type, $vmid, $vmlist->{$vmid} || {}, {}),
-                current_metrics => { cpu => 0, memory_mib => 0 }, members => \%members);
+                current_metrics => { cpu => 0, memory_mib => 0 }, members => \%members, entering => 1);
         }
     });
 }
 
+# O create_vm do PVE já tirou o vmid de $param antes do hook: o nome do arquivo
+# usa o vmid do hook. Com $param->{vmid} o nome ficava "backup/qemu-server/.conf",
+# o parse_vm_config recusava e todo restore com --pool num pool limitado falhava.
 sub _restore_qemu_conf {
-    my ($archive, $storecfg, $param) = @_;
+    my ($archive, $storecfg, $param, $vmid) = @_;
     return undef unless ref($archive) eq 'HASH' && $archive->{volid};
+    die "vmid do restore ausente\n" unless defined($vmid) && $vmid =~ /^\d+$/;
     require PVE::Storage;
     require PVE::QemuServer;
     my $old = PVE::Storage::extract_vzdump_config($storecfg, $archive->{volid});
-    return PVE::QemuServer::restore_merge_config('backup/qemu-server/' . ($param->{vmid} // '') . '.conf', $old, $param);
+    return PVE::QemuServer::restore_merge_config("backup/qemu-server/$vmid.conf", $old, $param || {});
 }
 
 sub check_qemu_create {
@@ -1146,7 +1154,7 @@ sub check_qemu_create {
     my $ucfg = _usercfg();
     $pool //= _guest_pool($vmid, $ucfg);
     return unless $state->{active} && defined($pool) && _limits($state, $pool);
-    my $conf = ref($archive) eq 'HASH' ? eval { _restore_qemu_conf($archive, $storecfg, $param) } : undef;
+    my $conf = ref($archive) eq 'HASH' ? eval { _restore_qemu_conf($archive, $storecfg, $param, $vmid) } : undef;
     my $restore_failed = ref($archive) eq 'HASH' && !$conf;
     $conf ||= { %{ $param || {} } };
     _fail_closed($pool, 'recursos', 'configuração do backup não pôde ser lida') if $restore_failed;
@@ -1183,6 +1191,11 @@ sub check_clone {
     if ($type eq 'lxc' && $snapname && ref($conf->{snapshots}) eq 'HASH') {
         $conf = $conf->{snapshots}{$snapname} || $conf;
     }
+    # O clone de um template é um guest comum: sem isto o linked clone (caso
+    # mais comum) passava pela regra "template não conta" e só a defesa final
+    # (entrada no pool) recusava, depois de criar o volume.
+    $conf = { %{ $conf || {} } };
+    delete $conf->{template};
     my $state = $class->_state;
     return unless $state->{active} && _limits($state, $pool);
     my $ucfg = _usercfg();

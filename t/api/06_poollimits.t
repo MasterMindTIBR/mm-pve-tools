@@ -200,4 +200,25 @@ subtest 'hooks de storage reais recusam antes do efeito' => sub {
     }, 'volume_import do mesmo volid não é aumento') or diag $@;
 };
 
+# Achado do e2e no lab: o create_vm do PVE já tirou o vmid de $param quando o
+# hook roda; o nome "backup/qemu-server/.conf" era recusado pelo
+# parse_vm_config real e todo restore com --pool num pool limitado falhava.
+subtest 'restore lê a config do backup com o restore_merge_config real' => sub {
+    require PVE::QemuServer;
+    no warnings 'redefine';
+    local *PVE::Storage::extract_vzdump_config = sub {
+        return "cores: 2\nmemory: 512\nscsi0: local-lvm:vm-9503-disk-0,size=1G\n";
+    };
+    my $conf = eval {
+        PVE::MMTools::PoolLimits::_restore_qemu_conf(
+            { volid => 'local:backup/vzdump-qemu-9503-2026_11_09-17_09_40.vma.zst' }, {},
+            { storage => 'local-lvm' }, 9507);
+    };
+    ok($conf, 'config do backup lida') or diag $@;
+    is($conf->{cores}, 2, 'cores do backup');
+    is($conf->{memory}, 512, 'memória do backup');
+    ok(!eval { PVE::MMTools::PoolLimits::_restore_qemu_conf({ volid => 'x' }, {}, {}, undef); 1 },
+        'sem vmid falha fechado');
+};
+
 done_testing();

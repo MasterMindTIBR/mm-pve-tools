@@ -458,4 +458,31 @@ subtest 'migração é isenta enquanto lock=migrate' => sub {
     like($@, qr/^pool 'lab': limite de disco/, 'a recusa do import é da quota de disco');
 };
 
+# Achados do e2e no lab (Rock 7).
+subtest 'clone de template é guest comum e a entrada não soma o próprio guest' => sub {
+    clear_reservation();
+    save_pool({ mode => 'allocated',
+        cpu => { enabled => 1, max => 2 }, memory_mib => { enabled => 0 },
+        disk_total_gib => { enabled => 0 }, disk_storage => { enabled => 0 } });
+    # uso: 101 (1 vCPU) + 102 (1 vCPU) + 201 (sem cores: não pedimos vCPU dele aqui)
+    local $PVE::MMTools::PoolLimits::TEST_USERCFG = {
+        pools => { lab => { vms => { 101 => 1, 102 => 1 } } }, vms => { 101 => 'lab', 102 => 'lab' },
+    };
+    local *PVE::MMTools::PoolLimits::_with_pool_lock = sub { return $_[1]->() };
+    my $template = { template => 1, vcpus => 1, memory => 128, scsi0 => 'local:base-300-disk-0,size=1G' };
+    ok(!eval { PVE::MMTools::PoolLimits->check_clone(305, 'lab', $template, 'qemu'); 1 },
+        'linked clone de template para pool no limite é recusado na checagem prévia');
+    like($@, qr/limite de vCPU excedido \(uso atual 2, pedido 1, limite 2\)/, 'mensagem do vCPU');
+    ok($template->{template}, 'config da origem não é alterada');
+
+    local $configs{'qemu:103'} = { vcpus => 1, memory => 128, scsi0 => 'local:vm-103-disk-0,size=1G' };
+    local $PVE::MMTools::PoolLimits::TEST_VMLIST = { %{$PVE::MMTools::PoolLimits::TEST_VMLIST},
+        103 => { type => 'qemu', node => 'node-a' } };
+    ok(!eval { PVE::MMTools::PoolLimits->check_pool_entry(103, 'lab'); 1 }, 'entrada no pool no limite recusada');
+    like($@, qr/uso atual 2, pedido 1, limite 2/, 'uso atual da entrada é o do pool sem o guest');
+    ok(!eval { PVE::MMTools::PoolLimits->check_pool_update({ poolid => 'lab', vms => '103' }); 1 },
+        'update do pool no limite recusado');
+    like($@, qr/uso atual 2, pedido 1, limite 2/, 'mesma conta no update do pool');
+};
+
 done_testing();
