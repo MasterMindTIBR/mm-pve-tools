@@ -78,6 +78,7 @@ cleanup() {
     lab_ssh "$ctl" pveum role delete "$audit_role" >/dev/null 2>&1 || true
     [[ $old_pl == 0 ]] && lab_ssh "$ctl" mm-pve config set-module poollimits --disable >/dev/null 2>&1
     [[ $old_up == 0 ]] && lab_ssh "$ctl" mm-pve config set-module updates --disable >/dev/null 2>&1
+    lab_kick_apply "${nodes[@]}" >/dev/null 2>&1
     rm -rf -- "$secrets"
     printf 'OK: gui-smoke limpo (poollimits=%s updates=%s restaurados)\n' "${old_pl:-?}" "${old_up:-?}"
     exit "$rc"
@@ -93,6 +94,7 @@ lab_ssh "$ctl" pvesh create /pools --poolid "$pool" >/dev/null
 lab_ssh "$ctl" qm create "$vmid" --name mm-gui-smoke --cores 1 --memory 256 --scsi0 local-lvm:1 --pool "$pool" >/dev/null
 lab_ssh "$ctl" mm-pve config set-module updates --enable >/dev/null
 lab_ssh "$ctl" mm-pve config set-module poollimits --enable >/dev/null
+lab_kick_apply "$ctl"
 for _ in $(seq 1 60); do
     lab_ssh "$ctl" mm-pve status | grep -Eq '^patch abstract_config_write: applied( |$)' && break
     sleep 5

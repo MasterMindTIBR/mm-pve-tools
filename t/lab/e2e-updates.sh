@@ -134,6 +134,7 @@ restore_state() {
     if [[ -n $module_was_on && $module_was_on == 0 ]]; then
         lab_ssh "$LAB_NODE1" mm-pve config set-module updates --disable >/dev/null 2>&1 || true
     fi
+    lab_kick_apply "${nodes[@]}" >/dev/null 2>&1 || true
     lab_ssh "$lost_node" bash -c "if [ -f $lost_backup ]; then cp $lost_backup $state_dir/$lost_node.json && rm -f $lost_backup; fi" \
         >/dev/null 2>&1 || true
 }
@@ -158,6 +159,7 @@ lab_pass 'refresh aceito'
 lab_step "updates: liga $target_module (sem limites) para ter patches de $target_pkg"
 target_module_was_on=$(module_on "$target_module")
 lab_ssh "$LAB_NODE1" mm-pve config set-module "$target_module" --enable >/dev/null
+lab_kick_apply "$job_node"
 for _ in $(seq 1 36); do patches_applied "$job_node" && break; sleep 5; done
 patches_applied "$job_node" || lab_fail "patches ${target_patches[*]} não aplicaram no $job_node"
 lab_pass "$target_module ligado (antes: $target_module_was_on); patches ${target_patches[*]} aplicados"

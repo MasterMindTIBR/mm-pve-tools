@@ -318,6 +318,7 @@ on_exit() {
     if [[ -n $old_flag && $(module_flag) != "$old_flag" ]]; then
         if [[ $old_flag == 0 ]]; then lab_ssh "$ctl" mm-pve config set-module poollimits --disable >/dev/null
         else lab_ssh "$ctl" mm-pve config set-module poollimits --enable >/dev/null; fi
+        lab_kick_apply "${nodes[@]}"
     fi
     # Espera o apply terminar: a próxima rodada não pode ligar com patches ainda aplicados.
     if [[ $old_flag == 0 ]]; then wait_patches not_applied >/dev/null || printf 'FALHA: patches não reverteram na limpeza\n'; fi
@@ -331,6 +332,7 @@ lab_step 'poollimits: pré-limpeza da faixa reservada'
 old_flag=$(module_flag)
 if [[ $old_flag == 1 ]]; then lab_ssh "$ctl" mm-pve config set-module poollimits --disable >/dev/null; fi
 trap on_exit EXIT
+lab_kick_apply "${nodes[@]}"
 wait_patches not_applied || lab_fail 'patches do poollimits ainda aplicados antes de ligar o módulo'
 clean_all || lab_fail 'faixa reservada não ficou limpa'
 lab_pass "faixa $base-$((base + count - 1)) limpa; poollimits estava $old_flag"
@@ -380,6 +382,7 @@ lab_pass 'pools e guests criados'
 lab_step 'poollimits: liga o módulo e espera os patches nos 3 nodes'
 enable_epoch=$(lab_ssh "$ctl" date +%s)
 lab_ssh "$ctl" mm-pve config set-module poollimits --enable >/dev/null
+lab_kick_apply "${nodes[@]}"
 wait_patches applied || lab_fail 'patches do poollimits não aplicaram nos 3 nodes'
 for n in "${nodes[@]}"; do
     for d in "${daemons[@]}"; do
@@ -647,6 +650,7 @@ lab_step 'poollimits: desligar reverte os patches nos 3 nodes e libera o aumento
 limits "$pool" allocated 2 512 off off
 refuse 'aumento antes de desligar' "$(limit_re "$pool" vCPU)" "$ctl" qm set "$qmain" --cores 2
 lab_ssh "$ctl" mm-pve config set-module poollimits --disable >/dev/null
+lab_kick_apply "${nodes[@]}"
 wait_patches not_applied || lab_fail 'patches não reverteram nos 3 nodes'
 lab_ssh "$ctl" qm set "$qmain" --cores 2 >/dev/null || lab_fail 'aumento recusado com o módulo desligado'
 lab_pass 'módulo desligado: patches revertidos nos 3 nodes e aumento liberado'
