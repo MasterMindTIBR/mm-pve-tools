@@ -75,6 +75,7 @@ if (( status == 0 )); then run_step ui bash "${script_dir}/e2e-ui.sh" || status=
 # devolveu quorum e serviços ao estado saudável.
 if (( status == 0 )); then run_step updates bash "${script_dir}/e2e-updates.sh" || status=$?; fi
 if (( status == 0 )); then run_step poollimits bash "${script_dir}/e2e-poollimits.sh" || status=$?; fi
+if (( status == 0 )); then run_step gui-smoke bash "${script_dir}/gui-smoke.sh" || status=$?; fi
 
 write_summary
 if (( status != 0 )); then
