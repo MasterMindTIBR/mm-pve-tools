@@ -95,15 +95,15 @@ sub resource_catalog {
 
 sub _state {
     my ($class) = @_;
-    my ($cfg, undef, $absent);
+    my ($cfg, $digest, $absent);
     my $err;
-    eval { ($cfg, undef, $absent) = MMPve::Core::Config->load; 1 } or $err = $@;
+    eval { ($cfg, $digest, $absent) = MMPve::Core::Config->load; 1 } or $err = $@;
     if (!$err) {
         my @errors = eval { MMPve::Module::Poollimits->validate_section($cfg) };
         $err = join('; ', @errors) if @errors;
         if (!$err) {
             my $enabled = ($cfg->{modules} || {})->{poollimits} ? 1 : 0;
-            return { active => $enabled, degraded => 0, cfg => $cfg,
+            return { active => $enabled, degraded => 0, cfg => $cfg, digest => $digest,
                 poollimits => $cfg->{poollimits} || { pools => {} } };
         }
     }
@@ -1199,9 +1199,11 @@ sub pool_status {
     my $limits = _limits($state, $pool);
     my $data = _with_pool_lock($pool, sub {
         my $usage = $class->_usage($pool, $state);
-        return { poolid => $pool, limits => $limits, mode => $limits ? $limits->{mode} : 'allocated',
-            usage => $usage->{usage}, errors => $usage->{errors}, degraded => $state->{degraded} ? 1 : 0,
-            config_error => $state->{error} };
+        return { poolid => $pool, module_enabled => $state->{active} ? 1 : 0,
+            digest => $state->{digest}, limits => $limits,
+            mode => $limits ? $limits->{mode} : 'allocated', usage => $usage->{usage},
+            errors => $usage->{errors} || [], disk_errors => $usage->{disk_errors} || [],
+            degraded => $state->{degraded} ? 1 : 0, config_error => $state->{error} };
     });
     return $data;
 }

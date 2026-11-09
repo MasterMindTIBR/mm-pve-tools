@@ -49,7 +49,7 @@ def build_js():
         shutil.copy2(OLD_JS, output)
         return output
     chunks = ['/* mm-tools.js — harness build */\n']
-    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'updates.js'):
+    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
         source = (REPO / 'js/src' / name).read_text(encoding='utf-8')
         chunks.append(f'\n/* ===== js/src/{name} ===== */\n')
         chunks.append(source.replace('@MM_PVE_VERSION@', VERSION))
@@ -87,6 +87,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     mm_js = pathlib.Path()
     requests = []
     bulk_refused = False
+    pool_limits = {}
 
     def log_message(self, fmt, *args):
         return
@@ -161,6 +162,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
         self.record('PUT', path)
+        size = int(self.headers.get('Content-Length', '0'))
+        self.post_body = self.rfile.read(size) if size else b''
         self.api(path)
 
     @staticmethod
@@ -194,7 +197,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api(self, path):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         post = {}
-        if self.command == 'POST' and getattr(self, 'post_body', b''):
+        if self.command in ('POST', 'PUT') and getattr(self, 'post_body', b''):
             raw = self.post_body.decode('utf-8')
             if 'application/json' in self.headers.get('Content-Type', ''):
                 post = json.loads(raw or '{}')
@@ -213,7 +216,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json([{'type': 'node', 'node': 'localhost', 'status': 'online'},
                             {'type': 'qemu', 'vmid': 100, 'node': 'localhost', 'name': 'harness'}])
         elif path.endswith('/storage'):
-            self.send_json([{'storage': 'pbs', 'type': 'pbs', 'content': 'backup'}])
+            self.send_json([{'storage': 'pbs', 'type': 'pbs', 'content': 'backup'},
+                            {'storage': 'local', 'type': 'dir', 'content': 'images'},
+                            {'storage': 'fast', 'type': 'lvmthin', 'content': 'images'}])
         elif '/storage/pbs/content' in path:
             self.send_json([{'volid': 'pbs:backup/vm/100/2026-10-30T00:00:00Z',
                              'vmid': 100, 'format': 'pbs-vm', 'text': 'backup'}])
@@ -221,6 +226,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({'version': '9.2.24', 'release': '9.2'})
         elif path.endswith('/subscription'):
             self.send_json({'status': 'inactive'})
+        elif path.endswith('/qemu/100/config') and self.command == 'PUT':
+            self.send_raw_json({'data': None, 'success': 0,
+                                'message': "pool 'labpool': limite de RAM excedido (uso atual 1024, pedido 4096, limite 2048)"})
+        elif path.endswith('/qemu/100/resize') and self.command == 'PUT':
+            self.send_raw_json({'data': None, 'success': 0,
+                                'message': "pool 'labpool': limite de disco total excedido (uso atual 3, pedido 5, limite 4)"})
         elif path.endswith('/config'):
             self.send_json({'digest': 'sha256:' + '0' * 64, 'config': {
                 'modules': {'ui': 1},
@@ -260,9 +271,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             'ha': {'state': 'started'}})
         elif path.endswith('/mm-tools/ui/preference'):
             if self.command == 'PUT':
-                size = int(self.headers.get('Content-Length', '0'))
-                raw = self.rfile.read(size) if size else b'{}'
-                incoming = json.loads(raw.decode() or '{}')
+                incoming = post
                 self.user_preference.update({k: v for k, v in incoming.items()
                                              if k in ('qemu', 'lxc') and v != 'cluster'})
                 for k, v in incoming.items():
@@ -273,6 +282,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                           'lxc': self.user_preference.get('lxc', 'xtermjs')},
                             'cluster': {'qemu': 'vv', 'lxc': 'xtermjs',
                                         'hide_subscription_popup': True}})
+        elif '/mm-tools/poollimits/' in path:
+            pool = path.rsplit('/', 1)[-1]
+            if pool == 'offpool':
+                self.send_json({'poolid': pool, 'module_enabled': 0})
+            elif pool == 'auditpool':
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 0,
+                                'digest': 'sha256:' + '0' * 64,
+                                'mode': 'running', 'limits': {
+                                    'cpu': {'enabled': True, 'max': 4},
+                                    'memory_mib': {'enabled': True, 'max': 2048},
+                                    'disk_total_gib': {'enabled': False},
+                                    'disk_storage': {'enabled': False, 'limits': {}},
+                                }, 'usage': {'cpu': 2, 'memory_mib': 1024,
+                                            'disk_total_bytes': 0, 'disk_storage_bytes': {}},
+                                'errors': [], 'disk_errors': []})
+            elif pool == 'conflictpool' and self.command == 'PUT':
+                self.send_raw_json({'data': None, 'success': 0,
+                                    'message': 'DIGEST_MISMATCH: a configuração do pool mudou no servidor'})
+            elif self.command == 'PUT':
+                Handler.pool_limits[pool] = json.loads(json.dumps(post))
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 1,
+                                'digest': 'sha256:' + '1' * 64, 'limits': json.loads(json.dumps(post)),
+                                'mode': post.get('mode', 'allocated'), 'usage': {
+                                    'cpu': 2, 'memory_mib': 1024, 'disk_total_bytes': 3 * 1024 ** 3,
+                                    'disk_storage_bytes': {'local': 2 * 1024 ** 3,
+                                                           'fast': 1 * 1024 ** 3}},
+                                'errors': [], 'disk_errors': []})
+            else:
+                limits = {'cpu': {'enabled': True, 'max': 4},
+                          'memory_mib': {'enabled': True, 'max': 2048},
+                          'disk_total_gib': {'enabled': True, 'max': 8},
+                          'disk_storage': {'enabled': False, 'limits': {}}}
+                limits = Handler.pool_limits.get(pool, limits)
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 1,
+                                'digest': 'sha256:' + '0' * 64, 'mode': 'running',
+                                'limits': limits,
+                                'usage': {'cpu': 2, 'memory_mib': 1024,
+                                          'disk_total_bytes': 3 * 1024 ** 3,
+                                          'disk_storage_bytes': {'local': 2 * 1024 ** 3,
+                                                                 'fast': 1 * 1024 ** 3}},
+                                'errors': ['guest 101: contabilidade de recursos indisponível'],
+                                'disk_errors': []})
         elif path.endswith('/mm-tools/restore/sessions'):
             self.send_json([])
         else:

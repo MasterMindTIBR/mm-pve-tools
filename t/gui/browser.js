@@ -38,6 +38,7 @@ async function main() {
     const assetFailures = [];
     let mmRequests = 0;
     let updateRequests = [];
+    let poolRequests = [];
     page.on('console', (message) => browserConsole.push(`${message.type()}: ${message.text()}`));
     page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)));
     page.on('response', (response) => {
@@ -57,6 +58,10 @@ async function main() {
         if (new URL(request.url()).pathname.includes('/mm-tools/updates/')) {
             updateRequests.push({ url: request.url(), path: new URL(request.url()).pathname,
                 postData: request.postData() || '' });
+        }
+        if (new URL(request.url()).pathname.includes('/mm-tools/poollimits/')) {
+            poolRequests.push({ method: request.method(), url: request.url(),
+                path: new URL(request.url()).pathname, postData: request.postData() || '' });
         }
     });
     try {
@@ -106,6 +111,30 @@ async function main() {
                 width: 1100,
                 height: 500,
                 pveSelNode: { data: { node: 'localhost', vmid: 100, type: 'qemu', name: 'harness' } },
+            });
+            window.__mmPoolConfig = Ext.create('PVE.pool.Config', {
+                renderTo: Ext.getBody(),
+                width: 1100,
+                height: 700,
+                pveSelNode: { data: { pool: 'labpool', type: 'pool' } },
+            });
+            window.__mmPoolAudit = Ext.create('PVE.pool.Config', {
+                renderTo: Ext.getBody(),
+                width: 1100,
+                height: 700,
+                pveSelNode: { data: { pool: 'auditpool', type: 'pool' } },
+            });
+            window.__mmPoolOff = Ext.create('PVE.pool.Config', {
+                renderTo: Ext.getBody(),
+                width: 1100,
+                height: 700,
+                pveSelNode: { data: { pool: 'offpool', type: 'pool' } },
+            });
+            window.__mmPoolConflict = Ext.create('PVE.pool.Config', {
+                renderTo: Ext.getBody(),
+                width: 1100,
+                height: 700,
+                pveSelNode: { data: { pool: 'conflictpool', type: 'pool' } },
             });
         }), 'GUI component creation');
         if (pageErrors.length) {
@@ -319,6 +348,145 @@ async function main() {
             throw new Error(`subscription popup assertions failed: ${JSON.stringify(popupAssertions)}`);
         }
         console.log(`GUI OK: console inventory, cluster reset, embedded viewer, popup ${stallUi ? 'timeout fallback' : 'toggle'}`);
+        const poolAssertions = await page.evaluate(async (assertionTimeout) => {
+            let started = Date.now();
+            let limits;
+            while (!limits) {
+                limits = window.__mmPoolConfig.down('#poollimits');
+                if (limits) { break; }
+                if (Date.now() - started > assertionTimeout) { throw new Error('aba Limites não carregou'); }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            let rows = limits.down('#usage-grid').getStore().getRange().map((record) => record.getData());
+            let warning = limits.down('#accounting-warning').getValue();
+            let save = limits.down('button[text=Salvar]');
+            let selector = limits.down('#storage-selector');
+            let storageStarted = Date.now();
+            while (selector.getStore().findExact('storage', 'local') < 0) {
+                if (Date.now() - storageStarted > assertionTimeout) {
+                    throw new Error('storage local não carregou no seletor');
+                }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            limits.down('#mode').setValue('allocated');
+            limits.down('#cpu-enabled').setValue(false);
+            limits.down('#memory-max').setValue(4096);
+            limits.down('#disk-total-enabled').setValue(false);
+            limits.down('#disk-storage-enabled').setValue(true);
+            selector.setValue('local');
+            limits.down('#add-storage').click();
+            limits.down('#storage-local-max').setValue(6);
+            save.click();
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            let addedEditor = !!limits.down('#storage-local-max');
+            limits.down('#storage-local-remove').click();
+            limits.down('#disk-storage-enabled').setValue(false);
+            save.click();
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            let auditStarted = Date.now();
+            while (!window.__mmPoolAudit.down('#poollimits')) {
+                if (Date.now() - auditStarted > assertionTimeout) { throw new Error('pool audit não carregou'); }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            let auditLimits = window.__mmPoolAudit.down('#poollimits');
+            let conflictStarted = Date.now();
+            while (!window.__mmPoolConflict.down('#poollimits')) {
+                if (Date.now() - conflictStarted > assertionTimeout) { throw new Error('pool concorrente não carregou'); }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            let conflict = window.__mmPoolConflict.down('#poollimits');
+            let conflictMessages = [];
+            let oldAlert = Ext.Msg.alert;
+            Ext.Msg.alert = (title, message) => conflictMessages.push(String(message));
+            conflict.down('button[text=Salvar]').click();
+            let messageStarted = Date.now();
+            while (!conflictMessages.length && Date.now() - messageStarted <= assertionTimeout) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            Ext.Msg.alert = oldAlert;
+            return {
+                rows,
+                warning,
+                hasSave: !!save,
+                addedEditor,
+                removedEditor: !limits.down('#storage-local-max'),
+                mode: limits.down('#mode-display').getValue(),
+                auditMode: auditLimits.down('#mode-display').getValue(),
+                auditHasSave: !!auditLimits.down('button[text=Salvar]'),
+                auditHasEditor: !!auditLimits.down('#editor'),
+                offHasTab: !!window.__mmPoolOff.down('#poollimits'),
+                conflictMessage: conflictMessages[0] || '',
+            };
+        }, TIMEOUT);
+        if (!poolAssertions.hasSave
+            || !poolAssertions.addedEditor
+            || !poolAssertions.removedEditor
+            || poolAssertions.auditHasSave
+            || poolAssertions.auditHasEditor
+            || poolAssertions.offHasTab
+            || poolAssertions.auditMode !== 'Ligado'
+            || !poolAssertions.rows.some((row) => row.resource === 'Disco — local')
+            || !poolAssertions.rows.some((row) => row.resource === 'Disco — fast')
+            || !poolAssertions.rows.some((row) => row.resource === 'Disco total'
+                && row.value.includes('3 GiB') && row.value.includes('8 GiB'))
+            || !poolAssertions.rows.some((row) => row.resource === 'Disco — local'
+                && row.value.includes('2 GiB') && row.value.includes('desligado'))
+            || !poolAssertions.rows.some((row) => ['vCPU', 'RAM'].includes(row.resource)
+                && row.value.includes('indisponível'))
+            || !poolAssertions.warning.includes('Contabilidade indisponível')) {
+            throw new Error(`poollimits assertions failed: ${JSON.stringify(poolAssertions)}`);
+        }
+        await page.waitForTimeout(100);
+        const poolPuts = poolRequests.filter((request) => request.method === 'PUT');
+        if (poolPuts.length < 3 || !poolPuts.some((request) => {
+            let data = JSON.parse(request.postData || '{}');
+            return data.mode === 'allocated' && data.digest === 'sha256:' + '0'.repeat(64)
+                && data.cpu?.enabled === false && data.memory_mib?.max === 4096
+                && data.disk_total_gib?.enabled === false
+                && data.disk_storage?.enabled === true
+                && data.disk_storage?.limits?.local === 6
+                && data.disk_storage?.limits?.fast === undefined;
+        }) || !poolPuts.some((request) => {
+            let data = JSON.parse(request.postData || '{}');
+            return data.disk_storage?.enabled === false
+                && Object.keys(data.disk_storage?.limits || {}).length === 0;
+        }) || !poolPuts.some((request) => request.path.endsWith('/conflictpool')
+            && JSON.parse(request.postData || '{}').digest === 'sha256:' + '0'.repeat(64))) {
+            throw new Error(`poollimits PUT incorreto: ${JSON.stringify(poolRequests)}`);
+        }
+        if (!poolAssertions.conflictMessage.includes('DIGEST_MISMATCH')
+            || !poolAssertions.conflictMessage.includes('configuração do pool mudou')) {
+            throw new Error(`erro concorrente não chegou à GUI: ${JSON.stringify(poolAssertions)}`);
+        }
+        console.log('GUI OK: aba Limites, uso x limite, storages, warning, CAS, edição e modo leitura');
+        const nativeErrorAssertions = await page.evaluate(async (assertionTimeout) => {
+            let messages = [];
+            let oldAlert = Ext.Msg.alert;
+            Ext.Msg.alert = (title, message) => messages.push(String(message));
+            let hardware = Ext.create('PVE.qemu.MemoryEdit', {
+                url: '/api2/extjs/nodes/localhost/qemu/100/config',
+                pveSelNode: { data: { node: 'localhost', vmid: 100, type: 'qemu' } },
+                hotplug: 'memory',
+            });
+            hardware.submit();
+            let resize = Ext.create('PVE.window.HDResize', {
+                nodename: 'localhost', vmid: 100, disk: 'scsi0',
+            });
+            resize.resize_disk('scsi0', 2);
+            let started = Date.now();
+            while (messages.length < 2) {
+                if (Date.now() - started > assertionTimeout) { break; }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            Ext.Msg.alert = oldAlert;
+            hardware.destroy(); resize.destroy();
+            return messages;
+        }, TIMEOUT);
+        if (!nativeErrorAssertions.some((message) => message.includes('limite de RAM excedido'))
+            || !nativeErrorAssertions.some((message) => message.includes('limite de disco total excedido'))) {
+            throw new Error(`mensagens nativas de poollimits perdidas: ${JSON.stringify(nativeErrorAssertions)}`);
+        }
+        console.log('GUI OK: hardware edit e resize exibem a mensagem de limite do servidor');
         if (mmRequests !== 1) { throw new Error(`mm-tools.js requests=${mmRequests}, esperado 1`); }
         console.log('GUI OK: script inserido, MasterMind na árvore, Publicar pasta… na toolbar');
     } catch (error) {

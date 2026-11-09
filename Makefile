@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PERL_INC   = -Ilib -Iperl
 PROVE      = prove $(PERL_INC)
 
-JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/updates.js
+JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/poollimits.js js/src/updates.js
 JS_OUT     = build/mm-tools.js
 PVE_PACKAGE_VERSIONS = ci/pve-package-versions
 
@@ -109,6 +109,7 @@ check-anchors: js
 		rm -rf -- "$$combined"; \
 	done; \
 	grep -Fq "MM.Ui" build/mm-tools.js; \
+	grep -Fq "MM.PoolLimits" build/mm-tools.js; \
 	grep -Fq "MM.panel.Updates" build/mm-tools.js; \
 	grep -Fq "checked_command" build/mm-tools.js; \
 	scripts/check-ui-bundles.sh refs/upstream/pve-9.2.24/pvemanagerlib.js refs/upstream/pve-9.2.24/proxmoxlib.js \

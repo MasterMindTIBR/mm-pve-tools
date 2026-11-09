@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use PVE::JSONSchema qw(get_standard_option);
+use PVE::RPCEnvironment;
 use PVE::RESTHandler;
 
 use MMPve::Core::Config;
@@ -39,6 +40,7 @@ sub _limits_properties {
 
 __PACKAGE__->register_method({
     name => 'index', path => '', method => 'GET', proxyto => 'node',
+    protected => 1,
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     description => 'Uso e limites de todos os pools.',
     parameters => { additionalProperties => 0, properties => { node => get_standard_option('pve-node') } },
@@ -48,6 +50,7 @@ __PACKAGE__->register_method({
 
 __PACKAGE__->register_method({
     name => 'read_pool', path => '{poolid}', method => 'GET', proxyto => 'node',
+    protected => 1,
     permissions => { check => ['perm', '/pool/{poolid}', ['Pool.Audit']] },
     description => 'Uso e limites de um pool.',
     parameters => {
@@ -55,7 +58,14 @@ __PACKAGE__->register_method({
         properties => { node => get_standard_option('pve-node'), poolid => $poolid },
     },
     returns => { type => 'object' },
-    code => sub { my ($param) = @_; return PVE::MMTools::PoolLimits->pool_status($param->{poolid}) },
+    code => sub {
+        my ($param) = @_;
+        my $data = PVE::MMTools::PoolLimits->pool_status($param->{poolid});
+        my $rpcenv = PVE::RPCEnvironment->get();
+        my $user = $rpcenv->get_user();
+        $data->{can_edit} = eval { $rpcenv->check($user, '/', ['Sys.Modify'], 1) } ? 1 : 0;
+        return $data;
+    },
 });
 
 __PACKAGE__->register_method({

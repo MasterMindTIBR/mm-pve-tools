@@ -22,11 +22,13 @@ check_bundle() {
 
 rc=0
 check_bundle "$1" 'pinned pve-manager' \
-    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton || rc=1
+    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton \
+    "Ext.define('PVE.pool.Config'" "alias: 'widget.pvePoolConfig'" || rc=1
 check_bundle "$2" 'pinned proxmoxlib' \
     checked_command 'No valid subscription' || rc=1
 check_bundle "$3" 'newest pve-manager' \
-    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton || rc=1
+    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton \
+    "Ext.define('PVE.pool.Config'" "alias: 'widget.pvePoolConfig'" || rc=1
 check_bundle "$4" 'newest proxmoxlib' \
     checked_command 'No valid subscription' || rc=1
 

@@ -55,6 +55,23 @@ for my $class (@classes) {
     }
 }
 
+# Achado do lab: método sem protected roda no pveproxy como www-data, que não
+# enxerga /etc/pve/priv (locks de domínio do cfs) nem acessa storage como root;
+# updates/status e poollimits davam HTTP 500 num cluster saudável. Só os index
+# que listam rotas ou leem a config podem ficar no pveproxy.
+my @in_pveproxy;
+for my $class (@classes) {
+    for my $info (grep { !$_->{subclass} && !$_->{protected} } @{ $class->method_attributes }) {
+        push @in_pveproxy, "$class $info->{name}";
+    }
+}
+is_deeply([ sort @in_pveproxy ], [
+    'PVE::API2::MMTools index',
+    'PVE::API2::MMTools::Branding index',
+    'PVE::API2::MMTools::Renumber index',
+    'PVE::API2::MMTools::Restore index',
+], 'só os index estáticos rodam no pveproxy (www-data)') or diag explain \@in_pveproxy;
+
 my ($publish) = grep { $_->{name} eq 'publish' } values %methods;
 ok($publish->{returns}{properties}{result_key}, 'publish devolve result_key');
 ok($publish->{returns}{properties}{upid}, 'publish ainda devolve UPID para TaskViewer');

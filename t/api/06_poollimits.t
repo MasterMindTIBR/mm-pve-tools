@@ -5,6 +5,7 @@ no warnings 'once';
 use FindBin qw($Bin);
 use File::Path qw(make_path);
 use File::Temp qw(tempdir);
+use JSON::PP qw(decode_json encode_json);
 use Test::More;
 
 use lib "$Bin";
@@ -34,6 +35,59 @@ for my $info (@{$attrs}) {
         is($check->[1], '/', 'PUT exige Sys.Modify em /');
     }
 }
+
+my ($read_info) = grep { $_->{name} eq 'read_pool' } @{$attrs};
+ok($read_info && ref($read_info->{code}) eq 'CODE', 'GET de pool tem callback executável');
+{
+    package TestAPIPoollimitsRPC;
+    sub new { bless { allow => $_[1] }, $_[0] }
+    sub get_user { return 'tester@pam' }
+    sub check {
+        die 'assinatura inesperada em RPCEnvironment::check'
+            unless $_[1] eq 'tester@pam' && $_[2] eq '/' && ref($_[3]) eq 'ARRAY'
+            && $_[3][0] eq 'Sys.Modify' && $_[4] == 1;
+        return $_[0]->{allow};
+    }
+}
+{
+    no warnings qw(once redefine);
+    local *PVE::MMTools::PoolLimits::pool_status = sub {
+        return { poolid => 'lab', module_enabled => 1 };
+    };
+    local *PVE::RPCEnvironment::get = sub { return TestAPIPoollimitsRPC->new(0) };
+    my $allowed = $read_info->{code}->({ poolid => 'lab' });
+    is($allowed->{can_edit}, 0, 'GET usa o resultado do RPC environment para negar edição');
+    local *PVE::RPCEnvironment::get = sub { return TestAPIPoollimitsRPC->new(1) };
+    my $admin = $read_info->{code}->({ poolid => 'lab' });
+    is($admin->{can_edit}, 1, 'GET usa o resultado do RPC environment para liberar edição');
+}
+
+my ($update_info) = grep { $_->{name} eq 'update_limits' } @{$attrs};
+ok($update_info && ref($update_info->{parameters}) eq 'HASH', 'PUT expõe schema de parâmetros');
+subtest 'payload JSON da GUI passa pelo schema PVE real' => sub {
+    my $payload = decode_json(<<'JSON');
+{"node":"localhost","poolid":"lab","mode":"running",
+ "cpu":{"enabled":true,"max":4},
+ "memory_mib":{"enabled":true,"max":2048},
+ "disk_total_gib":{"enabled":false},
+ "disk_storage":{"enabled":true,"limits":{"local":6,"fast":4}},
+ "digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+JSON
+    ok(JSON::PP::is_bool($payload->{cpu}{enabled}), 'booleano JSON preservado em cpu.enabled');
+    ok(JSON::PP::is_bool($payload->{disk_total_gib}{enabled}), 'booleano JSON preservado em disk_total_gib.enabled');
+    ok(eval { PVE::JSONSchema::validate($payload, $update_info->{parameters}); 1 },
+        'payload aceito por PVE::JSONSchema') or diag $@;
+
+    my $bad_max = decode_json(encode_json($payload));
+    $bad_max->{cpu}{max} = 0;
+    ok(!eval { PVE::JSONSchema::validate($bad_max, $update_info->{parameters}); 1 },
+        'max zero rejeitado pelo schema');
+
+    my $bad_key = decode_json(encode_json($payload));
+    $bad_key->{unknown} = 1;
+    ok(!eval { PVE::JSONSchema::validate($bad_key, $update_info->{parameters}); 1 },
+        'chave desconhecida rejeitada pelo schema');
+};
 
 subtest 'contabilidade real com cfs falso' => sub {
     require MMPve::Core::Config;
