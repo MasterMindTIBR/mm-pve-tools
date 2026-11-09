@@ -2,8 +2,11 @@
 use strict;
 use warnings;
 use FindBin qw($Bin);
+use lib "$Bin/../lib";
 use MMPve::Core::Patch;
 use MMPve::Core::Modules;
+use MMPve::Module::Poollimits;
+use ModulePatchGuards;
 
 my $root = shift @ARGV;
 die "uso: $0 ROOT\n" unless defined($root) && !@ARGV;
@@ -23,6 +26,17 @@ my $after = MMPve::Core::Patch->check(core => 0);
 for my $id (sort keys %{$after}) {
     die "âncora não aplicou: $id ($after->{$id}{status})\n"
         unless $after->{$id}{status} eq 'applied';
+}
+for my $target (@{MMPve::Module::Poollimits->patch_targets}) {
+    my $path = "$root$target->{path}";
+    open(my $fh, '<', $path) or die "ler $path: $!\n";
+    my @lines = <$fh>;
+    close($fh);
+    my @inserted = grep { $lines[$_] eq $target->{line} . "\n" } 0 .. $#lines;
+    die "inserção não única: $target->{id}\n" unless @inserted == 1;
+    my @errors = ModulePatchGuards::check_target($target, \@lines, $inserted[0]);
+    die "guard de posição/declaracao falhou: $target->{id}: " . join('; ', @errors) . "\n"
+        if @errors;
 }
 my $reverted = MMPve::Core::Patch->revert(no_restart => 1);
 die "revert de âncoras falhou\n" unless $reverted->{ok};

@@ -259,10 +259,23 @@ sub _anchor_index {
         my @scope = grep { $lines->[$_] =~ $target->{scope_anchor} } 0 .. $#{$lines};
         return undef unless @scope == 1;
         $start = $scope[0];
-        for my $i ($start + 1 .. $#{$lines}) {
-            if ($lines->[$i] =~ /^\s*__PACKAGE__->register_method\s*\(/) {
-                $end = $i - 1;
-                last;
+        if ($lines->[$start] =~ /^\s*sub\s+[A-Za-z_][A-Za-z0-9_]*\b/) {
+            # Plain Perl subs close with an unindented `}` in the PVE sources.
+            # Never let a missing anchor fall through into the next function.
+            $end = undef;
+            for my $i ($start + 1 .. $#{$lines}) {
+                if ($lines->[$i] =~ /^}\s*(?:#.*)?$/) {
+                    $end = $i;
+                    last;
+                }
+            }
+            return undef unless defined($end);
+        } else {
+            for my $i ($start + 1 .. $#{$lines}) {
+                if ($lines->[$i] =~ /^\s*__PACKAGE__->register_method\s*\(/) {
+                    $end = $i - 1;
+                    last;
+                }
             }
         }
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
+no warnings 'once';
 use FindBin qw($Bin);
 use File::Path qw(make_path);
 use File::Temp qw(tempdir);
@@ -93,6 +94,56 @@ subtest 'contabilidade real com cfs falso' => sub {
         );
         1;
     }, 'reserva real passa pelo lock falso') or diag $@;
+};
+
+subtest 'hooks de storage reais recusam antes do efeito' => sub {
+    my $cfg = MMPve::Core::Config->default;
+    $cfg->{modules}{poollimits} = 1;
+    $cfg->{poollimits}{pools}{lab} = {
+        mode => 'allocated',
+        cpu => { enabled => 0 }, memory_mib => { enabled => 0 },
+        disk_total_gib => { enabled => 1, max => 1 },
+        disk_storage => { enabled => 1, limits => { local => 1 } },
+    };
+    MMPve::Core::Config->save($cfg);
+    local $PVE::MMTools::PoolLimits::TEST_USERCFG = {
+        pools => { lab => { vms => { 101 => 1 } } }, vms => { 101 => 'lab' },
+    };
+    local $PVE::MMTools::PoolLimits::TEST_VMLIST = {
+        101 => { type => 'qemu', node => 'node-b' },
+    };
+    local $PVE::MMTools::PoolLimits::TEST_CONFIGS = {
+        'qemu:101' => { vcpus => 1, memory => 128,
+            scsi0 => 'local:vm-101-disk-0,size=1G' },
+    };
+    local $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG = { ids => { local => {} } };
+    local $PVE::MMTools::PoolLimits::TEST_RRD = { 'pve-vm-9.0/101' => [0, '', 'running', 0] };
+    ok(!eval {
+        PVE::MMTools::PoolLimits->check_storage_alloc(
+            $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, 'local', 101, 'raw',
+            'vm-101-disk-1', 1024 * 1024,
+        );
+        1;
+    }, 'vdisk_alloc real recusa antes do plugin') or diag $@;
+    ok(!eval {
+        PVE::MMTools::PoolLimits->check_storage_clone(
+            $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, 'local:vm-101-disk-0', 101, undef,
+        );
+        1;
+    }, 'vdisk_clone real recusa antes do plugin') or diag $@;
+    ok(!eval {
+        PVE::MMTools::PoolLimits->check_storage_resize(
+            $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, 'local:vm-101-disk-0', 2 * 1024 * 1024 * 1024, 0, undef,
+        );
+        1;
+    }, 'volume_resize real recusa antes do plugin') or diag $@;
+    ok(eval {
+        PVE::MMTools::PoolLimits->check_storage_import(
+            $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, {}, 'local:vm-101-disk-0',
+            'raw', undef, undef, 0, 0,
+        );
+        1;
+    }, 'volume_import do mesmo volid não é aumento') or diag $@;
 };
 
 done_testing();

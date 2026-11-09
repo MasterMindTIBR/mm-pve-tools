@@ -7,15 +7,17 @@ use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use Test::More;
 
-my ($lib, $perl);
+my ($lib, $perl, $testlib);
 BEGIN {
     ($lib) = "$Bin/../../lib" =~ /\A(.*)\z/s;
     ($perl) = "$Bin/../../perl" =~ /\A(.*)\z/s;
+    ($testlib) = "$Bin/../lib" =~ /\A(.*)\z/s;
 }
-use lib $lib, $perl;
+use lib $lib, $perl, $testlib;
 use MMPve::Core::Modules;
 use MMPve::Core::Patch;
 use MMPve::Module::Poollimits;
+use ModulePatchGuards;
 
 BEGIN {
     package PVE::MMTools::PoolLimits;
@@ -28,15 +30,16 @@ BEGIN {
     sub check_lxc_create { my $class = shift; return _record('check_lxc_create', @_); }
     sub check_clone { my $class = shift; return _record('check_clone', @_); }
     sub check_pool_update { my $class = shift; return _record('check_pool_update', @_); }
+    sub check_storage_alloc { my $class = shift; return _record('check_storage_alloc', @_); }
+    sub check_storage_clone { my $class = shift; return _record('check_storage_clone', @_); }
+    sub check_storage_resize { my $class = shift; return _record('check_storage_resize', @_); }
+    sub check_storage_import { my $class = shift; return _record('check_storage_import', @_); }
     $INC{'PVE/MMTools/PoolLimits.pm'} = __FILE__;
 }
 
 my $scratch = $ENV{MM_PVE_UPSTREAM_ROOT};
-if (!defined($scratch) || !-d $scratch) {
-    my @candidates = glob('/tmp/claude-1000/*/*/scratchpad/pve/x');
-    ($scratch) = grep { -d $_ } @candidates;
-}
-plan skip_all => 'upstream PVE extraído não disponível' unless defined($scratch);
+plan skip_all => 'upstream ausente; make check-anchors executa este teste com fontes PVE'
+    unless defined($scratch) && -d $scratch;
 
 my %source = (
     'libpve-guest-common-perl' => {
@@ -48,6 +51,9 @@ my %source = (
     },
     'qemu-server' => {
         '/usr/share/perl5/PVE/API2/Qemu.pm' => "$scratch/qemu-server/usr/share/perl5/PVE/API2/Qemu.pm",
+    },
+    'libpve-storage-perl' => {
+        '/usr/share/perl5/PVE/Storage.pm' => "$scratch/libpve-storage-perl/usr/share/perl5/PVE/Storage.pm",
     },
     'pve-container' => {
         '/usr/share/perl5/PVE/API2/LXC.pm' => "$scratch/pve-container/usr/share/perl5/PVE/API2/LXC.pm",
@@ -67,6 +73,36 @@ for my $target (@{MMPve::Module::Poollimits->patch_targets}) {
     ok(copy($src, $path), "$target->{id}: copia upstream");
 }
 
+sub read_lines {
+    my ($path) = @_;
+    open(my $fh, '<', $path) or die "ler $path: $!";
+    my @lines = <$fh>;
+    close($fh);
+    return \@lines;
+}
+
+sub inserted_index {
+    my ($target, $lines) = @_;
+    my @found = grep { $lines->[$_] eq $target->{line} . "\n" } 0 .. $#{$lines};
+    return $found[0] if @found == 1;
+    return undef;
+}
+
+subtest 'guard rejeita a definição antiga sem escopo de vdisk_clone' => sub {
+    my ($target) = grep { $_->{id} eq 'storage_vdisk_clone' }
+        @{MMPve::Module::Poollimits->patch_targets};
+    my $path = $source{$target->{owner}}{$target->{path}};
+    my $lines = read_lines($path);
+    my %wrong = %{$target};
+    delete $wrong{scope_anchor};
+    my $anchor = MMPve::Core::Patch->_anchor_index(\%wrong, $lines);
+    ok(defined($anchor), 'a definição antiga ainda encontraria uma ocorrência');
+    splice @{$lines}, $anchor + 1, 0, $target->{line} . "\n" if defined($anchor);
+    my @errors = ModulePatchGuards::check_target(\%wrong, $lines, $anchor + 1);
+    ok(@errors, 'guard falha na definição antiga e não deixa o teste ficar verde')
+        or diag join('; ', @errors);
+};
+
 local $ENV{MM_PVE_ROOT} = $tmp;
 MMPve::Core::Modules->all;
 my $applied = MMPve::Core::Patch->apply(
@@ -76,7 +112,9 @@ my $applied = MMPve::Core::Patch->apply(
 ok($applied->{ok}, 'todos os alvos reais aplicados') or diag explain $applied;
 
 my ($class, $vmid, $conf, $phase, $param, $archive, $storecfg, $pool, $newid,
-    $oldconf, $storage_cfg, $src_conf, $snapname, $usercfg, $qemu_type, $lxc_type);
+    $oldconf, $storage_cfg, $src_conf, $snapname, $usercfg, $qemu_type, $lxc_type,
+    $cfg, $storeid, $fmt, $name, $size, $volid, $snap, $fh, $format,
+    $snapshot, $base_snapshot, $with_snapshots, $allow_rename, $running);
 my %vars = (
     abstract_config_write => [check_write_config => [\$class, \$vmid, \$conf],
         sub { ($class, $vmid, $conf) = ('PVE::QemuConfig', 101, { vcpus => 2 }) }],
@@ -94,13 +132,25 @@ my %vars = (
         sub { ($newid, $pool, $src_conf, $lxc_type, $snapname) = (202, 'lab', { cores => 2 }, 'lxc', 'snap0') }],
     pool_update => [check_pool_update => [\$param, \$usercfg],
         sub { ($param, $usercfg) = ({ poolid => 'lab', vms => '101' }, { pools => {} }) }],
+    storage_vdisk_alloc => [check_storage_alloc => [\$cfg, \$storeid, \$vmid, \$fmt, \$name, \$size],
+        sub { ($cfg, $storeid, $vmid, $fmt, $name, $size) = ({ ids => {} }, 'local', 101, 'raw', 'vm-101-disk-0', 1024) }],
+    storage_vdisk_clone => [check_storage_clone => [\$cfg, \$volid, \$vmid, \$snap],
+        sub { ($cfg, $volid, $vmid, $snap) = ({ ids => {} }, 'local:vm-101-disk-0', 101, undef) }],
+    storage_volume_resize => [check_storage_resize => [\$cfg, \$volid, \$size, \$running, \$snapname],
+        sub { ($cfg, $volid, $size, $running, $snapname) = ({ ids => {} }, 'local:vm-101-disk-0', 2147483648, 0, undef) }],
+    storage_volume_import => [check_storage_import => [\$cfg, \$fh, \$volid, \$format, \$snapshot, \$base_snapshot, \$with_snapshots, \$allow_rename],
+        sub { ($cfg, $fh, $volid, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename) = ({ ids => {} }, {}, 'local:vm-101-disk-0', 'raw', undef, undef, 0, 0) }],
 );
 
 for my $target (@{MMPve::Module::Poollimits->patch_targets}) {
     my $path = "$tmp$target->{path}";
-    open(my $fh, '<', $path) or die "ler $path: $!";
-    my @lines = <$fh>;
-    close($fh);
+    my $lines = read_lines($path);
+    my @lines = @{$lines};
+    my $inserted = inserted_index($target, $lines);
+    ok(defined($inserted), "$target->{id}: inserção única encontrada") or next;
+    my @guard_errors = ModulePatchGuards::check_target($target, $lines, $inserted);
+    ok(!@guard_errors, "$target->{id}: função, escopo e declarações corretos")
+        or diag join('; ', @guard_errors);
     my ($line) = grep { index($_, $target->{line}) >= 0 } @lines;
     ok(defined($line), "$target->{id}: linha inserida é a linha real") or next;
     ($line) = $line =~ /\A([ \t]*\Q$target->{line}\E\n)\z/;

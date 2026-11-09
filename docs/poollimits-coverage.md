@@ -1,227 +1,151 @@
 # Cobertura do Rock 5 — limites de disco por pool
 
-Documento da Fase A do Rock 5. Ele é uma especificação de cobertura e de
-provas para a implementação que virá depois; não altera os hooks nem promete
-que o código atual já faça enforcement de disco.
+Cobertura implementada sobre o Rock 4. A quota mede tamanho provisionado, em
+bytes, dos volumes que a configuração atual do guest referencia. Há dois
+limites independentes: por datastore (`disk_storage`) e total (`disk_total_gib`);
+cada um tem seu próprio `enabled`. Disco é sempre contado pelo modo alocado.
 
-## Escopo e decisões já aprovadas
+O valor reservado é o alvo absoluto do guest, por datastore e total. Chamadas
+que ainda não gravaram a configuração acumulam o alvo; a reserva desaparece
+quando a configuração chega ao alvo ou quando o TTL expira. Aumento sem tamanho
+comprovável em pool limitado falha fechado com a mensagem do Rock 4. Sem pool,
+sem limite de disco ou com `modules.poollimits = 0`, o hook retorna antes do
+lock e não faz contabilidade.
 
-Esta cobertura foi conferida contra:
+## Decisão de arquitetura
 
-- `.rocket-fuel/FEATURES-PLAN.md`, seção `Rock 5 — Limites por pool: disco`;
-- `.rocket-fuel/FEATURES-SAME-PAGE-LOG.md`, decisões das rodadas 2–4 sobre
-  disco;
-- o Rock 4 em `perl/PVE/MMTools/PoolLimits.pm` e
-  `lib/MMPve/Module/Poollimits.pm`, no `HEAD 31c9e2c`;
-- as fontes do PVE 9.2 extraídas com `scripts/fetch-pve-debs.sh` (pve-manager
-  9.2.25, qemu-server 9.2.14, pve-container 6.1.18, libpve-guest-common-perl
-  6.0.6, libpve-storage-perl e libpve-access-control mais recentes em
-  2026-11-05).
+Para guest já pertencente a pool limitado, o ponto primário antes do efeito é o
+storage layer, em `libpve-storage-perl/usr/share/perl5/PVE/Storage.pm`:
 
-O Rock 4 fornece o lock, as reservas com TTL, a descoberta de pool, o
-`check_write_config` de vCPU/RAM e os preflights de create/clone. A cobertura
-abaixo adiciona o contrato de disco sobre essa base. As linhas de código
-citadas são as das fontes extraídas, não linhas do repositório deste pacote.
+- `vdisk_alloc`: conhece `vmid`, storage, nome e tamanho antes de criar o
+  volume;
+- `vdisk_clone`: conhece `vmid`, volid e storage antes do clone;
+- `volume_resize`: conhece o volid e o tamanho novo; só o volume atual do guest
+  conta, e resize com snapshot/non-current nunca aumenta a quota;
+- `volume_import`: é protegido quando há tamanho disponível; o mesmo volid já
+  referenciado não é aumento.
 
-A unidade de quota é o tamanho provisionado, em bytes, dos volumes que a
-configuração atual do guest referencia. Há dois limites independentes:
+Não há preflight novo por operação em `PVE/API2/Qemu.pm` ou `PVE/API2/LXC.pm`
+para add disk, import, import-from, resize, move, cloud-init, EFI ou TPM. Esses
+caminhos chegam aos hooks de storage. Preflight de API existe somente para
+entrada no pool: create/clone/restore com `--pool`, restore sobre guest já
+pertencente a pool limitado, `add_vm_to_pool` e `update_pool`, antes da primeira
+alocação. O preflight de restore recupera a configuração do backup pelo mesmo
+fluxo do PVE.
 
-- por datastore: soma dos volumes do guest naquele storage;
-- total do pool: soma dos datastores do guest.
+Um volid já na configuração atual não é aumento: isso cobre replication e
+migração para o mesmo storage. Durante qualquer migração, a configuração atual
+tem `lock: migrate`; enquanto esse lock existir, `vdisk_alloc`, `vdisk_clone`,
+`volume_import` e o trecho de disco de `write_config` retornam antes do lock da
+quota. Portanto NBD, storage tunnel e storage mapping são isentos: a migração
+não conta disco duas vezes nem falha fechado por tamanho desconhecido. O efeito
+conhecido é que um mapping pode mudar a distribuição por datastore sem uma
+verificação de limite por datastore durante a cópia; a configuração final passa
+a ser a referência para as operações seguintes.
 
-O alvo de uma reserva é sempre o valor absoluto que a configuração terá depois
-da operação, por datastore e total. Não é o delta da chamada. O uso efetivo do
-guest durante o TTL é o máximo entre a configuração observada e a reserva viva.
-Uma reserva só é criada quando o guest pertence a um pool com o limite
-correspondente ligado; sem pool ou com o módulo deliberadamente desligado não
-há enforcement.
+Fleecing (`-fleece-`) e vmstate (`-state-`) são isentos. O temporário de OVA
+fica reservado somente pelo TTL. `pvesm alloc --vmid` passa por `vdisk_alloc`,
+mas está fora da promessa após o TTL até o volume entrar na configuração.
 
-Em qualquer preflight, o check deve acontecer sob o lock do pool e antes da
-primeira alocação, clone, importação, cópia ou mutação persistente. Se a
-configuração do pool estiver inválida/ilegível, os pools que tinham limite na
-última configuração válida recusam aumentos; não se trata a falha como um
-desligamento. `modules.poollimits = 0` em uma configuração válida é o único
-desligamento intencional.
+## Matriz QEMU
 
-### Decisão de arquitetura (revisão do Visionary)
+Em todas as linhas abaixo, “Storage hook” significa a chamada
+`PVE::MMTools::PoolLimits->check_storage_*` inserida antes da chamada efetiva do
+plugin. O hook relê pool/configuração sob o lock, deduplica volids e verifica o
+alvo por storage e total.
 
-A Fase A propôs um preflight de API para cada operação. A revisão aprovou a
-cobertura com uma mudança: para um guest **já pertencente** a um pool com
-limite de disco, o ponto de checagem antes do primeiro efeito é a camada de
-storage em `PVE/Storage.pm` — `vdisk_alloc`, `vdisk_clone`, `volume_resize`
-(só do volume atual do guest) e `volume_import` (só para volid já
-referenciado, ver abaixo). Essas funções recebem vmid, storage e tamanho antes
-de o volume existir ou crescer, e todas as cadeias das tabelas abaixo
-(adicionar, importar, `import-from`, resize, mover, cloud-init, EFI, TPM)
-passam por elas. Assim um único ponto cobre CLI, API e caminhos internos, sem
-uma âncora por operação em `PVE/API2/Qemu.pm` e `PVE/API2/LXC.pm`.
-
-Nas tabelas, a coluna de check descreve onde o PVE já tem a informação; a
-implementação checa no hook de storage alcançado por aquela cadeia. O preflight
-de API fica só na **entrada no pool**: create, clone e restore com `--pool`, e
-restore sobre um guest que já está num pool com limite. `add_vm_to_pool` e
-`update_pool` checam disco como defesa final.
-
-Regras de contexto no hook de storage:
-
-- volume cujo volid já está referenciado na config atual do guest não é
-  aumento (replication e migração do mesmo volume para o mesmo storage);
-- fleecing (`-fleece-`) e vmstate (`-state-`) nunca contam;
-- o temporário da importação OVA conta só durante o TTL da reserva;
-- `pvesm alloc --vmid` passa pelo hook de `vdisk_alloc` no momento da
-  alocação, mas continua fora da promessa depois do TTL.
-
-Limite conhecido: `volume_import` não recebe o tamanho antes do stream. Uma
-migração que muda o storage do volume (volid novo no destino, por storage
-mapping) não tem ponto de checagem antes do efeito e pode exceder um limite
-**por datastore**. O total do pool não muda numa migração dentro do cluster.
-Fica registrado como limite conhecido; a migração com NBD
-(`vm_migrate_alloc_nbd_disks`) usa `vdisk_alloc` com tamanho conhecido e é
-coberta.
-
-### Como ler a tabela
-
-`PRE` significa que existe um ponto proposto antes do primeiro efeito e a
-linha deve virar um teste do Rock 7. `BLOCKED` significa que o PVE observado
-não fornece um ponto suficientemente informado antes do efeito; não é
-permitido preencher a lacuna com um check posterior em `write_config`.
-
-Em todas as linhas, o ponto de API deve passar ao núcleo: `vmid`, pool
-explícito ou inferido, mapa de storages e tamanho-alvo em bytes. O hook de
-storage continua obrigatório como defesa para um guest já pertencente ao pool,
-mas não substitui o preflight. O hook não pode contar uma alocação segura só
-porque recebeu um `vmid`: ele precisa do contexto do chamador.
-
-## QEMU
-
-| Operação | Cadeia upstream exata | Check antes do primeiro efeito; como conhece vmid/pool/storage/tamanho | Alvo da reserva | Conta ou isenção | Teste executável no lab Rock 7 |
+| Operação | Cadeia upstream exata (arquivo:linha) | Check antes do primeiro efeito; conhecimento disponível | Alvo da reserva | Conta ou isenção | Teste executável no lab Rock 7 |
 |---|---|---|---|---|---|
-| **Adicionar disco — `qm set` e API update** | CLI `qm set` é mapeado em `qemu-server/usr/share/perl5/PVE/CLI/qm.pm:1358-1371` para `PVE::API2::Qemu::update_vm_api` (`Qemu.pm:2111-2128`). A atualização chama `create_disks` (`API2/Qemu.pm:462-475,532-702`); disco novo chega a `PVE::Storage::vdisk_alloc` (`API2/Qemu.pm:688-691`). | **PRE:** no início do update, depois de carregar a config atual e antes do worker/create_disks (`API2/Qemu.pm:2250-2298`), montar a config futura apenas em memória. `vmid` é o parâmetro; pool é a membership atual; storage e `size` vêm de cada drive novo e do default storage resolvido pelo próprio `create_disks`. | Config atual + cada disco que ficará referenciado, agrupados por storage; total é a soma. | **Conta.** É a alocação normal que o guest vai referenciar. O `vdisk_alloc` (`Storage.pm:1157-1190`) repete a defesa para vmid já no pool. | Preparar guest no pool com limite abaixo de `disco atual + novo`. Executar `qm set VMID --scsi1 STORAGE:...`; exigir erro antes de `vdisk_alloc`, lista de volumes igual e digest/config byte a byte igual. Repetir via API `PUT .../config`. Fazer um caso permitido e confirmar o volume e a config final.
-| **Importar disco — `qm disk import`** | `qm disk import` é alias de `importdisk` (`CLI/qm.pm:1430-1444`); o método recebe source/storage/vmid em `CLI/qm.pm:613-700` e chama `PVE::QemuServer::ImportDisk::do_import` (`ImportDisk.pm:19-42`). O primeiro efeito é `vdisk_alloc` (`ImportDisk.pm:35-42`); a entrada `unusedN` é escrita depois (`ImportDisk.pm:46-79`). | **PRE:** no método `importdisk`, após obter `vmid`, storage e tamanho do source (`CLI/qm.pm:656-678`) e antes de `do_import`. A membership vem da config/pool do guest; o tamanho vem de `file_size_info`/source e é convertido para a unidade de `vdisk_alloc`. | Config atual + o volume importado no storage destino, ainda que o PVE o anexe como `unusedN`. | **Conta.** A decisão aprovada trata importação como alocação que o guest referencia ou passa a poder referenciar; `unusedN` conta na contabilidade. | Com guest limitado e headroom menor que o source, importar uma imagem para o storage destino deve falhar antes da criação. Verificar ausência do volume destino, nenhum novo `unusedN` e config/digest inalterados. Repetir com limite suficiente e `qm rescan` para confirmar a semântica de `unusedN`.
-| **Importar com `import-from` — arquivo externo ou volume PVE** | `qm set`/API update segue `API2/Qemu.pm:2111-2128,462-475`. O branch `import-from` está em `API2/Qemu.pm:541-645`: volume PVE pode passar por `clone_disk` (`QemuServer.pm:7889-7997`) e source externo por `ImportDisk::do_import`. A cópia PVE usa `PVE::Storage::vdisk_clone` (`QemuServer.pm:7921-7924`); a importação externa usa `vdisk_alloc` (`ImportDisk.pm:35-42`). | **PRE:** o mesmo preflight do update, mas resolver o tamanho do source antes de chamar o branch (`API2/Qemu.pm:541-650`). Para volume PVE, consultar `volume_size_info`; para arquivo, obter o tamanho como o importador. O destino é conhecido no drive novo; `vmid` e pool vêm do update. | Config atual + tamanho-alvo do drive no storage destino. Se o source e o destino forem o mesmo volume lógico, contar uma vez na config final. | **Conta.** Tanto clone quanto import resultam em volume que o guest referencia. Artefatos temporários não podem ser confundidos com esse volume final. | Usar `import-from` externo e PVE-managed contra um guest no limite. A recusa deve ocorrer antes de `vdisk_clone`/`vdisk_alloc`; o storage não pode ganhar volume e a config deve permanecer idêntica. Em caso aceito, conferir o drive final e a contagem por storage.
-| **Resize — `qm resize`** | CLI `qm resize` mapeia para `resize_vm` (`CLI/qm.pm:1430-1444`). API registra o método em `API2/Qemu.pm:6014-6150`; carrega config e calcula o novo tamanho (`:6055-6126`), chama `PVE::QemuServer::Blockdev::resize` (`:6134-6136`), que chama `PVE::Storage::volume_resize` (`Blockdev.pm:728-735`), e só depois grava (`API2/Qemu.pm:6138-6142`). | **PRE:** depois do cálculo de `newsize` e antes de `Blockdev::resize` (`API2/Qemu.pm:6108-6136`). `vmid`, disk, storage e tamanho antigo vêm da config/drive; pool vem da membership atual. O hook `volume_resize` é a defesa caso outra API alcance o storage sem o preflight. | Config atual com o volume no mesmo storage e `size = newsize`; o alvo do guest é recalculado, não `old + request` cegamente. | **Conta somente aumento do volume atual.** Reduções são aceitas. Chamada com `$snap` ou volume não atual não altera a quota; o hook deve preservar o contexto de snapshot. | Configurar pouco headroom e executar `qm resize VMID DISK +SIZE`; exigir falha antes de resize, tamanho físico/config inalterados. Executar resize para valor menor e aceitar. Executar resize do snapshot com `$snap` e provar que a quota do guest não muda.
-| **Mover disco — `qm disk move`** | CLI é alias de `move_vm_disk` (`CLI/qm.pm:1439-1440`). API e validações estão em `API2/Qemu.pm:4809-5053`; source/target são resolvidos antes do copy (`:4918-4950`), a cópia chama `QemuServer::clone_disk` (`:5001-5011`) e a config é atualizada depois (`:5012-5023`). `clone_disk` usa `vdisk_clone` no linked ou `vdisk_alloc` no full (`QemuServer.pm:7921-7965`). | **PRE:** dentro da fase de checks, antes de `clone_disk` (`API2/Qemu.pm:4918-5001`). `vmid` e drive vêm da config; source storage é o volid atual; target storage é o parâmetro; tamanho é o `size` atual do drive/storage. | Por storage: manter o source durante a cópia e acrescentar o destino; no total, contar source + destino enquanto a cópia existir. Depois que a config final e a limpeza forem confirmadas, a reconciliação reduz o source. | **Conta no destino e conta transitoriamente nos dois no total.** Não aceitar que a quota seja verificada só depois da troca da config. | Com headroom menor que o volume no storage destino, executar `qm disk move`; exigir falha antes de `clone_disk`, sem volume novo no destino e sem mudança na config/source. Em caso permitido, confirmar a janela de dupla contagem e a limpeza do source conforme `--delete`.
-| **Criar VM com discos, com ou sem `--pool`** | `qm create` é encaminhado pela CLI (`CLI/qm.pm:1358-1371`) ao create da API; `PVE::API2::Qemu` extrai `vmid`, `pool`, archive e discos (`API2/Qemu.pm:1191-1417`) e chama `create_disks` (`:1531-1545`), que chega aos branches de `vdisk_alloc` (`:659-702`). | **PRE:** no endpoint de create, depois de normalizar todos os parâmetros e antes de `create_and_lock_config`/qualquer `create_disks` (`API2/Qemu.pm:1298-1417`). Com `--pool`, o pool é o parâmetro e o alvo é toda a config solicitada; sem `--pool`, não há pool de destino. | Soma dos discos solicitados por storage e total. Para create sem pool, não criar reserva. | **Conta** cada disk que ficará na config. O create também pode criar EFI/TPM/cloud-init, cobertos nas linhas seguintes. | Fazer create com `--pool` e uma lista de discos que excede por storage/total; exigir ausência do VMID/config e dos volumes. Repetir sem `--pool` com o mesmo storage e provar que não há enforcement por pool. Fazer um create permitido com cada combinação de `vcpus`/RAM já coberta no Rock 4.
-| **Clone full, com ou sem `--pool`** | CLI/API clone está em `API2/Qemu.pm:4382-4807`; o full clone chama `QemuServer::clone_disk` (`:4715-4723`). `clone_disk` calcula tamanho e chama `PVE::Storage::vdisk_alloc` (`QemuServer.pm:7935-7965`), copia e ativa (`:7970-7985`). | **PRE:** após carregar source config, resolver todos os discos e o `pool` do novo VMID, mas antes do primeiro `clone_disk` (`API2/Qemu.pm:4501-4563`). O source fornece tamanhos; `--pool`, quando presente, fornece o pool alvo; storage override fornece o destino. | Config futura completa do novo guest por storage; total é a soma. O guest source não é somado ao alvo, exceto pela utilização já existente do pool. | **Conta.** Full clone cria volumes novos que o novo guest referencia. Sem `--pool`, não há quota de pool para o novo guest. | Clonar full de um guest para pool com limite insuficiente; exigir falha antes do primeiro `vdisk_alloc`, nenhum novo VMID/volume e source/config intactos. Testar com `--storage` que o limite por datastore é o destino real.
-| **Clone linked, com ou sem `--pool`** | Mesmo endpoint/CLI do clone (`API2/Qemu.pm:4382-4807`), mas o branch linked chama `PVE::Storage::vdisk_clone` (`QemuServer.pm:7921-7924`) dentro de `clone_disk` (`:7889-7997`). | **PRE:** o mesmo preflight pré-clone, incluindo o storage de cada base/volume e o pool futuro, antes de qualquer `vdisk_clone`. | Tamanho provisionado dos volumes que ficarão referenciados pelo novo guest, por storage; total da config futura. | **Conta.** Linked clone ainda cria um volume/base que o guest referencia; não é uma isenção por ser copy-on-write. | Repetir o teste de clone excedente com `--full 0`/linked; exigir nenhum novo volume/base e nenhum novo VMID depois da recusa. Testar um caso aceito e conferir que a base e a config são as esperadas.
-| **Restore `qmrestore`/API com archive, com ou sem `--pool`, inclusive sobre guest existente** | CLI `qmrestore` é o caminho de restore em `CLI/qm.pm:1358-1408`; create/restore da API extrai archive e config (`API2/Qemu.pm:1191-1387`), cria/fecha a config inicial (`:1414-1417`), executa o worker de restore (`:1420-1477`) e aloca os devices em `QemuServer.pm:6543-6580`, com `vdisk_alloc` em `:6572-6573`. | **PRE:** recuperar a configuração do backup exatamente como o PVE (`API2/Qemu.pm:1298-1312` e o parser de restore) e reservar antes de `create_and_lock_config` e antes de `restore_*_archive`. Se o VMID já existe, excluir a configuração atual do cálculo de destino e reservar a config que substituirá o guest; o pool é o `--pool` explícito ou a membership já existente. | Config do backup, com os storages remapeados pelos parâmetros do restore; total da config restaurada. Para overwrite, é substituição lógica do guest, não soma permanente da config velha e nova, mas falha do preflight deve deixar a velha intacta. | **Conta** root disks, disks, cloud-init, EFI/TPM presentes no backup quando forem volumes finais referenciados. `unusedN` do backup segue a regra geral e conta se restaurado na config. | Criar guest existente no pool com limite baixo, guardar config/inventário, executar `qmrestore` com e sem `--pool`; exigir recusa antes de qualquer volume/configuração nova e config velha byte a byte igual. Testar remapeamento para outro storage e falha em um datastore intermediário.
-| **Cloud-init drive** | No create/update, `create_disks` identifica cloud-init (`API2/Qemu.pm:495-531`) e aloca com `vdisk_alloc` em `:525`; a atualização do drive passa por `vmconfig_update_cloudinit_drive` (`QemuServer.pm:5167-5195`) e `Cloudinit::commit_cloudinit_disk` (`Cloudinit.pm:21-90`), com alocação em `:50-63`. | **PRE:** no preflight do create/update, reconhecer `drive_is_cloudinit` antes de `create_disks`/`commit_cloudinit_disk`; `vmid` e pool vêm do guest, storage do drive e tamanho do constante de 4 MiB/size retornado pelo storage. Se o drive já existe e apenas o conteúdo é regenerado, não reservar de novo. | Config atual + cloud-init final no storage escolhido, usando o tamanho provisionado real da config/storage. | **Conta quando cria ou passa a ser referenciado.** Apesar de `media=cdrom`, cloud-init é um volume gerenciado criado para o guest; não é ISO/CD-ROM isento. | Recusar `qm create --pool ... --ide2 STORAGE:cloudinit` quando o limite exceder; conferir ausência de volume. Repetir `qm cloudinit update` com drive ausente em guest do pool e verificar a mesma proteção. Atualização de conteúdo com drive já existente não deve aumentar quota.
-| **EFI disk** | `create_disks` chama `PVE::QemuServer::OVMF::create_efidisk` (`API2/Qemu.pm:659-674`); o helper chama `PVE::Storage::vdisk_alloc` (`OVMF.pm:190-208`, alocação em `:197`). | **PRE:** preflight de create/update deve incluir `efidisk0` antes do branch OVMF. `vmid`/pool vêm da config alvo; storage e tamanho vêm do parâmetro EFI, formato e tamanho efetivo retornado pelo storage. | Config atual + `efidisk0` no datastore selecionado; total inclui o EFI. | **Conta.** É um volume que permanece ligado à configuração. | Create/update com `efidisk0` excedente deve falhar antes do `OVMF::create_efidisk`, sem volume e sem config. Caso aceito deve registrar o tamanho real, inclusive quando a granularidade do storage arredondar a alocação.
-| **TPM state disk** | `create_disks` entra no branch `tpmstate0` (`API2/Qemu.pm:675-687`) e chama `PVE::Storage::vdisk_alloc` (`:682-684`). | **PRE:** mesmo preflight de create/update, antes do branch TPM. O tamanho-alvo é `TPMSTATE_DISK_SIZE` convertido para KB e depois o tamanho efetivo informado pelo storage; vmid/pool/storage são conhecidos na config alvo. | Config atual + `tpmstate0` no storage selecionado; total inclui o estado TPM. | **Conta.** É provisionado e ligado ao guest. | Recusar create/update com TPM excedente antes da alocação; verificar nenhum `tpmstate0`, nenhum volume e config original preservada. Testar arredondamento do storage.
-| **Rollback de snapshot** | CLI/API chama `PVE::API2::Qemu::rollback` (`API2/Qemu.pm:6445-6510`), que executa `PVE::QemuConfig->snapshot_rollback` (`:6495-6498`). O caminho interno de snapshot pode fazer `PVE::Storage::volume_resize` com `$snap` (`QemuServer/Snapshot.pm:101-116`). | **PRE:** o contrato é o hook de `write_config` do Rock 4, restrito a `PVE::QemuConfig`, calculando a config final antes de gravá-la. Comparar config atual com a config do snapshot: volumes já em `unusedN` já contam; um volume de snapshot reanexado que não estava na config atual gera aumento e deve ser reservado/recusado antes da gravação. O resize com `$snap` é passado como contexto não atual. | Config final após rollback, por storage; não somar o conteúdo de `snapshots` como uso permanente. | **Não aumenta por si só.** Volumes não encolhem por existir snapshot, e volume destruído não volta. Reanexação que realmente aumentaria a config passa pelo cálculo de `write_config`; resize de snapshot não conta. | Criar snapshot, remover um disk da config mantendo-o como `unusedN`, rollback e provar que `unusedN` já contado não aumenta. Fazer um caso em que o snapshot reanexa volume não contado: exigir recusa antes de `write_config`, sem alteração persistente. Fazer resize interno de snapshot e confirmar quota igual.
-| **Migração interna para destino — alocação NBD** | O destino calcula discos em `PVE::QemuServer::vm_migrate_alloc_nbd_disks` (`QemuServer.pm:5230-5261`) e chama `vdisk_alloc` em `:5252`; o handler de migração/mtunnel deve recebê-lo antes da alocação. | **PRE:** adicionar preflight no handler de migração do destino, antes de chamar `vm_migrate_alloc_nbd_disks`; o túnel já conhece `vmid`, storagemap/target storage e `drive->{size}`. Se o caminho de migração for apenas replication ou copy temporário que não ficará na config final, usar contexto de réplica e não contar. | Se a migração resulta no guest destino, config futura por storage e total; durante a cópia, reservar o destino e manter a origem conforme a política de cópia. | **Conta para migração que cria o volume final do guest.** Cópias de replication e artefatos temporários não contam, desde que não sejam ligados à config e sejam removidos. | Tentar migração para storage com headroom insuficiente: nenhum destino novo e config source/destination inalteradas após recusa. Separar um job de replication/cópia temporária e provar limpeza e ausência de impacto no uso lógico.
+| Add disk — `qm set`/API | `qemu-server/usr/share/perl5/PVE/CLI/qm.pm:1358-1371` → `PVE/API2/Qemu.pm:update_vm_api:2111-2128` → `create_disks:462-475,532-702` → `PVE::Storage::vdisk_alloc:688-691` → `libpve-storage-perl/usr/share/perl5/PVE/Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`** após `parse_vmid`, antes do plugin. O vmid é argumento; o pool vem da membership; storage/nome/tamanho vêm dos argumentos de alocação. | Config atual + cada volume novo no storage destino; total é a soma. | Conta; `unusedN` também conta quando escrito. | Com headroom menor, executar CLI e API; provar recusa antes do plugin, nenhum volid/`unusedN` novo e config inalterada. Repetir permitido. |
+| Import disk — `qm disk import` | `CLI/qm.pm:1430-1444,613-700` → `PVE::QemuServer::ImportDisk::do_import:19-42` → `vdisk_alloc:35-42` → `Storage.pm:1157-1190`; `unusedN` em `ImportDisk.pm:46-79` | **Storage hook `vdisk_alloc`**. vmid/storage/tamanho do `source` já estão nos argumentos; a config futura é protegida também por `write_config` quando `unusedN` é gravado. | Alvo por storage da configuração que receberá o volume; total inclui o importado. | Conta. | CLI com source maior que headroom: nenhum volume destino, nenhum `unusedN`, config igual; repetir com limite suficiente. |
+| Import-from — arquivo ou volume PVE | `API2/Qemu.pm:541-645` → source PVE `PVE::QemuServer::clone_disk:7889-7997` → `vdisk_clone:7921-7924`; source externo → `ImportDisk::do_import:35-42` → `vdisk_alloc` | **Storage hook** (`vdisk_clone` ou `vdisk_alloc`), sem preflight de operação. O vmid é o destino; storage e tamanho estão no clone/alocação. | Config futura do destino por storage e total. Mesmo volid referenciado é deduplicado. | Conta o volume final; artefato temporário só vale pelo TTL. | Recusar antes de clone/alloc; provar ausência de volume e config igual para source PVE e arquivo. |
+| Resize — `qm resize` | `CLI/qm.pm:1430-1444` → `API2/Qemu.pm:6014-6150` → `QemuServer::Blockdev::resize:6134-6136` → `PVE::Storage::volume_resize:728-735` → `Storage.pm:395-410` | **Storage hook `volume_resize`**, depois de adicionar padding e antes do plugin. Owner/vmid vem de `parse_volname`/volid; storage vem do volid; novo tamanho é o argumento. `$snap` exclui snapshot. | Config atual com o volume no novo tamanho; delta somente se o novo tamanho for maior. | Aumento do volume atual conta; redução e snapshot/non-current não contam. | `qm resize` excedente falha antes do resize; redução passa; resize com snapshot não altera quota nem config. |
+| Move disk/volume — `qm disk move` | `CLI/qm.pm:1439-1440` → `API2/Qemu.pm:4809-5053` → `QemuServer::clone_disk:7889-7997` → `vdisk_clone`/`vdisk_alloc` → `Storage.pm:1085-1105/1157-1190` | **Storage hook** no clone/alloc. Source, target storage, vmid e tamanho aparecem antes do plugin. A mesma referência não é aumento; volid novo no target é aumento. | Target recebe o volume; durante a cópia o source continua contado. Total pode contar ambos até a config/cleanup. | Conta o destino; não bloqueia a mesma referência. | Com target sem headroom, nenhum target/config novo; caso permitido confirma target e remoção do source conforme `--delete`. |
+| Create com discos, com/sem `--pool` | `CLI/qm.pm:1358-1371` → `API2/Qemu.pm:1191-1417` → `create_disks:1531-1545` → branches `vdisk_alloc:659-702` | Com `--pool`, **preflight `check_qemu_create`** em `API2/Qemu.pm` antes de `create_and_lock_config/create_disks`; sem pool não há quota de destino. As alocações também passam no hook. | Config completa solicitada por storage e total; EFI/TPM/cloud-init entram no mesmo alvo. | Conta volumes gerenciados; sem pool é safe exemption por escopo. | Create excedente com `--pool`: nenhum VMID/config/volume. Sem `--pool`: provar ausência de enforcement por pool. |
+| Full clone com/sem `--pool` | `CLI/API2/Qemu.pm:4382-4807` → `clone_disk:4715-4723,7889-7997` → `vdisk_alloc:7935-7965` | Com `--pool`, **preflight `check_clone`** antes do primeiro `clone_disk`; sem pool não há alvo. O source fornece tamanhos, storage override e pool fornecem o destino. O hook é a defesa final. | Config futura do novo guest; source não é somado como novo guest. | Conta cada volume novo do clone. | Full clone excedente não cria VM/volume; repetir sem pool e caso aceito. |
+| Linked clone com/sem `--pool` | `API2/Qemu.pm:4382-4807` → `clone_disk:7889-7997` → `vdisk_clone:7921-7924` → `Storage.pm:1085-1105` | **Preflight `check_clone`** para entrada no pool; depois defesa `vdisk_clone`. vmid novo, pool, source volid/storage e tamanho são conhecidos. | Volumes ligados ao clone por storage e total. | Conta: CoW ainda cria volume referenciado. | Linked clone excedente falha antes de `vdisk_clone`, sem VM/base nova; caso aceito confere a config final. |
+| Restore `qmrestore`/API archive, com/sem `--pool`, inclusive overwrite | `CLI/qm.pm:1358-1408` → `API2/Qemu.pm:1191-1477` → `QemuServer::restore_allocate_devices:6543-6580` → `vdisk_alloc:6572-6573` | **Preflight `check_qemu_create`** lê/mescla a config do backup como o PVE (`PVE::Storage::extract_vzdump_config` + `PVE::QemuServer::restore_merge_config`) antes de `create_and_lock_config/restore`. `--pool` ou membership do guest existente fornece pool; mapping fornece storage/tamanho. | Config restaurada, substituta em overwrite, por storage e total; não soma permanentemente config velha + nova. | Conta disks, cloud-init, EFI, TPM e `unusedN` restaurados. | Archive excedente com e sem `--pool`, inclusive sobre guest existente: nenhum volume novo e config antiga byte a byte igual. |
+| Cloud-init drive | `API2/Qemu.pm:495-531` → `vdisk_alloc:525`; update `QemuServer.pm:5167-5195` → `Cloudinit.pm:21-90` → alloc `:50-63` | **Storage hook `vdisk_alloc`**; vmid/pool vêm do guest, storage do drive e tamanho da alocação. Conteúdo regenerado em drive já existente não é aumento. | Config + cloud-init final no storage. | Conta; é a exceção a CD-ROM. | Criar drive acima do limite falha antes do alloc; update de conteúdo existente não aumenta quota. |
+| EFI disk | `API2/Qemu.pm:659-674` → `QemuServer/OVMF.pm:190-208` → `vdisk_alloc:197` → `Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`**; `efidisk0`, storage e tamanho estão disponíveis antes do plugin. | Config + EFI por storage e total. | Conta. | Create/update excedente não cria EFI/volume/config; caso aceito registra o tamanho efetivo. |
+| TPM state | `API2/Qemu.pm:675-687` → `vdisk_alloc:682-684` → `Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`**; `tpmstate0`, vmid, storage e tamanho constante estão disponíveis. | Config + TPM por storage e total. | Conta. | Recusa antes do alloc, sem `tpmstate0`; testar arredondamento e caso aceito. |
+| Snapshot rollback | `API2/Qemu.pm:6445-6510` → `QemuConfig->snapshot_rollback:6495-6498`; resize interno `QemuServer/Snapshot.pm:101-116` | **Hook `write_config`** antes da gravação calcula a config final. Volume já em `unusedN` conta; volume reanexado que não estava na config atual gera aumento e é recusado. Resize com snapshot é ignorado pelo hook. | Config final do rollback, deduplicada por storage/total; `snapshots` não entra como uso permanente. | Snapshot sozinho não conta; reanexação não contada conta/é bloqueada. | Rollback que só reanexa `unusedN` passa sem aumento; rollback que reanexa volid não contado recusa antes do write e mantém config. |
+| Migração NBD | `QemuServer.pm:5230-5261` (`vm_migrate_alloc_nbd_disks`) → `vdisk_alloc:5252` → `Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`** vê `lock: migrate` na configuração atual e retorna antes do lock da quota; não há preflight específico de migração. | Nenhum alvo de quota durante a migração; a config final volta a ser a referência. | **Isento durante `lock: migrate`** para não contar duas vezes o mesmo disco. | Com o pool já no limite, migrar por NBD deve concluir; provar que não há recusa por quota e que a config final é válida. |
 
-## LXC
+## Matriz LXC
 
-| Operação | Cadeia upstream exata | Check antes do primeiro efeito; como conhece vmid/pool/storage/tamanho | Alvo da reserva | Conta ou isenção | Teste executável no lab Rock 7 |
+| Operação | Cadeia upstream exata (arquivo:linha) | Check antes do primeiro efeito; conhecimento disponível | Alvo da reserva | Conta ou isenção | Teste executável no lab Rock 7 |
 |---|---|---|---|---|---|
-| **Adicionar rootfs/mpN — `pct set` e API update** | `pct set` é registrado em `pve-container/usr/share/perl5/PVE/CLI/pct.pm:1096-1115` e chega a `PVE::API2::LXC::Config::update_vm` (`API2/LXC/Config.pm:111-272`). A aplicação de pending chama `PVE::LXC::Config::apply_pending_mountpoint` (`LXC/Config.pm:1879-1905`), `PVE::LXC::create_disks` (`LXC/Config.pm:1884-1888,2649-2680`) e `alloc_disk`, com `vdisk_alloc` em `LXC.pm:2617-2630`. | **PRE:** no update da API, interpretar pending mountpoints e montar a config futura antes de aplicar pending/create_disks. `vmid` vem do path; pool da membership; `storage` e `size` vêm de `rootfs`/`mpN`. `classify_mountpoint` (`LXC/Config.pm:1927-1934`) precisa ser aplicado antes de reservar. | Config atual + rootfs/mpN volumes novos por storage; total soma todos. | **Conta** `rootfs` e `mpN` do tipo `volume`. Bind/device/caminho absoluto são isentos pela classificação. | Com CT no pool e limite menor que `rootfs`/`mpN`, executar `pct set CT --mp0 STORAGE:...`; exigir recusa antes de `create_disks`, sem volume e com config/pending original inalterada. Repetir via API e testar bind/device sem alocação.
-| **Resize — `pct resize`** | CLI é mapeado em `CLI/pct.pm:1096-1115`; API registra resize em `API2/LXC.pm:2323-2494`, carrega e calcula `newsize` (`:2363-2423`), chama `PVE::Storage::volume_resize` (`:2437-2439`) e grava a config (`:2441-2444`). | **PRE:** depois de resolver `volid`, size atual e `newsize`, antes de `volume_resize` (`API2/LXC.pm:2400-2439`). `vmid`, storage e owner vêm de `parse_volname`/`parse_volume_id`; pool da membership. | Config atual com o mountpoint no novo tamanho, por storage e total. | **Conta aumentos do volume atual.** Não contar volume de snapshot/interno que não é atual; redução é permitida. | Exceder o limite com `pct resize`; exigir falha antes do resize e config/tamanho/inventário iguais. Fazer redução aceita e um resize de volume não atual para provar que não altera quota.
-| **Mover volume — `pct move-volume`** | CLI é mapeado em `CLI/pct.pm:1130-1140`; API resolve source/target em `API2/LXC.pm:2496-2643` e chama `PVE::LXC::copy_volume` (`:2657-2668`). `copy_volume` aloca antes de unshare (`LXC.pm:3391-3412`) via `alloc_disk`/`vdisk_alloc` (`LXC.pm:2617-2630`), atualiza e grava a config depois (`API2/LXC.pm:2678-2693`). | **PRE:** dentro de `move_to_storage_checks`, antes de `copy_volume` (`API2/LXC.pm:2611-2666`). `vmid`, mountpoint e tamanho atual vêm da config; target storage é parâmetro; pool é membership atual. | Durante a cópia, source + destino no total; por storage, source continua e destino é acrescentado. Após config final/cleanup, reconciliar source. | **Conta destino e dupla contagem transitória do total.** `unusedN` não pode ser movido por este caminho (`API2/LXC.pm:2626-2629`). | Exceder limite no target com `pct move-volume`; exigir nenhum `copy_volume`, nenhum volume target e config source sem lock residual/mutação. Caso permitido deve terminar com config target correta e política de limpeza observável.
-| **Criar CT com rootfs/mpN, com ou sem `--pool`** | `pct create` é mapeado em `CLI/pct.pm:1096-1115`; API create/restore processa `vmid`, `pool`, storage e parâmetros (`API2/LXC.pm:140-430`) e chama `PVE::LXC::create_disks` (`:541-544` no caminho de create, também no restore). A alocação está em `LXC.pm:2603-2635`. | **PRE:** após normalizar `rootfs`, `mpN`, storage default e pool, antes de `create_disks` (`API2/LXC.pm:541-544`). Sem `--pool`, não há alvo de quota; com `--pool`, a config futura inteira já está disponível. | Soma dos volumes `rootfs/mpN` da config futura, por storage e total. | **Conta** volumes; bind mounts/devices/caminhos absolutos são excluídos e não chegam a `alloc_disk`. | Exceder com `pct create --pool`; exigir ausência do CT e dos volumes. Repetir sem pool e provar ausência de enforcement. Testar rootfs em storage diferente do mpN para por-storage e total.
-| **Clone full, com ou sem `--pool`** | CLI/API clone é registrado em `CLI/pct.pm:1130-1140` e `API2/LXC.pm:1905-2320`; full clone chama `PVE::LXC::copy_volume` (`:2222-2230`), que aloca por `LXC.pm:3391-3412`. | **PRE:** depois de carregar e interpretar todos os mountpoints source e o pool do novo CT, antes do primeiro `copy_volume` (`API2/LXC.pm:2052-2127,2222`). Source fornece sizes; target storage/`--pool` vêm dos parâmetros. | Config futura do clone por storage; total da config futura. Source não é somado novamente ao alvo. | **Conta.** Cada rootfs/mpN copiado fica ligado ao novo CT. Sem pool não há quota alvo. | Clone full excedente com e sem storage override; exigir nenhum CT/volume novo e source intacto. Caso permitido deve criar a configuração com tamanhos esperados.
-| **Clone linked, com ou sem `--pool`** | Mesmo endpoint (`API2/LXC.pm:1905-2320`), mas linked chama `PVE::Storage::vdisk_clone` em `:2231-2235` para cada volume. | **PRE:** mesmo preflight antes de `vdisk_clone`, conhecendo mountpoints, source volume, target storage e pool futuro. | Tamanho provisionado dos volumes ligados ao novo CT, por storage e total. | **Conta.** Copy-on-write ainda gera volume referenciado. | Repetir clone linked excedente; exigir ausência de bases/volumes novos e de CT após recusa. Testar caso aceito com rootfs e mpN em datastores distintos.
-| **Restore `pct restore`/API archive, com ou sem `--pool`, inclusive sobre CT existente** | Restore passa por `CLI/pct.pm:1096-1115` e `PVE::API2::LXC` create/restore (`API2/LXC.pm:140-430`). A config do archive é recuperada (`:441-505`), volumes são normalizados e `create_disks` é chamado em `:482-544`; a alocação termina em `LXC.pm:2617-2630`. | **PRE:** recuperar `orig_conf`/`orig_mp_param` no mesmo ponto do PVE e reservar antes de `create_disks` (`API2/LXC.pm:441-544`). Pool é `--pool` ou membership do CT existente; storages e sizes vêm da config recuperada. Para overwrite, reservar a config final substituta e não destruir a config velha antes da aprovação. | Config do archive, após storage mapping; por storage e total. Bind/device/absolute path são tratados pela classificação e não viram alocação. | **Conta** rootfs/mpN volume e `unusedN` que permaneça na config restaurada. | Guardar CT existente no pool, executar restore excedente com e sem `--pool`; exigir config antiga e inventário iguais e nenhum volume novo. Testar archive com bind/device e archive que remapeia storage.
-| **Snapshot rollback** | CLI/API rollback é `PVE::API2::LXC::Snapshot::rollback` (`API2/LXC/Snapshot.pm:267-329`), que chama `PVE::LXC::Config->snapshot_rollback` (`:315-317`). A gravação da configuração final deve passar pelo `write_config` do Rock 4. | **PRE:** calcular a config final do rollback e usar o hook `write_config` antes da gravação. `vmid` e snapshot vêm da API; storage/tamanho vêm de `rootfs/mpN/unusedN` da config final. Snapshots aninhados não entram na soma. | Config final por storage e total; apenas deltas de volumes atuais não contados devem gerar reserva. | **Não aumenta por si só.** Reanexar um volume que já era `unusedN` não aumenta porque `unusedN` conta; reanexar volume não contado exige recusa no write hook. | Criar/remover mountpoint, manter `unusedN`, fazer rollback e comparar quota. Testar reanexação não contada e exigir config inalterada após a recusa; provar que bind/device não contam.
-| **Migração/cópia de volume via túnel de storage** | `PVE::StorageTunnel::handle_disk_import` recebe storage/format/volname e `state->{vmid}` (`libpve-guest-common-perl/usr/share/perl5/PVE/StorageTunnel.pm:205-217`) e inicia `volume_import_start`; o resultado pode chegar a `PVE::Storage::volume_import` (`libpve-storage-perl/usr/share/perl5/PVE/Storage.pm:2107-2124`). | **Mesmo volid: não é aumento** (replication, migração para o mesmo storage). **Volid novo (storage mapping): BLOCKED**, porque `volume_import` não conhece o tamanho antes do stream; fica como limite conhecido por datastore (o total do pool não muda numa migração). | Se for o volume final do CT, config futura por storage e total. Se for apenas transporte temporário, deve ser contexto de cópia e ser removido antes de qualquer config. | Volume final **conta**; transporte temporário só é isento com cleanup garantido. | Provar que replication/migração do mesmo volid em pool no limite não é recusada. O caso com storage mapping é declarado não coberto no resumo do lab.
+| Add rootfs/mpN — `pct set`/API | `CLI/pct.pm:1096-1115` → `API2/LXC/Config.pm:111-272` → `LXC::Config::apply_pending_mountpoint:1879-1905` → `LXC::create_disks:2649-2680` → `LXC.pm:2617-2630` → `Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`**; vmid vem do path, pool da membership, storage/tamanho dos mountpoints. `classify_mountpoint` já separa volume de bind/device. | Config atual + rootfs/mpN novos por storage e total. | Volume conta; bind, device e caminho absoluto são isentos. | `pct set` CLI/API excedente falha antes de alloc, sem volume/pending novo; bind/device passam sem quota. |
+| Import-from/update de volume | `API2/LXC/Config.pm:111-272` → `LXC::create_disks:2649-2680`/`alloc_disk` → `vdisk_alloc` ou `vdisk_clone` → `Storage.pm:1085-1105,1157-1190` | **Storage hook** escolhido pelo caminho; vmid, target storage e tamanho estão nos argumentos. Mesmo volid atual não é aumento. | Config futura do mountpoint por storage e total. | Volume final conta; transporte temporário só pelo TTL. | Import-from excedente não chama alloc/clone e mantém config; caso aceito conta rootfs/mpN. |
+| Resize — `pct resize` | `CLI/pct.pm:1096-1115` → `API2/LXC.pm:2323-2494` → `volume_resize:2437-2439` → `Storage.pm:395-410` | **Storage hook `volume_resize`**; owner/vmid do volid, storage do volid e novo tamanho estão disponíveis; snapshot/non-current é ignorado. | Config atual no novo tamanho, por storage e total. | Aumento atual conta; redução e snapshot não. | Recusar antes do resize; redução passa; volume não atual/snapshot não altera quota. |
+| Mover volume — `pct move-volume` | `CLI/pct.pm:1130-1140` → `API2/LXC.pm:2496-2693` → `LXC::copy_volume:2657-2668,3391-3412` → `alloc_disk:2617-2630` → `Storage.pm:1157-1190` | **Storage hook `vdisk_alloc`/clone** antes do plugin; vmid, source/target storage e tamanho são conhecidos. | Source continua durante cópia; target é acrescentado por storage e total até cleanup. | Destino conta; mesmo volid não aumenta. | Target sem headroom não chama `copy_volume`, não cria volume/config; caso aceito confere cleanup. |
+| Create com rootfs/mpN, com/sem `--pool` | `CLI/pct.pm:1096-1115` → `API2/LXC.pm:140-430` → `create_disks:541-544` → `LXC.pm:2603-2635` → `Storage.pm:1157-1190` | Com `--pool`, **preflight `check_lxc_create`** antes de `create_disks`; sem pool não há quota. Hook permanece defesa. | Config futura de volumes por storage e total. | Volumes contam; bind/device/absolute são safe exemptions. | Create excedente com pool não deixa CT/volume; sem pool não é bloqueado por pool; testar storages distintos. |
+| Full clone com/sem `--pool` | `CLI/pct.pm:1130-1140` → `API2/LXC.pm:1905-2320` → `copy_volume:2222-2230` → `alloc_disk:3391-3412` → `Storage.pm:1157-1190` | **Preflight `check_clone`** antes do primeiro `copy_volume`; source fornece tamanhos, pool/storage são destino. | Config do novo CT por storage e total. | Conta volumes copiados; sem pool não há quota alvo. | Clone excedente não cria CT/volume; testar override de storage e caso permitido. |
+| Linked clone com/sem `--pool` | `API2/LXC.pm:1905-2320` → linked `vdisk_clone:2231-2235` → `Storage.pm:1085-1105` | **Preflight `check_clone`** antes de `vdisk_clone`; hook é defesa final. | Volumes ligados ao novo CT por storage e total. | Conta CoW referenciado. | Recusa antes de base/volume novo; caso aceito verifica rootfs/mpN. |
+| Restore `pct restore`/API archive, com/sem `--pool`, inclusive overwrite | `CLI/pct.pm:1096-1115` → `API2/LXC.pm:140-544` (recover `:441-505`) → `create_disks:482-544` → `LXC.pm:2617-2630` → `Storage.pm:1157-1190` | **Preflight `check_lxc_create`** recupera `orig_conf`/mountpoints pelo parser do PVE antes de `create_disks`; pool é explícito ou do CT existente. | Config final do archive após storage mapping, por storage/total. | Volumes e `unusedN` contam; bind/device/absolute não. | Restore excedente, com/sem pool e overwrite, deixa CT/config antiga e volumes intactos. |
+| Snapshot rollback | `API2/LXC/Snapshot.pm:267-329` → `LXC::Config->snapshot_rollback:315-317` → `write_config` | **Hook `write_config`** calcula config final antes da gravação. `snapshots` não é somado; `unusedN` já conta. | Config final do rollback. | Só reanexação de volume não contado seria aumento e é recusada. | Rollback de `unusedN` passa; reanexação nova falha sem mudar config; bind/device não contam. |
+| Migração por storage tunnel | `libpve-guest-common-perl/usr/share/perl5/PVE/StorageTunnel.pm:205-217` → `volume_import_start` → `Storage.pm:2107-2124` | **Storage hook `volume_import`** detecta `lock: migrate` antes de consultar tamanho ou tomar o lock; o stream pode criar volid novo sem quota intermediária. | Nenhum alvo de quota durante a migração; a config final é a referência posterior. | **Isento durante `lock: migrate`**; não bloqueia por tamanho desconhecido. | Com o pool no limite, migrar pelo tunnel deve concluir; provar nenhum erro de quota e nenhuma recusa do import. |
+| Migração com storage mapping | `QemuServer.pm:5230-5261` → `StorageTunnel.pm:205-217` → `volume_import` → `AbstractConfig::write_config` | `volume_import` e o trecho de disco de `write_config` retornam antes do lock enquanto a config tem `lock: migrate`. | Nenhum alvo intermediário; o volid final passa a ser contado depois que o lock de migração some. | **Isento durante a migração.** Limite conhecido: a troca pode alterar o uso de um datastore sem enforcement per-datastore durante a cópia. | Com o pool no limite, migrar para datastore mapeado deve concluir; provar ausência de recusa após o copy e conferir o novo uso por datastore no inventário final. |
 
-## Alocações e caminhos que não podem ser esquecidos
+## Chamadores e tratamento especial
 
-Esta é a matriz do chamador de storage. Ela evita que o hook genérico conte um
-artefato físico que não faz parte da quota lógica ou deixe de contar um volume
-que o guest realmente vai referenciar.
+| Chamador | Regra implementada |
+|---|---|
+| `vdisk_alloc` (`Storage.pm:1157-1190`) | Recebe tamanho em KiB, converte para bytes e reserva o alvo do guest; early-return antes do lock para guest sem pool/limite/módulo ou com `lock: migrate`. `pvesm alloc --vmid` passa por ele, mas permanece fora da promessa após TTL. |
+| `vdisk_clone` (`Storage.pm:1085-1105`) | Obtém tamanho provisionado do volid; unknown em pool limitado falha fechado antes do clone, exceto durante `lock: migrate`. |
+| `volume_resize` (`Storage.pm:395-410`) | Só aumenta volume atual identificado pelo owner; redução, `$snap`, volid não atual e `-fleece-`/`-state-` não contam. |
+| `volume_import` (`Storage.pm:2107-2124`) | Mesmo volid é no-op; tamanho conhecido reserva; tamanho desconhecido falha fechado. Durante `lock: migrate`, volid novo também é isento antes do stream. |
+| Fleecing/vmstate | Nomes `-fleece-` e `-state-` retornam antes do contexto/lock e nunca entram no inventário lógico. |
+| OVA temporário | A reserva física temporária é aceita somente pelo TTL; o volume final segue as regras de import/restore e `write_config`. |
 
-| Chamador observado | Regra | Tratamento no hook |
-|---|---|---|
-| `PVE::Storage::vdisk_alloc` (`libpve-storage-perl/usr/share/perl5/PVE/Storage.pm:1157-1190`) | API preflight é a autoridade para add/import/clone/restore/move/cloud-init/EFI/TPM. | Defesa contextual: para vmid já em pool, recusar aumento se a reserva não cobrir o alvo. Inferir storage/size pelo argumento e owner pelo volid; não substituir o preflight.
-| `PVE::Storage::vdisk_clone` (`Storage.pm:1085-1105`) | Clone full/linked cria o volume que o novo guest referencia. | Deve carregar contexto da operação ou ser precedido pelo preflight de clone; conta para guest alvo.
-| `PVE::Storage::volume_resize` (`Storage.pm:395-410`) | Resize do volume atual aumenta provisionado; resize com `$snap` é interno e não é quota do guest atual. | Só contar aumento quando o volid pertence à config atual do guest. Preservar `$snap` e ignorar volume não atual.
-| `PVE::Storage::volume_import` (`Storage.pm:2107-2124`) | Importação final ligada ao guest conta; import temporário de transporte não conta se for limpo e não entrar na config. | Volid já referenciado na config do guest: não conta (replication, migração do mesmo volume). Volid novo: sem tamanho antes do stream, BLOCKED (limite conhecido por datastore).
-| `PVE::QemuServer::QemuConfig` vmstate (`QemuConfig.pm:251-260`) | Cria um state file para suspender a VM; o plano exclui `vmstate`. | Isenção explícita `vmstate`; teste deve provar que a alocação e sua limpeza não mudam uso lógico nem deixam entrada na config de disks.
-| Fleecing de backup (`qemu-server/usr/share/perl5/PVE/VZDump/QemuServer.pm:594-610`) | `fleece-volid` é cópia temporária de backup, não volume referenciado pela config. | Isenção explícita. O backup deve limpar cada `fleece-volid` em sucesso e falha; nunca somar ao guest. O teste falha se sobrar volume persistente invisível.
-| Restore VMA (`qemu-server/usr/share/perl5/PVE/QemuServer.pm:6543-6580`) | `restore_allocate_devices` cria os volumes finais do restore. | Conta pelo mapa recuperado antes da chamada; o tamanho vem de `d->{size}`, o storage de `d->{storeid}` e o vmid do restore.
-| `PVE::GuestImport` OVA (`libpve-storage-perl/usr/share/perl5/PVE/GuestImport.pm:11-91`) | Pode reservar um volume temporário de 1 MiB (`:74-78`) e renomeá-lo (`:80-83`) antes de entregar o resultado. | O alvo final é contado pelo preflight de import/restore; o 1 MiB temporário é isento somente com cleanup comprovado em sucesso e erro. Se a branch puder ficar ligada ao guest, tratá-la como volume final.
-| Replication | Cópias de replication são excluídas da quota lógica aprovada; não são configuração atual do guest. | Contexto de replication explícito, sem alterar o contador. A prova fica **não provada** quando o lab não tiver storage replicável, e não pode ser apresentada como cobertura concluída.
-| `pvesm alloc --vmid` solto (`libpve-storage-perl/usr/share/perl5/PVE/API2/Storage/Content.pm:256-272`) | O plano retirou este comando da promessa: ele pode criar um volume para o vmid sem ainda estar na config. | **Fora da promessa.** O hook de `vdisk_alloc` checa a alocação no momento dela (reserva com TTL), mas depois do TTL um volume que nunca entrou na config deixa de contar. Ele só passa a contar quando entrar na config, por exemplo como `unusedN` via `qm rescan`.
+## Contabilidade do `write_config`
 
-## Contabilidade no `write_config`
+`PVE::AbstractConfig::write_config` recebe o hook em
+`lib/MMPve/Module/Poollimits.pm` e chama
+`PVE::MMTools::PoolLimits->check_write_config`. O hook só age para
+`PVE::QemuConfig` e `PVE::LXC::Config`, compara configuração antiga e nova e só
+trava quando há aumento.
 
-O patch de Rock 4 atinge `PVE::AbstractConfig::write_config` conforme
-`lib/MMPve/Module/Poollimits.pm:266-300`, mas a versão atual só verifica
-vCPU/RAM em `PVE::MMTools::PoolLimits::check_write_config` (`PoolLimits.pm:417-451`).
-O Rock 5 deve ampliar esse check sem alterar o contrato de escrita nem atingir
-classes que não são guests.
+O inventário usa `size=` quando presente; sem ele consulta
+`PVE::Storage::volume_size_info`. Deduplica o mesmo volid, agrupa por storage e
+soma o total. QEMU inclui disks (`ide/sata/scsi/virtio/nvme`), `efidisk`,
+`tpmstate` e `unusedN`; LXC inclui `rootfs`, volumes `mpN` e `unusedN`.
 
-O cálculo proposto para QEMU e LXC é:
+- `unusedN` conta;
+- `snapshots` e snapshots de resize não contam como uso permanente;
+- bind mounts, devices e caminhos absolutos não contam;
+- CD-ROM/ISO e mídia externa não contam;
+- cloud-init conta apesar de `media=cdrom`;
+- vmstate e fleecing não contam;
+- tamanho desconhecido em aumento de pool limitado falha fechado.
 
-1. aceitar somente `PVE::QemuConfig` e `PVE::LXC::Config` e obter o `vmid` da
-   própria chamada/configuração;
-2. comparar a configuração atual com a nova, incluindo pending quando esta
-   estiver prestes a ser aplicada;
-3. coletar volumes atuais com os parsers do PVE, não por varredura física do
-   storage. Em QEMU, as chaves de disco, `efidisk0`, `tpmstate0` e `unusedN`
-   são analisadas; em LXC, `rootfs`, `mpN` e `unusedN` passam por
-   `parse_volume`/`classify_mountpoint`;
-4. para cada volid gerenciado, usar `size=` explícito da config. Se não houver
-   `size=`, consultar `PVE::Storage::volume_size_info` (`Storage.pm:380-391`)
-   para obter o tamanho provisionado. Tamanho desconhecido é falha fechada
-   para um aumento;
-5. agrupar por datastore, deduplicar o mesmo volid e somar os storages no
-   total. A comparação usa a configuração final; não somar a árvore
-   `snapshots` como se fosse a configuração atual;
-6. recusar o aumento antes de `cfs_write_file`/gravação e manter a reserva até
-   a configuração atingir o alvo ou o TTL expirar.
+Assim, rollback que reanexa um volid não contado é recusado antes da gravação;
+reanexar um `unusedN` já contado não é aumento.
 
-### Inclusões e exclusões
+## Protocolo de prova
 
-- `unusedN` **conta**: o volume está provisionado para o guest mesmo quando não
-  está conectado a um bus/mountpoint. Isto também torna seguro reanexar um
-  `unusedN` durante rollback sem aumentar a quota.
-- Snapshots **não contam** na soma permanente. O rollback compara a config
-  final: se reanexar um volume que não estava nem na config atual nem em
-  `unusedN`, o aumento é recusado pelo hook antes de gravar.
-- QEMU `vmstate` **não conta**; é estado de execução/suspensão, não um disk
-  provisionado da config lógica para esta quota.
-- QEMU CD-ROM e ISO **não contam** quando são mídia `cdrom`/`iso` ou caminhos
-  externos. O drive cloud-init é a exceção deliberada: embora use
-  `media=cdrom`, é um volume gerenciado criado e referenciado pelo guest, então
-  conta.
-- LXC bind mounts, devices e caminhos absolutos **não contam**:
-  `PVE::LXC::Config::classify_mountpoint` retorna `bind` para `/...`, `device`
-  para `/dev/...` e `volume` somente para volids (`LXC/Config.pm:1927-1934`).
-- `unusedN` com caminho absoluto não vira volume de storage; não conta como
-  datastore, mas continua sendo preservado na config.
-- Fleecing, backup temporário e replication **não contam** somente quando o
-  contexto e a limpeza forem demonstrados; um volume que termina referenciado
-  pela config deixa de ser exceção.
-- Volumes em caminhos absolutos, ISO/CD-ROM externo ou devices não devem ser
-  “descobertos” por `pvesm list` para inflar a quota: a fonte de verdade é a
-  configuração lógica do guest e seu `size=`/storage.
+Cada cenário do Rock 7 deve registrar digest/configuração e inventário antes e
+depois. Em recusa, deve provar erro antes do plugin, ausência de volume novo ou
+resize, ausência de `unusedN` novo e configuração inalterada. Em caso permitido,
+deve provar alvo por datastore e total. A suíte local cobre os hooks e o
+preflight sem PVE instalado; o lab deve executar as linhas de CLI/API, restore
+overwrite, move, NBD, storage tunnel, storage mapping, fleecing, vmstate, OVA e
+replication. Para as três modalidades de migração, o caso obrigatório é um
+guest já no limite de disco: a migração deve concluir sem recusa de quota; no
+mapping, o lab também registra o efeito final por datastore como limitação
+conhecida.
 
-## Protocolo de prova comum a cada linha
+Comandos de prova:
 
-Cada linha da tabela deve virar um cenário executável no lab Rock 7, com a
-mesma sequência mínima:
+```sh
+make test test-gateway lint
+make test-api
+make check-anchors
+```
 
-1. criar ou selecionar um guest e pool, colocar um limite por datastore e/ou
-   total abaixo do alvo da operação, e registrar o digest/bytes da config e a
-   lista de volumes do storage;
-2. executar a forma CLI indicada e repetir pelo endpoint API correspondente;
-3. esperar o task terminar e exigir uma recusa com pool, recurso, uso, alvo e
-   limite, sem senha, token ou dado sensível;
-4. reler a config e o inventário: para create/clone/restore não pode existir
-   VM/CT ou volume novo; para add/import/resize/move não pode haver volume
-   novo, resize, `unusedN` novo ou troca de storage; em todos os casos o
-   digest/config original deve permanecer igual;
-5. repetir com limite suficiente para provar o caminho aceito e a contagem por
-   datastore/total;
-6. para fleecing, vmstate, backup temporário e replication, provar também
-   limpeza em sucesso e falha e ausência no contador lógico;
-7. rodar a suíte de cobertura com os módulos reais do PVE, `make test
-   test-api`, `check-anchors` e `perl -T`; a cobertura de replication deve ser
-   explicitamente marcada como não provada se o lab não tiver storage
-   replicável.
-
-Nenhuma operação marcada `BLOCKED` pode ser promovida a cobertura garantida
-sem que o Rock 7 demonstre um ponto anterior ao primeiro efeito com `vmid`,
-pool, storage e tamanho conhecidos.
+`make test-api` usa os módulos reais de `scripts/test-pve-env.sh`; `make
+check-anchors` valida os patches contra os sources fixados e mais recentes,
+inclusive `libpve-storage-perl`, e executa o patch+execute com os dois trees.
+Operação sem ponto anterior ao efeito fica explicitamente BLOCKED nesta matriz e
+não pode ser promovida por um check posterior; as três linhas de migração são
+isenções deliberadas durante `lock: migrate`, não operações BLOCKED.

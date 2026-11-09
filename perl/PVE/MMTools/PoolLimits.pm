@@ -16,7 +16,11 @@ use constant RESERVATION_TTL => 120;
 
 # These package variables are test-only injection points. Production callers
 # never populate them; cluster data comes from PVE::Cluster.
-our ($TEST_USERCFG, $TEST_RESOURCES, $TEST_VMLIST, $TEST_RRD);
+our ($TEST_USERCFG, $TEST_RESOURCES, $TEST_VMLIST, $TEST_RRD, $TEST_CONFIGS,
+    $TEST_STORAGE_CFG, $TEST_VOLUME_SIZES, $TEST_VOL_OWNERS);
+
+use constant GIB => 1024 * 1024 * 1024;
+use constant CLOUDINIT_SIZE => 4 * 1024 * 1024;
 
 sub _safe_component {
     my ($value) = @_;
@@ -71,6 +75,7 @@ sub _usercfg {
 }
 
 sub _storage_cfg {
+    return $TEST_STORAGE_CFG if ref($TEST_STORAGE_CFG) eq 'HASH';
     require PVE::Storage;
     my $cfg = PVE::Storage::config();
     die "não consegui ler storage.cfg\n" unless ref($cfg) eq 'HASH';
@@ -172,6 +177,9 @@ sub _type_for {
 sub _load_config {
     my ($type, $vmid, $opts) = @_;
     return $opts->{config_cb}->($type, $vmid, $opts->{node}) if ref($opts->{config_cb}) eq 'CODE';
+    if (ref($TEST_CONFIGS) eq 'HASH' && exists($TEST_CONFIGS->{"$type:$vmid"})) {
+        return $TEST_CONFIGS->{"$type:$vmid"};
+    }
     my $node = $opts->{node};
     if ($type eq 'qemu' || $type eq 'kvm') {
         require PVE::QemuConfig;
@@ -192,6 +200,278 @@ sub _merge_pending {
         $merged{$key} = $pending->{$key};
     }
     return \%merged;
+}
+
+sub _size_token {
+    my ($value, $default_unit) = @_;
+    return undef if !defined($value) || ref($value);
+    my ($number, $unit) = $value =~ /\A(\d+(?:\.\d+)?)([KMGTPE]?)(?:B)?\z/i;
+    return undef unless defined($number);
+    $unit = uc($unit // '');
+    $unit = $default_unit if $unit eq '' && defined($default_unit);
+    my %multiplier = (
+        '' => 1, K => 1024, M => 1024**2, G => 1024**3,
+        T => 1024**4, P => 1024**5, E => 1024**6,
+    );
+    return undef unless exists($multiplier{$unit});
+    return int($number * $multiplier{$unit});
+}
+
+sub _size_from_value {
+    my ($value) = @_;
+    return undef if !defined($value) || ref($value);
+    if ($value =~ /(?:\A|,)size=([^,]+)/) {
+        return _size_token($1);
+    }
+    return undef;
+}
+
+sub _is_exempt_volid {
+    my ($volid) = @_;
+    return defined($volid) && ($volid =~ /-fleece-/ || $volid =~ /-state-/) ? 1 : 0;
+}
+
+sub _disk_limits_enabled {
+    my ($limits) = @_;
+    return 0 unless ref($limits) eq 'HASH';
+    return 1 if ref($limits->{disk_total_gib}) eq 'HASH'
+        && $limits->{disk_total_gib}{enabled};
+    return 1 if ref($limits->{disk_storage}) eq 'HASH'
+        && $limits->{disk_storage}{enabled};
+    return 0;
+}
+
+sub _has_any_limit {
+    my ($limits) = @_;
+    return 1 if _has_cpu_or_memory_limit($limits);
+    return _disk_limits_enabled($limits);
+}
+
+sub _disk_entry {
+    my ($type, $key, $value, $vmid) = @_;
+    return unless defined($key) && defined($value) && !ref($value);
+    if ($type eq 'qemu') {
+        return unless $key =~ /\A(?:ide|sata|scsi|virtio|nvme)\d+\z/
+            || $key =~ /\A(?:efidisk|tpmstate|unused)\d+\z/;
+    } else {
+        return unless $key eq 'rootfs' || $key =~ /\A(?:mp|unused)\d+\z/;
+        return if $value =~ /\A\/(?:dev\/)?/;
+    }
+    my ($raw) = split /,/, $value, 2;
+    return if !defined($raw) || $raw eq '' || $raw eq 'none' || $raw =~ /\A\//;
+    my ($storeid, $rest) = $raw =~ /\A([^:]+):(.+)\z/;
+    return unless defined($storeid) && defined($rest);
+    my $cloudinit = $type eq 'qemu' && $raw =~ /(?:cloudinit|vm-\d+-cloudinit)/i;
+    return if $type eq 'qemu' && $value =~ /(?:\A|,)media=cdrom(?:,|\z)/
+        && !$cloudinit;
+    my $size = _size_from_value($value);
+    my $size_known = defined($size) ? 1 : 0;
+    if (!defined($size) && $rest =~ /\A\d+(?:\.\d+)?[KMGTPE]?\z/i) {
+        $size = _size_token($rest, 'G');
+        $size_known = 1 if defined($size);
+    }
+    if (!defined($size) && $cloudinit) {
+        $size = CLOUDINIT_SIZE;
+        $size_known = 1;
+    }
+    return {
+        key => $key, volid => $raw, storeid => $storeid, size => $size,
+        size_known => $size_known,
+    };
+}
+
+sub _disk_entries {
+    my ($type, $conf) = @_;
+    my %entries;
+    return \%entries unless ref($conf) eq 'HASH';
+    for my $key (keys %{$conf}) {
+        next if $key eq 'pending' || $key eq 'snapshots' || $key eq 'vmstate';
+        my $entry = _disk_entry($type, $key, $conf->{$key});
+        next unless $entry && !_is_exempt_volid($entry->{volid});
+        my $old = $entries{$entry->{volid}};
+        $entries{$entry->{volid}} = $entry
+            unless $old && defined($old->{size}) && !defined($entry->{size});
+    }
+    return \%entries;
+}
+
+sub _disk_structural_delta {
+    my ($type, $old_conf, $new_conf) = @_;
+    my $old = _disk_entries($type, $old_conf);
+    my $new = _disk_entries($type, $new_conf);
+    my $delta = { increase => 0, unknown => 0, bytes => 0, by_storage => {} };
+    for my $volid (keys %{$new}) {
+        my $next = $new->{$volid};
+        my $previous = $old->{$volid};
+        if (!$previous) {
+            $delta->{increase} = 1;
+            if (defined($next->{size}) && $next->{size_known}) {
+                $delta->{bytes} += $next->{size};
+                $delta->{by_storage}{$next->{storeid}} += $next->{size};
+            } else {
+                $delta->{unknown} = 1;
+            }
+            next;
+        }
+        if (defined($previous->{size}) && defined($next->{size})
+            && $next->{size_known} && $next->{size} > $previous->{size}) {
+            my $grown = $next->{size} - $previous->{size};
+            $delta->{increase} = 1;
+            $delta->{bytes} += $grown;
+            $delta->{by_storage}{$next->{storeid}} += $grown;
+        }
+    }
+    return $delta;
+}
+
+sub _disk_config_has_volume {
+    my ($type, $conf) = @_;
+    return scalar keys %{_disk_entries($type, $conf)};
+}
+
+sub _guest_is_migrating {
+    my ($conf) = @_;
+    return ref($conf) eq 'HASH' && defined($conf->{lock}) && $conf->{lock} eq 'migrate';
+}
+
+sub _volume_size {
+    my ($storecfg, $volid) = @_;
+    if (ref($TEST_VOLUME_SIZES) eq 'HASH' && exists($TEST_VOLUME_SIZES->{$volid})) {
+        return $TEST_VOLUME_SIZES->{$volid};
+    }
+    my $size = eval {
+        require PVE::Storage;
+        PVE::Storage::volume_size_info($storecfg || _storage_cfg(), $volid, 5);
+    };
+    return undef if $@ || !defined($size) || $size <= 0;
+    return $size;
+}
+
+sub _disk_inventory {
+    my ($type, $conf, %opts) = @_;
+    my $result = { total => 0, by_storage => {}, volumes => {}, errors => [] };
+    return $result unless ref($conf) eq 'HASH';
+    for my $key (keys %{$conf}) {
+        next if $key eq 'pending' || $key eq 'snapshots' || $key eq 'vmstate';
+        my $entry = _disk_entry($type, $key, $conf->{$key}, $opts{vmid});
+        next unless $entry;
+        next if _is_exempt_volid($entry->{volid});
+        my $size = $entry->{size};
+        $size = _volume_size($opts{storecfg}, $entry->{volid}) if !defined($size);
+        if (!defined($size) || $size < 0) {
+            push @{$result->{errors}}, "$entry->{volid}: tamanho indisponível";
+            next;
+        }
+        my $old = $result->{volumes}{$entry->{volid}};
+        next if $old && $old->{size} >= $size;
+        if ($old) {
+            $result->{total} -= $old->{size};
+            $result->{by_storage}{$entry->{storeid}} -= $old->{size};
+        }
+        $result->{volumes}{$entry->{volid}} = {
+            size => $size, storage => $entry->{storeid}, key => $entry->{key},
+        };
+        $result->{total} += $size;
+        $result->{by_storage}{$entry->{storeid}} += $size;
+    }
+    return $result;
+}
+
+sub _disk_reservation_target {
+    my ($disk, $reservation) = @_;
+    my %stores = %{ $disk->{by_storage} || {} };
+    my $total = $disk->{total} || 0;
+    if (ref($reservation) eq 'HASH' && ref($reservation->{target}) eq 'HASH') {
+        my $target = $reservation->{target};
+        my $old_total = $target->{disk_total_bytes};
+        $total = $old_total if defined($old_total) && $old_total > $total;
+        if (ref($target->{disk_storage_bytes}) eq 'HASH') {
+            for my $storeid (keys %{$target->{disk_storage_bytes}}) {
+                $stores{$storeid} = $target->{disk_storage_bytes}{$storeid}
+                    if !defined($stores{$storeid}) || $target->{disk_storage_bytes}{$storeid} > $stores{$storeid};
+            }
+        }
+    }
+    return { total => $total, by_storage => \%stores };
+}
+
+sub _disk_target_with_delta {
+    my ($disk, $reservation, $storeid, $delta) = @_;
+    my $target = _disk_reservation_target($disk, $reservation);
+    $target->{by_storage}{$storeid} = ($target->{by_storage}{$storeid} || 0) + $delta;
+    $target->{total} += $delta;
+    return $target;
+}
+
+sub _disk_current_target {
+    my ($disk) = @_;
+    return { total => $disk->{total} || 0, by_storage => { %{ $disk->{by_storage} || {} } } };
+}
+
+sub _disk_target_reached {
+    my ($disk, $reservation) = @_;
+    return 1 unless ref($reservation) eq 'HASH' && ref($reservation->{target}) eq 'HASH';
+    my $target = $reservation->{target};
+    return 0 if defined($target->{disk_total_bytes})
+        && ($disk->{total} || 0) < $target->{disk_total_bytes};
+    if (ref($target->{disk_storage_bytes}) eq 'HASH') {
+        for my $storeid (keys %{ $target->{disk_storage_bytes} }) {
+            return 0 if ($disk->{by_storage}{$storeid} || 0) < $target->{disk_storage_bytes}{$storeid};
+        }
+    }
+    return 1;
+}
+
+sub _check_disk_target_locked {
+    my ($class, $pool, $vmid, $type, $disk, $state, %opts) = @_;
+    my $limits = _limits($state, $pool);
+    return unless $state->{active} && _disk_limits_enabled($limits);
+    _fail_closed($pool, 'disco', 'configuração atual inválida') if $state->{degraded};
+    my $key = "$type:$vmid";
+    my $reservations = $opts{reservations} || _read_reservations($pool);
+    my $live = $reservations->{$key};
+    delete $reservations->{$key} if $live && _disk_target_reached($disk, $live)
+        && !defined($live->{target}{cpu}) && !defined($live->{target}{memory_mib});
+    $live = $reservations->{$key};
+    my $usage = $opts{usage} || $class->_usage($pool, $state, %opts, reservations => $reservations);
+    _fail_closed($pool, 'disco', join('; ', @{ $usage->{disk_errors} || [] }))
+        if @{$usage->{disk_errors} || []};
+    my $old = $usage->{guests}{$key} || {
+        disk_total_bytes => 0, disk_storage_bytes => {},
+    };
+    my $base_total = ($usage->{usage}{disk_total_bytes} || 0) - ($old->{disk_total_bytes} || 0);
+    my %base_storage = %{ $usage->{usage}{disk_storage_bytes} || {} };
+    for my $storeid (keys %{ $old->{disk_storage_bytes} || {} }) {
+        $base_storage{$storeid} -= $old->{disk_storage_bytes}{$storeid};
+    }
+    my $target = _disk_reservation_target($disk, $live);
+    if ($limits->{disk_total_gib}{enabled}
+        && $base_total + $target->{total} > $limits->{disk_total_gib}{max} * GIB) {
+        _limit_error($pool, 'disco total', $base_total + ($old->{disk_total_bytes} || 0),
+            $target->{total}, $limits->{disk_total_gib}{max} * GIB);
+    }
+    if ($limits->{disk_storage}{enabled}) {
+        my $store_limits = $limits->{disk_storage}{limits} || {};
+        for my $storeid (keys %{ $target->{by_storage} }) {
+            next unless defined($store_limits->{$storeid});
+            my $requested = $target->{by_storage}{$storeid} || 0;
+            my $old_store = $old->{disk_storage_bytes}{$storeid} || 0;
+            if (($base_storage{$storeid} || 0) + $requested > $store_limits->{$storeid} * GIB) {
+                _limit_error($pool, "disco em $storeid", ($base_storage{$storeid} || 0) + $old_store,
+                    $requested, $store_limits->{$storeid} * GIB);
+            }
+        }
+    }
+    return unless $opts{reserve};
+    my $old_res = $reservations->{$key};
+    my $record = $old_res && ref($old_res) eq 'HASH' ? { %{$old_res} } : {};
+    $record->{target} = { %{ $record->{target} || {} } };
+    $record->{target}{disk_total_bytes} = $target->{total};
+    $record->{target}{disk_storage_bytes} = { %{ $target->{by_storage} } };
+    $record->{expires} = time + RESERVATION_TTL;
+    $reservations->{$key} = $record;
+    _write_reservations($pool, $reservations);
+    return { ok => 1, reservation => $record, previous => $old_res };
 }
 
 sub _metrics {
@@ -252,14 +532,19 @@ sub _running {
 
 sub _usage {
     my ($class, $pool, $state, %opts) = @_;
-    my $limits = _limits($state, $pool) || { mode => 'allocated', cpu => { enabled => 0 }, memory_mib => { enabled => 0 } };
+    my $limits = _limits($state, $pool) || {
+        mode => 'allocated', cpu => { enabled => 0 }, memory_mib => { enabled => 0 },
+        disk_total_gib => { enabled => 0 }, disk_storage => { enabled => 0 },
+    };
     my $ucfg = $opts{usercfg} || _usercfg(\%opts);
     my $members = $opts{members} || { map { $_ => 1 } _pool_members($ucfg, $pool) };
     my $vmlist = $opts{vmlist} || _vmlist(\%opts);
     my $reservations = $opts{reservations} || _read_reservations($pool);
-    my $usage = { cpu => 0, memory_mib => 0 };
+    my $disk_enabled = _disk_limits_enabled($limits) && !$opts{skip_disk};
+    my $usage = { cpu => 0, memory_mib => 0, disk_total_bytes => 0, disk_storage_bytes => {} };
     my %guests;
     my @errors;
+    my @disk_errors;
     for my $vmid (sort keys %{$members}) {
         my $entry = $vmlist->{$vmid} || {};
         my $type = _type_for($vmid, $entry, $ucfg);
@@ -268,6 +553,8 @@ sub _usage {
         if ($load_error || ref($conf) ne 'HASH') {
             my $detail = _error_detail($load_error);
             push @errors, "guest $vmid: configuração indisponível" . ($detail ? " ($detail)" : '');
+            push @disk_errors, "guest $vmid: configuração de disco indisponível"
+                if $disk_enabled;
             next;
         }
         my $metrics = eval { _metrics($type, $conf) };
@@ -275,28 +562,71 @@ sub _usage {
         if ($metrics_error || !$metrics) {
             my $detail = _error_detail($metrics_error);
             push @errors, "guest $vmid: contabilidade indisponível" . ($detail ? " ($detail)" : '');
+            push @disk_errors, "guest $vmid: contabilidade de disco indisponível"
+                if $disk_enabled;
             next;
         }
         next if $metrics->{template};
         my $running = _running($type, $vmid, $entry, \%opts);
+        my $count_cpu_memory = 1;
         if (($limits->{mode} // 'allocated') eq 'running') {
-            if (!defined($running)) { push @errors, "guest $vmid: estado running indisponível"; next }
-            next unless $running;
+            if (!defined($running)) {
+                push @errors, "guest $vmid: estado running indisponível"
+                    if _has_cpu_or_memory_limit($limits);
+                $count_cpu_memory = 0;
+            } else {
+                $count_cpu_memory = $running ? 1 : 0;
+            }
+        }
+        my $disk = { total => 0, by_storage => {}, volumes => {}, errors => [] };
+        if ($disk_enabled) {
+            $disk = eval { _disk_inventory($type, $conf, storecfg => $opts{storecfg}, vmid => $vmid) };
+            my $disk_error = $@;
+            if ($disk_error || !$disk || @{$disk->{errors} || []}) {
+                my $detail = _error_detail($disk_error || join('; ', @{$disk->{errors} || []}));
+                push @disk_errors, "guest $vmid: contabilidade de disco indisponível"
+                    . ($detail ? " ($detail)" : '');
+            }
         }
         my $key = "$type:$vmid";
         my $cpu = $metrics->{cpu} // 0;
         my $memory = $metrics->{memory_mib} // 0;
+        my $disk_total = $disk->{total} || 0;
+        my %disk_storage = %{ $disk->{by_storage} || {} };
         if (my $r = $reservations->{$key}) {
             $cpu = $r->{target}{cpu} if defined($r->{target}{cpu}) && $r->{target}{cpu} > $cpu;
             $memory = $r->{target}{memory_mib}
                 if defined($r->{target}{memory_mib}) && $r->{target}{memory_mib} > $memory;
+            if ($disk_enabled && defined($r->{target}{disk_total_bytes})
+                && $r->{target}{disk_total_bytes} > $disk_total) {
+                $disk_total = $r->{target}{disk_total_bytes};
+            }
+            if ($disk_enabled && ref($r->{target}{disk_storage_bytes}) eq 'HASH') {
+                for my $storeid (keys %{ $r->{target}{disk_storage_bytes} }) {
+                    $disk_storage{$storeid} = $r->{target}{disk_storage_bytes}{$storeid}
+                        if !defined($disk_storage{$storeid})
+                        || $r->{target}{disk_storage_bytes}{$storeid} > $disk_storage{$storeid};
+                }
+            }
         }
-        $usage->{cpu} += $cpu;
-        $usage->{memory_mib} += $memory;
-        $guests{$key} = { cpu => $cpu, memory_mib => $memory, metrics => $metrics,
-            type => $type, vmid => $vmid, running => $running };
+        if ($count_cpu_memory) {
+            $usage->{cpu} += $cpu;
+            $usage->{memory_mib} += $memory;
+        } else {
+            $cpu = 0;
+            $memory = 0;
+        }
+        $usage->{disk_total_bytes} += $disk_total;
+        for my $storeid (keys %disk_storage) {
+            $usage->{disk_storage_bytes}{$storeid} += $disk_storage{$storeid};
+        }
+        $guests{$key} = { cpu => $cpu, memory_mib => $memory,
+            disk_total_bytes => $disk_total, disk_storage_bytes => \%disk_storage,
+            metrics => $metrics, disk => $disk, type => $type, vmid => $vmid,
+            running => $running };
     }
     return { usage => $usage, guests => \%guests, errors => \@errors,
+        disk_errors => \@disk_errors,
         usercfg => $ucfg, vmlist => $vmlist, reservations => $reservations };
 }
 
@@ -309,7 +639,8 @@ sub _with_pool_lock {
 sub accounting {
     my ($class, $pool, %opts) = @_;
     my $state = $class->_state;
-    return { usage => { cpu => 0, memory_mib => 0 }, guests => {}, errors => [] }
+    return { usage => { cpu => 0, memory_mib => 0, disk_total_bytes => 0,
+            disk_storage_bytes => {} }, guests => {}, errors => [] }
         unless $state->{active} || _limits($state, $pool);
     return $class->_usage($pool, $state, %opts);
 }
@@ -319,7 +650,7 @@ sub check_config {
     my $state = $class->_state;
     return unless $state->{active} && _limits($state, $pool);
     my $limits = _limits($state, $pool);
-    return unless _has_cpu_or_memory_limit($limits);
+    return unless _has_any_limit($limits);
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
     _fail_closed($pool, 'recursos', _error_detail($target_error) || 'configuração do guest indisponível')
@@ -335,12 +666,38 @@ sub check_config {
         _fail_closed($pool, 'recursos', 'estado running indisponível')
             if $target->{cpu} > ($current->{cpu} // 0)
                 || $target->{memory_mib} > ($current->{memory_mib} // 0);
+    }
+    my $target_disk = $opts{target_disk} || { total => 0, by_storage => {} };
+    my $current_disk = $opts{current_disk} || { total => 0, by_storage => {} };
+    my $disk_increase = 0;
+    if (_disk_limits_enabled($limits) && !$opts{skip_disk}) {
+        if (exists($opts{current_conf})) {
+            $disk_increase = _disk_structural_delta($type, $opts{current_conf}, $conf)->{increase};
+        } else {
+            $disk_increase = _disk_config_has_volume($type, $conf) ? 1 : 0;
+        }
+    }
+    $disk_increase = 1 if exists($opts{target_disk})
+        && (($target_disk->{total} || 0) > ($current_disk->{total} || 0));
+    if (exists($opts{target_disk})) {
+        for my $storeid (keys %{ $target_disk->{by_storage} || {} }) {
+            $disk_increase = 1
+                if ($target_disk->{by_storage}{$storeid} || 0)
+                    > ($current_disk->{by_storage}{$storeid} || 0);
+        }
+    }
+    if (!$opts{starting} && ($target->{cpu} // 0) <= ($current->{cpu} // 0)
+        && ($target->{memory_mib} // 0) <= ($current->{memory_mib} // 0)
+        && !$disk_increase) {
         return;
     }
-    return unless $opts{starting} || $target->{cpu} > ($current->{cpu} // 0)
-        || $target->{memory_mib} > ($current->{memory_mib} // 0);
+    my %check_opts = %opts;
+    $check_opts{skip_disk} = 1 if _disk_limits_enabled($limits) && !$disk_increase;
+    delete $check_opts{target_disk} unless exists($opts{target_disk});
+    delete $check_opts{current_disk} unless exists($opts{current_disk});
     return _with_pool_lock($pool, sub {
-        return $class->_check_guest_locked($pool, $vmid, $type, $conf, $state, %opts);
+        return $class->_check_guest_locked($pool, $vmid, $type, $conf, $state,
+            %check_opts, target_disk => $target_disk, current_disk => $current_disk);
     });
 }
 
@@ -353,7 +710,7 @@ sub _guest_pool {
 sub _check_guest_locked {
     my ($class, $pool, $vmid, $type, $conf, $state, %opts) = @_;
     my $limits = _limits($state, $pool);
-    return unless $state->{active} && $limits && _has_cpu_or_memory_limit($limits);
+    return unless $state->{active} && $limits && _has_any_limit($limits);
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
     _fail_closed($pool, 'recursos', _error_detail($target_error) || 'configuração do guest indisponível')
@@ -362,25 +719,49 @@ sub _check_guest_locked {
     if ($type eq 'lxc' && $limits->{cpu}{enabled} && !$target->{cpu_defined}) {
         _fail_closed($pool, 'vCPU', "CT $vmid não tem cpulimit nem cores");
     }
+    if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}
+        && !exists($opts{target_disk})) {
+        my $disk = eval { _disk_inventory($type, $conf,
+            storecfg => $opts{storecfg}, vmid => $vmid) };
+        my $disk_error = $@;
+        _fail_closed($pool, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+            || 'configuração do guest indisponível')
+            if $disk_error || !$disk || @{$disk->{errors} || []};
+        $opts{target_disk} = $disk;
+    }
     my $running = exists($opts{running}) ? $opts{running}
         : _running($type, $vmid, $opts{entry} || {}, \%opts);
     my $current = $opts{current_metrics} || $target;
     my $current_cpu = $current->{cpu} // 0;
     my $current_memory = $current->{memory_mib} // 0;
-    if (($limits->{mode} // 'allocated') eq 'running' && !defined($running) && !$opts{starting}) {
-        _fail_closed($pool, 'recursos', 'estado running indisponível')
-            if $target->{cpu} > $current_cpu || $target->{memory_mib} > $current_memory;
-        return;
+    my $count_cpu_memory = 1;
+    if (($limits->{mode} // 'allocated') eq 'running') {
+        if (!defined($running)) {
+            _fail_closed($pool, 'recursos', 'estado running indisponível')
+                if ($target->{cpu} // 0) > $current_cpu
+                    || ($target->{memory_mib} // 0) > $current_memory;
+            $count_cpu_memory = 0;
+        } else {
+            $count_cpu_memory = $opts{starting} || $running ? 1 : 0;
+        }
     }
-    my $count_target = ($limits->{mode} // 'allocated') eq 'running'
-        ? ($opts{starting} || $running ? 1 : 0) : 1;
-    return unless $count_target;
     if ($type eq 'lxc' && $limits->{cpu}{enabled} && !$target->{cpu_defined}) {
         _fail_closed($pool, 'vCPU', "CT $vmid não tem cpulimit nem cores");
     }
     my $target_cpu = $target->{cpu} // 0;
     my $target_memory = $target->{memory_mib} // 0;
-    my $increase = $opts{starting} || $target_cpu > $current_cpu || $target_memory > $current_memory;
+    my $target_disk = $opts{target_disk} || { total => 0, by_storage => {} };
+    my $current_disk = $opts{current_disk} || { total => 0, by_storage => {} };
+    $target_disk = { total => 0, by_storage => {} } if $opts{starting};
+    $current_disk = { total => 0, by_storage => {} } if $opts{starting};
+    my $disk_increase = $target_disk->{total} > ($current_disk->{total} || 0);
+    for my $storeid (keys %{ $target_disk->{by_storage} || {} }) {
+        $disk_increase = 1 if ($target_disk->{by_storage}{$storeid} || 0)
+            > ($current_disk->{by_storage}{$storeid} || 0);
+    }
+    my $cpu_memory_increase = $count_cpu_memory
+        && (($target_cpu > $current_cpu) || ($target_memory > $current_memory));
+    my $increase = $opts{starting} || $cpu_memory_increase || $disk_increase;
     return unless $increase;
     my $key = "$type:$vmid";
     my $reservations = _read_reservations($pool);
@@ -388,30 +769,255 @@ sub _check_guest_locked {
         my $reached_cpu = !defined($live->{target}{cpu}) || $target_cpu >= $live->{target}{cpu};
         my $reached_memory = !defined($live->{target}{memory_mib})
             || $target_memory >= $live->{target}{memory_mib};
-        delete $reservations->{$key} if $reached_cpu && $reached_memory;
+        my $reached_disk = _disk_target_reached($target_disk, $live);
+        delete $reservations->{$key} if $reached_cpu && $reached_memory && $reached_disk;
     }
-    my $usage = $class->_usage($pool, $state, %opts, reservations => $reservations);
-    _fail_closed($pool, 'recursos', join('; ', @{ $usage->{errors} })) if @{ $usage->{errors} };
-    my $old = $usage->{guests}{$key} || { cpu => 0, memory_mib => 0 };
+    my $usage = $class->_usage($pool, $state, %opts,
+        skip_disk => ($opts{skip_disk} || $opts{starting}) ? 1 : 0,
+        reservations => $reservations);
+    _fail_closed($pool, 'recursos', join('; ', @{ $usage->{errors} }))
+        if ($opts{starting} || $cpu_memory_increase) && @{$usage->{errors}};
+    _fail_closed($pool, 'disco', join('; ', @{ $usage->{disk_errors} || [] }))
+        if !$opts{skip_disk} && $disk_increase && @{$usage->{disk_errors} || []};
+    my $old = $usage->{guests}{$key} || {
+        cpu => 0, memory_mib => 0, disk_total_bytes => 0, disk_storage_bytes => {},
+    };
     my $base_cpu = $usage->{usage}{cpu} - ($old->{cpu} // 0);
     my $base_memory = $usage->{usage}{memory_mib} - ($old->{memory_mib} // 0);
+    my $base_disk_total = ($usage->{usage}{disk_total_bytes} || 0)
+        - ($old->{disk_total_bytes} || 0);
+    my %base_disk_storage = %{ $usage->{usage}{disk_storage_bytes} || {} };
+    for my $storeid (keys %{ $old->{disk_storage_bytes} || {} }) {
+        $base_disk_storage{$storeid} -= $old->{disk_storage_bytes}{$storeid};
+    }
     if ($state->{degraded}) {
         _fail_closed($pool, 'recursos', 'configuração atual inválida');
     }
-    if ($limits->{cpu}{enabled} && $base_cpu + $target_cpu > $limits->{cpu}{max}) {
+    if ($count_cpu_memory && $limits->{cpu}{enabled} && $base_cpu + $target_cpu > $limits->{cpu}{max}) {
         _limit_error($pool, 'vCPU', $base_cpu + ($old->{cpu} // 0), $target_cpu, $limits->{cpu}{max});
     }
-    if ($limits->{memory_mib}{enabled} && $base_memory + $target_memory > $limits->{memory_mib}{max}) {
+    if ($count_cpu_memory && $limits->{memory_mib}{enabled}
+        && $base_memory + $target_memory > $limits->{memory_mib}{max}) {
         _limit_error($pool, 'RAM MiB', $base_memory + ($old->{memory_mib} // 0), $target_memory, $limits->{memory_mib}{max});
     }
     my $old_res = $reservations->{$key};
+    my $disk_target = _disk_reservation_target($target_disk, $old_res);
+    if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}) {
+        if ($limits->{disk_total_gib}{enabled}
+            && $base_disk_total + $disk_target->{total} > $limits->{disk_total_gib}{max} * GIB) {
+            _limit_error($pool, 'disco total', $base_disk_total + ($old->{disk_total_bytes} || 0),
+                $disk_target->{total}, $limits->{disk_total_gib}{max} * GIB);
+        }
+        if ($limits->{disk_storage}{enabled}) {
+            my $store_limits = $limits->{disk_storage}{limits} || {};
+            for my $storeid (keys %{ $disk_target->{by_storage} }) {
+                next unless defined($store_limits->{$storeid});
+                my $requested = $disk_target->{by_storage}{$storeid} || 0;
+                my $old_store = $old->{disk_storage_bytes}{$storeid} || 0;
+                _limit_error($pool, "disco em $storeid", ($base_disk_storage{$storeid} || 0) + $old_store,
+                    $requested, $store_limits->{$storeid} * GIB)
+                    if ($base_disk_storage{$storeid} || 0) + $requested
+                        > $store_limits->{$storeid} * GIB;
+            }
+        }
+    }
+    my $record_target = $old_res && ref($old_res->{target}) eq 'HASH'
+        ? { %{ $old_res->{target} } } : {};
+    if ($count_cpu_memory) {
+        $record_target->{cpu} = $target_cpu;
+        $record_target->{memory_mib} = $target_memory;
+    }
+    if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}) {
+        $record_target->{disk_total_bytes} = $disk_target->{total};
+        $record_target->{disk_storage_bytes} = { %{ $disk_target->{by_storage} } };
+    }
     $reservations->{$key} = {
-        target => { cpu => $target_cpu, memory_mib => $target_memory },
+        target => $record_target,
         expires => time + RESERVATION_TTL,
         starting => $opts{starting} ? 1 : 0,
     };
     _write_reservations($pool, $reservations);
     return { ok => 1, reservation => $reservations->{$key}, previous => $old_res };
+}
+
+sub _owner_from_volid {
+    my ($storecfg, $volid) = @_;
+    return unless defined($volid) && !ref($volid);
+    if (ref($TEST_VOL_OWNERS) eq 'HASH' && exists($TEST_VOL_OWNERS->{$volid})) {
+        return $TEST_VOL_OWNERS->{$volid};
+    }
+    my @parsed = eval {
+        require PVE::Storage;
+        PVE::Storage::parse_volname($storecfg || _storage_cfg(), $volid);
+    };
+    return $parsed[2] if !$@ && defined($parsed[2]) && $parsed[2] =~ /^\d+$/;
+    my (undef, $volname) = $volid =~ /\A([^:]+):(.+)\z/;
+    return unless defined($volname);
+    return $1 if $volname =~ /\A(?:vm|subvol)-(\d+)(?:-|\z)/;
+    return $1 if $volname =~ /\A(\d+)\//;
+    return;
+}
+
+sub _storage_context {
+    my ($class, $vmid, $storecfg, %opts) = @_;
+    return unless defined($vmid) && $vmid =~ /^\d+$/;
+    my $state = $class->_state;
+    return unless $state->{active};
+    my $ucfg = _usercfg();
+    my $pool = _guest_pool($vmid, $ucfg);
+    return unless defined($pool);
+    my $limits = _limits($state, $pool);
+    return unless $limits && _disk_limits_enabled($limits);
+    my $vmlist = _vmlist();
+    my $entry = $vmlist->{$vmid} || {};
+    my $type = _type_for($vmid, $entry, $ucfg);
+    my $conf = eval { _load_config($type, $vmid, { node => $entry->{node} }) };
+    _fail_closed($pool, 'disco', _error_detail($@) || 'configuração do guest indisponível')
+        if $@ || ref($conf) ne 'HASH';
+    # Migração é isenta: sai antes do inventário (sem I/O no storage).
+    return if $opts{exempt_migrate} && _guest_is_migrating($conf);
+    my $disk = eval { _disk_inventory($type, $conf, storecfg => $storecfg, vmid => $vmid) };
+    my $disk_error = $@;
+    _fail_closed($pool, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+        || 'configuração do guest indisponível')
+        if !$opts{allow_disk_errors} && ($disk_error || !$disk || @{$disk->{errors} || []});
+    $disk ||= { total => 0, by_storage => {}, volumes => {}, errors => [
+        _error_detail($disk_error) || 'contabilidade de disco indisponível'
+    ] };
+    return {
+        vmid => $vmid,
+        state => $state, usercfg => $ucfg, vmlist => $vmlist, entry => $entry,
+        pool => $pool, limits => $limits, type => $type, conf => $conf, disk => $disk,
+        storecfg => $storecfg,
+    };
+}
+
+sub _config_has_volid {
+    my ($type, $conf, $volid) = @_;
+    return 0 unless ref($conf) eq 'HASH';
+    for my $key (keys %{$conf}) {
+        my $entry = _disk_entry($type, $key, $conf->{$key});
+        return 1 if $entry && defined($entry->{volid}) && $entry->{volid} eq $volid;
+    }
+    return 0;
+}
+
+sub _disk_context_is_known {
+    my ($ctx) = @_;
+    return 1 unless @{$ctx->{disk}{errors} || []};
+    _fail_closed($ctx->{pool}, 'disco', join('; ', @{$ctx->{disk}{errors}}));
+}
+
+sub _reserve_storage_delta {
+    my ($class, $ctx, $storeid, $delta) = @_;
+    return unless defined($delta) && $delta > 0;
+    return _with_pool_lock($ctx->{pool}, sub {
+        my $state = $class->_state;
+        my $ucfg = _usercfg();
+        my $limits = _limits($state, $ctx->{pool});
+        return unless $state->{active} && $limits && _disk_limits_enabled($limits);
+        my $vmlist = _vmlist();
+        my $entry = $vmlist->{$ctx->{vmid}} || $ctx->{entry} || {};
+        my $conf = eval { _load_config($ctx->{type}, $ctx->{vmid}, { node => $entry->{node} }) };
+        _fail_closed($ctx->{pool}, 'disco', _error_detail($@) || 'configuração do guest indisponível')
+            if $@ || ref($conf) ne 'HASH';
+        my $disk = eval { _disk_inventory($ctx->{type}, $conf,
+            storecfg => $ctx->{storecfg}, vmid => $ctx->{vmid}) };
+        my $disk_error = $@;
+        _fail_closed($ctx->{pool}, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+            || 'configuração do guest indisponível')
+            if $disk_error || !$disk || @{$disk->{errors} || []};
+        my $key = "$ctx->{type}:$ctx->{vmid}";
+        my $reservations = _read_reservations($ctx->{pool});
+        my $target = _disk_target_with_delta($disk, $reservations->{$key}, $storeid, $delta);
+        return $class->_check_disk_target_locked($ctx->{pool}, $ctx->{vmid}, $ctx->{type},
+            $target, $state, reserve => 1, reservations => $reservations,
+            usercfg => $ucfg, vmlist => $vmlist, entry => $entry,
+            storecfg => $ctx->{storecfg});
+    });
+}
+
+sub check_storage_alloc {
+    my ($class, $storecfg, $storeid, $vmid, $fmt, $name, $size_kib) = @_;
+    return if _is_exempt_volid(defined($name) ? $name : '');
+    my $ctx = $class->_storage_context($vmid, $storecfg, allow_disk_errors => 1, exempt_migrate => 1);
+    return unless $ctx;
+    return if _guest_is_migrating($ctx->{conf});
+    return if defined($name) && _config_has_volid($ctx->{type}, $ctx->{conf}, "$storeid:$name");
+    _disk_context_is_known($ctx);
+    my $bytes = defined($size_kib) && !ref($size_kib) && $size_kib =~ /^\d+(?:\.\d+)?$/
+        ? int($size_kib * 1024) : undef;
+    _fail_closed($ctx->{pool}, 'disco', 'tamanho da alocação indisponível')
+        unless defined($bytes);
+    return if $bytes == 0;
+    if (defined($name) && $ctx->{disk}{volumes}{"$storeid:$name"}) {
+        return;
+    }
+    return $class->_reserve_storage_delta($ctx, $storeid, $bytes);
+}
+
+sub check_storage_clone {
+    my ($class, $storecfg, $volid, $vmid, $snap) = @_;
+    return if _is_exempt_volid($volid);
+    my $ctx = $class->_storage_context($vmid, $storecfg, allow_disk_errors => 1, exempt_migrate => 1);
+    return unless $ctx;
+    return if _guest_is_migrating($ctx->{conf});
+    _disk_context_is_known($ctx);
+    my ($storeid) = $volid =~ /\A([^:]+):/;
+    return unless defined($storeid);
+    my $size = $ctx->{disk}{volumes}{$volid}{size};
+    $size = _volume_size($storecfg, $volid) unless defined($size);
+    _fail_closed($ctx->{pool}, 'disco', 'tamanho do clone indisponível') unless defined($size);
+    return if $size == 0;
+    return $class->_reserve_storage_delta($ctx, $storeid, $size);
+}
+
+sub check_storage_resize {
+    my ($class, $storecfg, $volid, $size, $running, $snapname) = @_;
+    return if defined($snapname) || _is_exempt_volid($volid);
+    my $owner = _owner_from_volid($storecfg, $volid);
+    return unless defined($owner);
+    my $ctx = $class->_storage_context($owner, $storecfg, allow_disk_errors => 1);
+    return unless $ctx;
+    my $old = $ctx->{disk}{volumes}{$volid};
+    if (!$old) {
+        for my $key (keys %{$ctx->{conf} || {}}) {
+            my $entry = _disk_entry($ctx->{type}, $key, $ctx->{conf}{$key});
+            next unless $entry && $entry->{volid} eq $volid;
+            my $size = $entry->{size};
+            $size = _volume_size($storecfg, $volid) unless defined($size);
+            $old = { size => $size, storage => $entry->{storeid} };
+            last;
+        }
+    }
+    return unless $old;
+    _fail_closed($ctx->{pool}, 'disco', 'tamanho do volume indisponível')
+        unless defined($size) && !ref($size) && $size =~ /^\d+(?:\.\d+)?$/
+        && defined($old->{size});
+    my $new_size = int($size);
+    return if $new_size <= $old->{size};
+    _disk_context_is_known($ctx);
+    return $class->_reserve_storage_delta($ctx, $old->{storage}, $new_size - $old->{size});
+}
+
+sub check_storage_import {
+    my ($class, $storecfg, $fh, $volid, $format, $snapshot, $base_snapshot,
+        $with_snapshots, $allow_rename) = @_;
+    return if _is_exempt_volid($volid);
+    my $owner = _owner_from_volid($storecfg, $volid);
+    return unless defined($owner);
+    my $ctx = $class->_storage_context($owner, $storecfg, allow_disk_errors => 1, exempt_migrate => 1);
+    return unless $ctx;
+    return if _guest_is_migrating($ctx->{conf});
+    return if _config_has_volid($ctx->{type}, $ctx->{conf}, $volid);
+    _disk_context_is_known($ctx);
+    my ($storeid) = $volid =~ /\A([^:]+):/;
+    return unless defined($storeid);
+    my $size = _volume_size($storecfg, $volid);
+    _fail_closed($ctx->{pool}, 'disco', 'tamanho do volume importado indisponível')
+        unless defined($size);
+    return if $size == 0;
+    return $class->_reserve_storage_delta($ctx, $storeid, $size);
 }
 
 sub check_write_config {
@@ -423,7 +1029,7 @@ sub check_write_config {
     my $pool = _guest_pool($vmid, $ucfg);
     return unless defined($pool);
     my $limits = _limits($state, $pool);
-    return unless $limits && _has_cpu_or_memory_limit($limits);
+    return unless $limits && _has_any_limit($limits);
     my $type = $guest_class eq 'PVE::QemuConfig' ? 'qemu' : 'lxc';
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
@@ -432,21 +1038,30 @@ sub check_write_config {
     return if $target->{template};
     my $old = eval { $guest_class->load_config($vmid) };
     my $current = ref($old) eq 'HASH' ? _metrics($type, $old) : { cpu => 0, memory_mib => 0 };
+    my $disk_increase = 0;
+    my $migrating = _guest_is_migrating($old);
+    if (_disk_limits_enabled($limits) && !$migrating && ref($old) eq 'HASH') {
+        $disk_increase = _disk_structural_delta($type, $old, $conf)->{increase};
+    } elsif (_disk_limits_enabled($limits) && !$migrating) {
+        $disk_increase = _disk_config_has_volume($type, $conf) ? 1 : 0;
+    }
     my $vmlist = _vmlist();
     my $running = _running($type, $vmid, $vmlist->{$vmid} || {}, { vmlist => $vmlist });
+    my $cpu_memory_increase = ($target->{cpu} // 0) > ($current->{cpu} // 0)
+        || ($target->{memory_mib} // 0) > ($current->{memory_mib} // 0);
     if (($limits->{mode} // 'allocated') eq 'running') {
         _fail_closed($pool, 'recursos', 'estado running indisponível')
-            if !defined($running) && (($target->{cpu} // 0) > ($current->{cpu} // 0)
-                || ($target->{memory_mib} // 0) > ($current->{memory_mib} // 0));
-        return if !$running;
+            if !defined($running) && $cpu_memory_increase;
+        $cpu_memory_increase = 0 if !$running;
     }
     # CT sem cores/cpulimit tem cpu indefinido: conta como 0 (sem aumento).
-    return if ($target->{cpu} // 0) <= ($current->{cpu} // 0)
-        && ($target->{memory_mib} // 0) <= ($current->{memory_mib} // 0);
+    return unless $cpu_memory_increase || $disk_increase;
+    my $skip_disk = _disk_limits_enabled($limits) && (!$disk_increase || $migrating);
     return _with_pool_lock($pool, sub {
         return $class->_check_guest_locked($pool, $vmid, $type, $conf, $state,
             usercfg => $ucfg, vmlist => $vmlist, entry => $vmlist->{$vmid} || {},
-            running => $running, current_metrics => $current);
+            running => $running, current_metrics => $current,
+            skip_disk => $skip_disk);
     });
 }
 
@@ -538,7 +1153,7 @@ sub check_qemu_create {
     return _with_pool_lock($pool, sub {
         $class->_check_guest_locked($pool, $vmid, 'qemu', $conf, $state,
             usercfg => $ucfg, vmlist => _vmlist(), running => 0,
-            current_metrics => { cpu => 0, memory_mib => 0 });
+            current_metrics => { cpu => 0, memory_mib => 0 }, storecfg => $storecfg);
     });
 }
 
@@ -558,7 +1173,7 @@ sub check_lxc_create {
     return _with_pool_lock($pool, sub {
         $class->_check_guest_locked($pool, $vmid, 'lxc', $conf, $state,
             usercfg => $ucfg, vmlist => _vmlist(), running => 0,
-            current_metrics => { cpu => 0, memory_mib => 0 });
+            current_metrics => { cpu => 0, memory_mib => 0 }, storecfg => $storage_cfg);
     });
 }
 

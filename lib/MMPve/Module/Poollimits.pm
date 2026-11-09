@@ -213,17 +213,21 @@ sub _save_pool {
 sub cli {
     my ($class, $argv) = @_;
     require Getopt::Long;
-    my ($pool, $mode, $cpu, $memory, $cpu_off, $memory_off, $check, $help, $digest);
+    my ($pool, $mode, $cpu, $memory, $disk_total, $cpu_off, $memory_off,
+        $disk_total_off, $disk_storage_off, @disk_storage_max, $check, $help, $digest);
     local @ARGV = @{$argv};
     Getopt::Long::GetOptions(
         'pool=s' => \$pool, 'mode=s' => \$mode, 'cpu-max=i' => \$cpu,
         'memory-max=i' => \$memory, 'cpu-off' => \$cpu_off,
-        'memory-off' => \$memory_off, 'digest=s' => \$digest,
+        'memory-off' => \$memory_off, 'disk-total-max=i' => \$disk_total,
+        'disk-total-off' => \$disk_total_off, 'disk-storage-max=s@' => \@disk_storage_max,
+        'disk-storage-off' => \$disk_storage_off, 'digest=s' => \$digest,
         'check' => \$check, 'help|h' => \$help,
     ) or return 2;
     if ($help) {
         print "uso: mm-pve poollimits status [--pool ID]\n";
         print "     mm-pve poollimits set <pool> --mode allocated|running [--cpu-max N|--cpu-off] [--memory-max N|--memory-off]\n";
+        print "       [--disk-total-max GiB|--disk-total-off] [--disk-storage-max STORAGE=GiB ...|--disk-storage-off]\n";
         return 0;
     }
     if ($check || (@ARGV && $ARGV[0] eq 'status')) {
@@ -244,6 +248,14 @@ sub cli {
     die "--mode é obrigatório\n" unless defined($mode) && ($mode eq 'allocated' || $mode eq 'running');
     die "use --cpu-max ou --cpu-off\n" if $cpu_off && defined($cpu);
     die "use --memory-max ou --memory-off\n" if $memory_off && defined($memory);
+    die "use --disk-total-max ou --disk-total-off\n" if $disk_total_off && defined($disk_total);
+    die "use --disk-storage-max ou --disk-storage-off\n" if $disk_storage_off && @disk_storage_max;
+    my %disk_storage_max;
+    for my $spec (@disk_storage_max) {
+        die "--disk-storage-max precisa ser STORAGE=GiB\n"
+            unless $spec =~ /\A([A-Za-z][A-Za-z0-9_.-]*)=(\d+)\z/ && $2 >= 1;
+        $disk_storage_max{$1} = 0 + $2;
+    }
     my ($cfg) = MMPve::Core::Config->load;
     my $old = $cfg->{poollimits}{pools}{$poolid} || {
         cpu => { enabled => 0 }, memory_mib => { enabled => 0 },
@@ -256,6 +268,14 @@ sub cli {
     if ($cpu_off) { $value->{cpu} = { enabled => 0 } }
     if (defined($memory)) { $value->{memory_mib} = { enabled => 1, max => $memory } }
     if ($memory_off) { $value->{memory_mib} = { enabled => 0 } }
+    if (defined($disk_total)) { $value->{disk_total_gib} = { enabled => 1, max => $disk_total } }
+    if ($disk_total_off) { $value->{disk_total_gib} = { enabled => 0 } }
+    if (%disk_storage_max) {
+        my %limits = %{ $value->{disk_storage}{limits} || {} };
+        $limits{$_} = $disk_storage_max{$_} for keys %disk_storage_max;
+        $value->{disk_storage} = { enabled => 1, limits => \%limits };
+    }
+    if ($disk_storage_off) { $value->{disk_storage} = { enabled => 0 } }
     my %opt = defined($digest) ? (digest => $digest) : ();
     my ($saved, $new_digest) = eval { $class->_save_pool($poolid, $value, %opt) };
     if ($@) { chomp(my $err = $@); print STDERR "$err\n"; return 1 }
@@ -270,6 +290,8 @@ sub patch_targets {
             id => 'abstract_config_write', owner => 'libpve-guest-common-perl',
             path => '/usr/share/perl5/PVE/AbstractConfig.pm',
             anchor => qr/^\s*my\s+\(\$class,\s*\$vmid,\s*\$conf\)\s*=\s*\@_;/,
+            scope_anchor => qr/^\s*sub\s+write_config\b/,
+            expected_function => 'sub write_config',
             line => $call->('check_write_config', '$class, $vmid, $conf'),
             daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm qm pct)],
@@ -278,6 +300,8 @@ sub patch_targets {
             id => 'guest_helpers_start', owner => 'libpve-guest-common-perl',
             path => '/usr/share/perl5/PVE/GuestHelpers.pm',
             anchor => qr/^\s*my\s+\(\$conf,\s*\$vmid,\s*\$phase\b/,
+            scope_anchor => qr/^\s*sub\s+exec_hookscript\b/,
+            expected_function => 'sub exec_hookscript',
             line => $call->('check_start', '$conf, $vmid, $phase'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm qm pct)],
@@ -286,6 +310,8 @@ sub patch_targets {
             id => 'access_control_pool', owner => 'libpve-access-control',
             path => '/usr/share/perl5/PVE/AccessControl.pm',
             anchor => qr/^\s*my\s+\(\$vmid,\s*\$pool\)\s*=\s*\@_;/,
+            scope_anchor => qr/^\s*sub\s+add_vm_to_pool\b/,
+            expected_function => 'sub add_vm_to_pool',
             line => $call->('check_pool_entry', '$vmid, $pool'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm pveum pvesh qm pct)],
@@ -294,6 +320,8 @@ sub patch_targets {
             id => 'qemu_create_pool', owner => 'qemu-server',
             path => '/usr/share/perl5/PVE/API2/Qemu.pm',
             anchor => qr/^\s*my\s+\$emsg\s*=\s*\$is_restore\s+\?/,
+            scope_anchor => qr/^\s*name\s*=>\s*['"]create_vm['"],/,
+            expected_function => "name => 'create_vm'",
             line => $call->('check_qemu_create', '$param, $archive, $storecfg, $vmid, $pool'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm qm pvesh)],
@@ -302,6 +330,8 @@ sub patch_targets {
             id => 'qemu_clone_pool', owner => 'qemu-server',
             path => '/usr/share/perl5/PVE/API2/Qemu.pm',
             anchor => qr/^\s*my\s+\$oldconf\s*=\s*\$snapname\s+\?/,
+            scope_anchor => qr/^\s*name\s*=>\s*['"]clone_vm['"],/,
+            expected_function => "name => 'clone_vm'",
             line => $call->('check_clone', '$newid, $pool, $oldconf, "qemu"'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm qm pvesh)],
@@ -310,6 +340,8 @@ sub patch_targets {
             id => 'lxc_create_pool', owner => 'pve-container',
             path => '/usr/share/perl5/PVE/API2/LXC.pm',
             anchor => qr/^\s*my\s+\$emsg\s*=\s*\$restore\s+\?/,
+            scope_anchor => qr/^\s*name\s*=>\s*['"]create_vm['"],/,
+            expected_function => "name => 'create_vm'",
             line => $call->('check_lxc_create', '$param, $archive, $storage_cfg, $vmid, $pool'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm pct pvesh)],
@@ -318,6 +350,8 @@ sub patch_targets {
             id => 'lxc_clone_pool', owner => 'pve-container',
             path => '/usr/share/perl5/PVE/API2/LXC.pm',
             anchor => qr/^\s*my\s+\$src_conf\s*=\s*PVE::LXC::Config->set_lock\(\$vmid,\s*'disk'\)/,
+            scope_anchor => qr/^\s*name\s*=>\s*['"]clone_vm['"],/,
+            expected_function => "name => 'clone_vm'",
             line => $call->('check_clone', '$newid, $pool, $src_conf, "lxc", $snapname'),
             daemons => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm)],
             processes => [qw(pvedaemon pveproxy pve-ha-lrm pve-ha-crm pct pvesh)],
@@ -327,9 +361,50 @@ sub patch_targets {
             path => '/usr/share/perl5/PVE/API2/Pool.pm',
             anchor => qr/^\s*my\s+\$pool\s*=\s*\$param->\{poolid\};/,
             scope_anchor => qr/^\s*name\s*=>\s*['"]update_pool['"],/,
+            expected_function => "name => 'update_pool'",
             line => $call->('check_pool_update', '$param, $usercfg'),
             daemons => [qw(pvedaemon pveproxy)],
             processes => [qw(pvedaemon pveproxy pvesh)],
+        },
+        {
+            id => 'storage_vdisk_alloc', owner => 'libpve-storage-perl',
+            path => '/usr/share/perl5/PVE/Storage.pm',
+            anchor => qr/^\s*\$vmid\s*=\s*parse_vmid\(\$vmid\);/,
+            scope_anchor => qr/^\s*sub\s+vdisk_alloc\b/,
+            expected_function => 'sub vdisk_alloc',
+            line => $call->('check_storage_alloc', '$cfg, $storeid, $vmid, $fmt, $name, $size'),
+            daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
+            processes => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm qm pct pvesm pvesh)],
+        },
+        {
+            id => 'storage_vdisk_clone', owner => 'libpve-storage-perl',
+            path => '/usr/share/perl5/PVE/Storage.pm',
+            anchor => qr/^\s*my\s+\(\$storeid,\s*\$volname\)\s*=\s*parse_volume_id\(\$volid\);/,
+            scope_anchor => qr/^\s*sub\s+vdisk_clone\b/,
+            expected_function => 'sub vdisk_clone',
+            line => $call->('check_storage_clone', '$cfg, $volid, $vmid, $snap'),
+            daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
+            processes => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm qm pct pvesm pvesh)],
+        },
+        {
+            id => 'storage_volume_resize', owner => 'libpve-storage-perl',
+            path => '/usr/share/perl5/PVE/Storage.pm',
+            anchor => qr/^\s*\$size\s*=\s*\$size\s*\+\s*\$padding;/,
+            scope_anchor => qr/^\s*sub\s+volume_resize\b/,
+            expected_function => 'sub volume_resize',
+            line => $call->('check_storage_resize', '$cfg, $volid, $size, $running, $snapname'),
+            daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
+            processes => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm qm pct pvesm pvesh)],
+        },
+        {
+            id => 'storage_volume_import', owner => 'libpve-storage-perl',
+            path => '/usr/share/perl5/PVE/Storage.pm',
+            anchor => qr/^\s*my\s+\(\$cfg,\s*\$fh,\s*\$volid,\s*\$format,\s*\$snapshot,\s*\$base_snapshot,\s*\$with_snapshots,\s*\$allow_rename\)\s*=\s*\@_;/,
+            scope_anchor => qr/^\s*sub\s+volume_import\b/,
+            expected_function => 'sub volume_import',
+            line => $call->('check_storage_import', '$cfg, $fh, $volid, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename'),
+            daemons => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm)],
+            processes => [qw(pvedaemon pveproxy pvescheduler pve-ha-lrm pve-ha-crm qm pct pvesm pvesh)],
         },
     ];
 }

@@ -10,6 +10,7 @@ use File::Temp qw(tempdir);
 use lib "$Bin/../../lib", "$Bin/../lib";
 use MMPve::Core::Patch;
 use MMPve::Core::Modules;
+use ModulePatchGuards;
 require "$Bin/../lib/TestPatchFixture.pm";
 
 {
@@ -33,11 +34,11 @@ MMPve::Core::Patch->register_module('MMPve::Module::TestPatchFixture');
 sub files_for {
     my ($root) = @_;
     return (
-        "$root/usr/share/perl5/PVE/MMTestGuestHelpers.pm" => "package PVE::GuestHelpers;\nsub exec_hookscript { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/MMTestAccessControl.pm" => "package PVE::AccessControl;\nsub add_vm_to_pool { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/MMTestAbstractConfig.pm" => "package PVE::AbstractConfig;\nsub write_config { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/MMTestStorage.pm" => "package PVE::Storage;\nsub vdisk_alloc { return; }\n1;\n",
-        "$root/usr/share/perl5/PVE/API2/MMTestPool.pm" => "package PVE::API2::Pool;\nsub register_method { return; }\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestGuestHelpers.pm" => "package PVE::GuestHelpers;\nsub exec_hookscript {\n    return;\n}\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestAccessControl.pm" => "package PVE::AccessControl;\nsub add_vm_to_pool {\n    return;\n}\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestAbstractConfig.pm" => "package PVE::AbstractConfig;\nsub write_config {\n    return;\n}\n1;\n",
+        "$root/usr/share/perl5/PVE/MMTestStorage.pm" => "package PVE::Storage;\nsub vdisk_alloc {\n    return;\n}\n1;\n",
+        "$root/usr/share/perl5/PVE/API2/MMTestPool.pm" => "package PVE::API2::Pool;\nsub register_method {\n    return;\n}\n1;\n",
     );
 }
 
@@ -98,6 +99,15 @@ subtest 'módulo desligado não deixa patch; ligado aplica os owners' => sub {
     is($status->{abstract_config}{owner}, 'libpve-guest-common-perl', 'owner no status');
     for my $target (@{$fixture}) {
         like(slurp($root . $target->{path}), qr/\Q$target->{line}\E/, "$target->{id} aplicado");
+        my $path = $root . $target->{path};
+        open(my $fh, '<', $path) or die "ler $path: $!";
+        my @lines = <$fh>;
+        close($fh);
+        my @inserted = grep { $lines[$_] eq $target->{line} . "\n" } 0 .. $#lines;
+        is(scalar(@inserted), 1, "$target->{id} inserção única para guard") or next;
+        my @errors = ModulePatchGuards::check_target($target, \@lines, $inserted[0]);
+        ok(!@errors, "$target->{id} posição e declarações protegidas")
+            or diag join('; ', @errors);
     }
     my $off_again = MMPve::Core::Patch->apply(core => 0, active_modules => {}, no_restart => 1, syntax_check => 'never');
     ok($off_again->{ok}, 'desligar reverte');
@@ -230,6 +240,55 @@ subtest 'reload pós-worker usa apenas daemons pendentes e recupera falha' => su
     is(scalar(@reloads), 2, 'reload inicial e recuperação');
     is_deeply($reloads[0], [qw(pve-ha-crm pve-ha-lrm pvedaemon pveproxy pvescheduler)],
         'só os daemons declarados pelos alvos mudaram');
+};
+
+# Caso real do Rock 5: a linha do vdisk_clone caía no get_volume_attribute
+# (primeira de 19 ocorrências da âncora) e usava $vmid/$snap fora de escopo.
+subtest 'guard pega variável não declarada na função onde a linha caiu' => sub {
+    my $line = '    eval { require PVE::MMTools::PoolLimits; 1 } && PVE::MMTools::PoolLimits->check_storage_clone($cfg, $volid, $vmid, $snap);';
+    my @lines = (
+        "sub get_volume_attribute {\n",
+        "    my (\$cfg, \$volid, \$attribute) = \@_;\n",
+        "    my (\$storeid, \$volname) = parse_volume_id(\$volid);\n",
+        "$line\n",
+        "    return;\n",
+        "}\n",
+        "sub vdisk_clone {\n",
+        "    my (\$cfg, \$volid, \$vmid, \$snap) = \@_;\n",
+        "    my (\$storeid, \$volname) = parse_volume_id(\$volid);\n",
+        "}\n",
+    );
+    my @errors = ModulePatchGuards::check_target({
+        scope_anchor => qr/^\s*sub\s+get_volume_attribute\b/,
+        expected_function => 'sub get_volume_attribute', line => $line,
+    }, \@lines, 3);
+    is_deeply([ sort @errors ], [ '$snap não declarado antes da inserção', '$vmid não declarado antes da inserção' ],
+        'só $vmid e $snap são apontados') or diag explain \@errors;
+    my @wrong_fn = ModulePatchGuards::check_target({
+        scope_anchor => qr/^\s*sub\s+get_volume_attribute\b/,
+        expected_function => 'sub vdisk_clone', line => $line,
+    }, \@lines, 3);
+    ok((grep { /scope não começa na expected_function/ } @wrong_fn), 'função errada é apontada');
+    splice @lines, 3, 1;
+    splice @lines, 8, 0, "$line\n";
+    my @ok = ModulePatchGuards::check_target({
+        scope_anchor => qr/^\s*sub\s+vdisk_clone\b/,
+        expected_function => 'sub vdisk_clone', line => $line,
+    }, \@lines, 8);
+    is_deeply(\@ok, [], 'no vdisk_clone a mesma linha passa') or diag explain \@ok;
+};
+
+subtest 'escopo de sub plain não procura âncora na função seguinte' => sub {
+    my $target = {
+        scope_anchor => qr/^\s*sub\s+first\b/,
+        anchor => qr/^\s*my\s+\$inside\b/,
+    };
+    my @lines = (
+        "sub first {\n", "    return;\n", "}\n",
+        "sub second {\n", "    my \$inside = 1;\n", "}\n",
+    );
+    ok(!defined(MMPve::Core::Patch->_anchor_index($target, \@lines)),
+        'âncora ausente dentro do sub retorna undef');
 };
 
 done_testing();

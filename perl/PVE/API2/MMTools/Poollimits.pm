@@ -62,7 +62,7 @@ __PACKAGE__->register_method({
     name => 'update_limits', path => '{poolid}', method => 'PUT', proxyto => 'node',
     protected => 1,
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Grava os limites de CPU e RAM de um pool.',
+    description => 'Grava os limites de CPU, RAM e disco de um pool.',
     parameters => {
         additionalProperties => 0,
         properties => {

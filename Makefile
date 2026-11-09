@@ -104,6 +104,7 @@ check-anchors: js
 		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl qemu-server pve-container; do \
 			cp -a "$$bundle/x/$$package/." "$$combined/"; \
 		done; \
+		MM_PVE_UPSTREAM_ROOT="$$bundle/x" $(PROVE) t/poollimits/02_patch_calls.t; \
 		perl -Ilib -Iperl -It/lib t/anchors/module-patches-check.pl "$$combined"; \
 		rm -rf -- "$$combined"; \
 	done; \
