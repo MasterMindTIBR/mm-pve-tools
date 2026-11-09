@@ -18,6 +18,8 @@ $ENV{MM_PVE_CONFIG_DIR} = "$tmp/etc/pve/mm-tools";
 $ENV{MM_PVE_DISABLE_CFS_LOCK} = 1;
 $ENV{MM_PVE_BIN} = '/usr/sbin/mm-pve';
 my $active = 1;
+my $unit_state = 'activating';
+my $systemctl_broken = 0;
 my $apt_ok = 1;
 my @systemd_runs;
 my $kernel_output = "install ok installed\tpve-kernel-6.8.0-1-pve\t6.8.0\n"
@@ -30,7 +32,17 @@ local $MMPve::Core::Runner::OVERRIDE = sub {
     if ($cmd eq 'dpkg' && $argv->[1] eq '--compare-versions') {
         return { ok => 1, rc => ($argv->[2] gt $argv->[4] ? 0 : 1), out => '', err => '' };
     }
-    return { ok => $active ? 1 : 0, rc => $active ? 0 : 3, out => '', err => '' } if $cmd eq 'systemctl';
+    if ($cmd eq 'systemctl') {
+        return { ok => 0, rc => 1, out => '', err => "Failed to connect to bus\n" } if $systemctl_broken;
+        my $st = $active ? $unit_state : 'inactive';
+        # Semântica real do systemd: is-active só sai 0 em active/reloading/refreshing;
+        # show --value imprime o ActiveState e sai 0 mesmo com a unit já coletada.
+        if (grep { $_ eq 'is-active' } @{$argv}) {
+            my $ok = $st =~ /\A(?:active|reloading|refreshing)\z/ ? 1 : 0;
+            return { ok => $ok, rc => $ok ? 0 : 3, out => "$st\n", err => '' };
+        }
+        return { ok => 1, rc => 0, out => "$st\n", err => '' };
+    }
     if ($cmd eq 'systemd-run') {
         push @systemd_runs, [ @{$argv} ];
         return { ok => 1, rc => 0, out => '', err => '' };
@@ -112,6 +124,33 @@ subtest 'falha vira failed e job perdido vira lost' => sub {
     $active = 0;
     is(MMPve::Module::Updates->status('node-c', pending_cb => sub { [] })->{job}{state}, 'lost', 'unit inativa vira lost');
     $active = 1;
+};
+
+# Achado do lab: a unit oneshot fica em "activating" durante todo o
+# dist-upgrade. Ler isso como morte marcava o job como lost em 2 s e deixava
+# um segundo apt-get rodar em paralelo no mesmo node.
+subtest 'worker rodando em unit oneshot (activating) segura o node' => sub {
+    my $running = MMPve::Module::Updates->request_run('node-act', actor => 'root@pam');
+    my $path = MMPve::Module::Updates->state_dir . '/node-act.json';
+    my $s = decode_json(read_file($path));
+    $s->{state} = 'running';
+    delete $s->{launching};
+    write_file_atomic($path, encode_json($s));
+    for my $st (qw(activating active deactivating reloading)) {
+        $unit_state = $st;
+        is(MMPve::Module::Updates->status('node-act', pending_cb => sub { [] })->{job}{state}, 'running', "$st mantém o job rodando");
+        ok(!eval { MMPve::Module::Updates->request_run('node-act', actor => 'root@pam'); 1 }, "$st recusa segundo job");
+        like($@, qr/já existe job ativo/, "$st: mensagem do job ativo");
+    }
+    $unit_state = 'activating';
+    $systemctl_broken = 1;
+    ok(!eval { MMPve::Module::Updates->request_run('node-act', actor => 'root@pam'); 1 }, 'systemd sem resposta não libera segundo job');
+    is(decode_json(read_file($path))->{state}, 'running', 'systemd sem resposta não marca lost');
+    $systemctl_broken = 0;
+    $unit_state = 'failed';
+    is(MMPve::Module::Updates->status('node-act', pending_cb => sub { [] })->{job}{state}, 'lost', 'unit failed vira lost');
+    ok(MMPve::Module::Updates->request_run('node-act', actor => 'root@pam'), 'depois do lost o node aceita job novo');
+    $unit_state = 'activating';
 };
 
 subtest 'kernel e reboot fail-closed' => sub {

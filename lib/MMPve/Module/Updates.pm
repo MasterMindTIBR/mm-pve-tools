@@ -142,8 +142,16 @@ sub _append_log {
 sub _unit_active {
     my ($unit) = @_;
     return 0 unless defined($unit) && $unit =~ /\Amm-pve-update-[0-9a-f-]+\z/;
-    my $r = MMPve::Core::Runner->run(['systemctl', 'is-active', '--quiet', $unit], timeout => 15);
-    return $r->{ok} ? 1 : 0;
+    # A unit é oneshot: enquanto o worker roda ela fica em "activating", e
+    # "systemctl is-active" sai com erro nesse estado. Só inactive/failed (ou
+    # unit já coletada, que aparece como inactive) significa worker morto. Se
+    # o systemd não responder, o job continua ativo: na dúvida, nada de
+    # liberar um segundo apt em paralelo.
+    my $r = MMPve::Core::Runner->run(['systemctl', 'show', '--property=ActiveState', '--value', $unit], timeout => 15);
+    return 1 unless $r->{ok};
+    my ($state) = ($r->{out} // '') =~ /\A\s*([a-z-]+)/;
+    return 1 unless defined $state;
+    return $state =~ /\A(?:inactive|failed)\z/ ? 0 : 1;
 }
 
 sub _reconcile_locked {

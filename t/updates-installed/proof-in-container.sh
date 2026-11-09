@@ -46,11 +46,24 @@ first=$(mm-pve --json updates run --node "$node")
 job=$(printf '%s\n' "$first" | sed -n 's/.*"job" *: *"\([0-9a-f-]*\)".*/\1/p')
 [ -n "$job" ] || { echo 'job não foi criado' >&2; exit 1; }
 
+# O segundo pedido tem de chegar com o worker já rodando (launching limpo),
+# senão a reserva de lançamento recusa sozinha e a checagem da unit nunca é
+# exercida. Foi assim que "activating" passou por aqui e quebrou no lab.
+state=/etc/pve/mm-tools/updates/$node.json
+started=
+for _ in $(seq 1 60); do
+    started=$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print("yes" if s.get("state") == "running" and not s.get("launching") else s.get("state"))' "$state" 2>/dev/null || true)
+    [ "$started" = yes ] && break
+    sleep 0.5
+done
+[ "$started" = yes ] || { echo "worker não começou a rodar (estado: ${started:-desconhecido})" >&2; exit 1; }
+unit_state=$(systemctl show --property=ActiveState --value "mm-pve-update-$job")
+echo "unit do job durante o upgrade: $unit_state"
+
 second_rc=0
 mm-pve --json updates run --node "$node" >/tmp/mm-updates-second.out 2>&1 || second_rc=$?
 [ "$second_rc" -ne 0 ] || { echo 'segundo job foi aceito durante o primeiro' >&2; cat /tmp/mm-updates-second.out >&2; exit 1; }
 
-state=/etc/pve/mm-tools/updates/$node.json
 final_state=
 for _ in $(seq 1 120); do
     if [ -f "$state" ]; then
