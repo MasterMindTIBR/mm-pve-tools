@@ -45,6 +45,9 @@ my $node_perm = { check => ['perm', '/nodes/{node}', ['Sys.Modify']] };
 
 __PACKAGE__->register_method({
     name => 'status', path => 'status', method => 'GET', proxyto => 'node',
+    # protected: roda no pvedaemon (root). No pveproxy (www-data) o lock de
+    # domínio do cfs falha com 'pve cluster filesystem not online'.
+    protected => 1,
     permissions => $node_perm,
     description => 'Status de pacotes e jobs de atualização do node.',
     parameters => { additionalProperties => 0, properties => $node_param },
@@ -129,6 +132,7 @@ __PACKAGE__->register_method({
 
 __PACKAGE__->register_method({
     name => 'log', path => 'log', method => 'GET', proxyto => 'node',
+    protected => 1,
     permissions => $node_perm,
     description => 'Lê uma página do log de um job gerado pelo sistema.',
     parameters => {
