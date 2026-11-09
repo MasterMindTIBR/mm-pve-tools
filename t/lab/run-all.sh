@@ -71,6 +71,10 @@ if (( status == 0 )); then run_step gateway-vm bash "${script_dir}/gateway-vm.sh
 if (( status == 0 )); then run_step restore bash "${script_dir}/e2e-restore.sh" || status=$?; fi
 if (( status == 0 )); then run_step branding bash "${script_dir}/e2e-branding.sh" || status=$?; fi
 if (( status == 0 )); then run_step ui bash "${script_dir}/e2e-ui.sh" || status=$?; fi
+# updates reinicia um node; poollimits só começa depois que o passo anterior
+# devolveu quorum e serviços ao estado saudável.
+if (( status == 0 )); then run_step updates bash "${script_dir}/e2e-updates.sh" || status=$?; fi
+if (( status == 0 )); then run_step poollimits bash "${script_dir}/e2e-poollimits.sh" || status=$?; fi
 
 write_summary
 if (( status != 0 )); then
