@@ -199,12 +199,44 @@ sub check {
     };
 }
 
+# Pool ou storage apagado no PVE deixa entrada órfã na config, e a validação de
+# existência na gravação cobre a seção inteira: uma órfã travava a gravação de
+# limites de qualquer pool. Na gravação, pools que não existem mais saem e
+# storages que sumiram saem dos limites dos outros pools (um limite órfão não
+# protege nada). O pool que está sendo gravado continua validado à risca.
+sub prune_missing {
+    my ($class, $p, $resources, $keep) = @_;
+    my @removed;
+    return \@removed unless ref($p) eq 'HASH' && ref($p->{pools}) eq 'HASH' && ref($resources) eq 'HASH';
+    my $pools = $resources->{pools} || {};
+    my $stores = $resources->{storages} || {};
+    for my $pool (sort keys %{ $p->{pools} }) {
+        next if defined($keep) && $pool eq $keep;
+        if (!$pools->{$pool}) {
+            delete $p->{pools}{$pool};
+            push @removed, "pool $pool";
+            next;
+        }
+        my $ds = $p->{pools}{$pool}{disk_storage};
+        next unless ref($ds) eq 'HASH' && ref($ds->{limits}) eq 'HASH';
+        my %limits = %{ $ds->{limits} };
+        my @gone = sort grep { !$stores->{$_} } keys %limits;
+        next unless @gone;
+        delete @limits{@gone};
+        push @removed, map { "storage $_ do pool $pool" } @gone;
+        $p->{pools}{$pool} = { %{ $p->{pools}{$pool} },
+            disk_storage => %limits ? { %{$ds}, limits => \%limits } : { enabled => 0 } };
+    }
+    return \@removed;
+}
+
 sub _save_pool {
     my ($class, $poolid, $value, %opt) = @_;
     my ($cfg, $digest) = MMPve::Core::Config->load;
     my $p = ref($cfg->{poollimits}) eq 'HASH' ? { %{ $cfg->{poollimits} } } : { pools => {} };
     $p->{pools} = { %{ $p->{pools} || {} }, $poolid => $value };
     my $resources = eval { $class->_catalog };
+    $class->prune_missing($p, $resources, $poolid) if $resources;
     my %save = defined($opt{digest}) ? (digest => $opt{digest}) : (digest => $digest);
     $save{resources} = $resources if $resources;
     return MMPve::Core::Config->save_section('poollimits', $p, %save);

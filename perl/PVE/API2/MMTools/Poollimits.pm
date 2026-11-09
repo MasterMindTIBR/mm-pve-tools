@@ -8,6 +8,7 @@ use PVE::RPCEnvironment;
 use PVE::RESTHandler;
 
 use MMPve::Core::Config;
+use MMPve::Module::Poollimits;
 use PVE::MMTools::PoolLimits;
 
 use base qw(PVE::RESTHandler);
@@ -95,6 +96,7 @@ __PACKAGE__->register_method({
         my $p = ref($cfg->{poollimits}) eq 'HASH' ? { %{ $cfg->{poollimits} } } : { pools => {} };
         $p->{pools} = { %{ $p->{pools} || {} }, $param->{poolid} => $value };
         my %opt = (resources => PVE::MMTools::PoolLimits->resource_catalog);
+        MMPve::Module::Poollimits->prune_missing($p, $opt{resources}, $param->{poolid});
         $opt{digest} = $param->{digest} if defined($param->{digest});
         my ($saved, $new_digest) = MMPve::Core::Config->save_section('poollimits', $p, %opt);
         return { revision => $saved->{revision}, digest => $new_digest,
