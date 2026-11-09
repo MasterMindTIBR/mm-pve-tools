@@ -568,9 +568,16 @@ sub _usage {
         }
         next if $metrics->{template};
         my $running = _running($type, $vmid, $entry, \%opts);
+        # Reserva de start ainda válida conta como ligado: o RRD do cluster só
+        # mostra o guest ligado ~10 s depois, e nessa janela outro start passava
+        # do limite (achado do e2e no lab; vinha do Rock 4).
+        my $live_res = $reservations->{"$type:$vmid"};
+        my $starting = ref($live_res) eq 'HASH' && $live_res->{starting} ? 1 : 0;
         my $count_cpu_memory = 1;
         if (($limits->{mode} // 'allocated') eq 'running') {
-            if (!defined($running)) {
+            if ($starting) {
+                $count_cpu_memory = 1;
+            } elsif (!defined($running)) {
                 push @errors, "guest $vmid: estado running indisponível"
                     if _has_cpu_or_memory_limit($limits);
                 $count_cpu_memory = 0;

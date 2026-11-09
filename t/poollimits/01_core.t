@@ -189,6 +189,26 @@ ok(eval {
 }, 'starting usa a mesma reserva') or diag $@;
 ok(-f "$ENV{MM_PVE_CONFIG_DIR}/poollimits-reservations/lab.json",
     'start grava reserva de guest iniciando');
+# Achado do e2e no lab: o RRD ainda mostra 101 parado logo depois do start; a
+# reserva de "iniciando" tem de contar, senão um segundo start passa do limite.
+$usage = PVE::MMTools::PoolLimits->accounting('lab', config_cb => $cb,
+    vmlist => { 101 => { type => 'qemu', node => 'node-b' }, 102 => { type => 'qemu', node => 'node-b' },
+        301 => { type => 'qemu', node => 'node-b' } });
+is($usage->{usage}{cpu}, 3, 'guest iniciando conta no modo running antes do RRD (1 ligado + 2 iniciando)');
+$cfg->{poollimits}{pools}{lab}{cpu}{max} = 3;
+MMPve::Core::Config->save($cfg);
+$configs{'qemu:104'} = { vcpus => 1, memory => 128 };
+$PVE::MMTools::PoolLimits::TEST_USERCFG->{pools}{lab}{vms}{104} = 1;
+$PVE::MMTools::PoolLimits::TEST_USERCFG->{vms}{104} = 'lab';
+$PVE::MMTools::PoolLimits::TEST_VMLIST->{104} = { type => 'qemu', node => 'node-b' };
+$PVE::MMTools::PoolLimits::TEST_RRD->{'pve-vm-9.0/104'} = [0, '', 'stopped', 0];
+ok(!eval {
+    PVE::MMTools::PoolLimits->check_start($configs{'qemu:104'}, 104, 'pre-start');
+    1;
+}, 'segundo start na janela do RRD é recusado');
+like($@, qr/limite de vCPU excedido/, 'pela conta de vCPU');
+$cfg->{poollimits}{pools}{lab}{cpu}{max} = 4;
+MMPve::Core::Config->save($cfg);
 
 $cfg->{modules}{poollimits} = 0;
 MMPve::Core::Config->save($cfg);
