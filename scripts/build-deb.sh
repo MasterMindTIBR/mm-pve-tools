@@ -10,16 +10,25 @@ readonly REPO_ROOT
 
 lintian=0
 in_container=0
+version_suffix=''
 for arg in "$@"; do
     case "$arg" in
         --lintian) lintian=1 ;;
         --in-container) in_container=1 ;;
+        --version-suffix=*) version_suffix=${arg#--version-suffix=} ;;
         *)
-            printf 'uso: %s [--lintian] [--in-container]\n' "$0" >&2
+            printf 'uso: %s [--lintian] [--in-container] [--version-suffix=SUFIXO]\n' "$0" >&2
             exit 2
             ;;
     esac
 done
+# O sufixo entra só na revisão Debian da cópia de build (0.2.0-1 vira
+# 0.2.0-1+SUFIXO). Serve ao lab: com a mesma versão do APT, um dist-upgrade
+# trocava o build em teste pelo pacote publicado.
+if [[ -n $version_suffix && ! $version_suffix =~ ^[a-z0-9][a-z0-9.+~]*$ ]]; then
+    printf 'sufixo de versão inválido: %s\n' "$version_suffix" >&2
+    exit 2
+fi
 
 if (( ! in_container )); then
     command -v docker >/dev/null 2>&1 || {
@@ -38,6 +47,7 @@ if (( ! in_container )); then
         bash /src/scripts/build-deb.sh --in-container
     )
     (( lintian )) && docker_args+=(--lintian)
+    [[ -n $version_suffix ]] && docker_args+=("--version-suffix=${version_suffix}")
     exec docker "${docker_args[@]}"
 fi
 
@@ -92,6 +102,18 @@ rm -rf -- "${REPO_ROOT}/dist"
 mkdir -p -- "${REPO_ROOT}/dist"
 
 cd -- "$build_root"
+if [[ -n $version_suffix ]]; then
+    base_version=$(dpkg-parsechangelog -l debian/changelog -SVersion)
+    maintainer=$(dpkg-parsechangelog -l debian/changelog -SMaintainer)
+    {
+        printf 'mm-pve-tools (%s+%s) UNRELEASED; urgency=medium\n\n' "$base_version" "$version_suffix"
+        printf '  * Build de laboratório; não publicar.\n\n'
+        printf ' -- %s  %s\n\n' "$maintainer" "$(date -R)"
+        cat debian/changelog
+    } >debian/changelog.lab
+    mv -- debian/changelog.lab debian/changelog
+    printf 'versão do build de laboratório: %s+%s\n' "$base_version" "$version_suffix"
+fi
 mk-build-deps --install --remove --tool='apt-get -y --no-install-recommends' debian/control
 rm -f -- ../mm-pve-tools_*.deb ../mm-gw-restore_*.deb ../mm-pve-tools_*.changes \
     ../mm-pve-tools_*.buildinfo
