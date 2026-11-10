@@ -83,6 +83,14 @@ cleanup() {
     printf 'OK: gui-smoke limpo (poollimits=%s updates=%s restaurados)\n' "${old_pl:-?}" "${old_up:-?}"
     exit "$rc"
 }
+
+lab_step 'gui-smoke: imagem do Playwright'
+# A mesma imagem do t/gui/run.sh. O smoke não pode depender de ela ter sido
+# construída antes por outro script; com a imagem presente o build é só cache.
+docker build -q -t "$image" -f "${repo}/t/gui/Dockerfile" "${repo}/t/gui" >/dev/null \
+    || lab_fail "build da imagem $image falhou"
+lab_pass "imagem $image pronta"
+
 trap cleanup EXIT
 
 lab_step 'gui-smoke: pool, VM, limites e usuários de teste'
