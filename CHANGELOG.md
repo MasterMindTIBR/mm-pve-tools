@@ -34,6 +34,9 @@ fim do pop-up de assinatura. Provada num cluster PVE 9.2 de três nodes
 
 ### Alterado
 
+- A tela MasterMind do Datacenter passa a se chamar **MM Tools** e ganha a
+  aba "Sobre": versão, módulos, links do código e do APT, créditos e
+  licença.
 - Os patches agora podem mirar módulos de outros pacotes do PVE
   (`qemu-server`, `pve-container`, `libpve-guest-common-perl`,
   `libpve-storage-perl`, `libpve-access-control`), além do `pve-manager`.
@@ -50,9 +53,9 @@ fim do pop-up de assinatura. Provada num cluster PVE 9.2 de três nodes
   node.
 - O modo paralelo do updates atualiza todos os nodes escolhidos ao mesmo
   tempo; o preflight só exige quórum, HA sem erro e Ceph `HEALTH_OK`. Em
-  produção, prefira o sequencial. O reboot é o do próprio PVE: os guests
-  seguem a política de shutdown do HA e do `pve-guests`, e nada é migrado
-  antes.
+  produção, prefira um node de cada vez. O reboot é o do próprio PVE: os
+  guests seguem a política de shutdown do HA e do `pve-guests`, e nada é
+  migrado antes.
 - Não provados no lab: replicação, import de OVA, migração de CT com troca
   de storage, cluster com Ceph e desempenho com muitos guests por pool.
 - `mm-pve updates reboot` sem `--confirm`, ou com o nome errado, recusa mas
