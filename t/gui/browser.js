@@ -150,12 +150,36 @@ async function main() {
             return texts;
         });
         if (!navTexts) { throw new Error('Datacenter navigation store not found'); }
-        if (!navTexts.includes('MasterMind')) {
-            throw new Error(`MasterMind missing from Datacenter navigation: ${navTexts.join(', ')}`);
+        if (!navTexts.includes('MM Tools')) {
+            throw new Error(`MM Tools missing from Datacenter navigation: ${navTexts.join(', ')}`);
         }
-        await page.locator('.x-treelist-item-text', { hasText: 'MasterMind' }).first()
+        await page.locator('.x-treelist-item-text', { hasText: 'MM Tools' }).first()
             .waitFor({ state: 'visible', timeout: TIMEOUT });
         console.log('GUI: tree found');
+        const about = await page.evaluate(() => {
+            const tools = Ext.create('MM.panel.Tools', { renderTo: Ext.getBody(), width: 1000, height: 600 });
+            const tabs = tools.items.getRange();
+            const last = tabs[tabs.length - 1];
+            tools.setActiveTab(last);
+            const html = last.body ? last.body.dom.innerHTML : '';
+            const result = {
+                title: tools.title, last: last.title, itemId: last.itemId,
+                version: !!last.body?.dom.querySelector('.mm-about-version')?.textContent,
+                repo: html.includes('https://github.com/MasterMindTIBR/mm-pve-tools'),
+                license: html.includes('AGPL'),
+                credits: html.includes('MasterMindTI') && !html.includes('MasterMind TI')
+                    && html.includes('https://github.com/junglivre') && !html.includes('mailto:'),
+                blank: [...last.body.dom.querySelectorAll('a[target="_blank"]')]
+                    .every((a) => a.rel.includes('noopener')),
+            };
+            tools.destroy();
+            return result;
+        });
+        if (about.title !== 'MM Tools' || about.last !== 'Sobre' || about.itemId !== 'about'
+            || !about.version || !about.repo || !about.license || !about.credits || !about.blank) {
+            throw new Error(`aba Sobre incompleta: ${JSON.stringify(about)}`);
+        }
+        console.log('GUI: MM Tools com a aba Sobre por último (versão, repositório, créditos, licença)');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();
@@ -488,7 +512,7 @@ async function main() {
         }
         console.log('GUI OK: hardware edit e resize exibem a mensagem de limite do servidor');
         if (mmRequests !== 1) { throw new Error(`mm-tools.js requests=${mmRequests}, esperado 1`); }
-        console.log('GUI OK: script inserido, MasterMind na árvore, Publicar pasta… na toolbar');
+        console.log('GUI OK: script inserido, MM Tools na árvore, Publicar pasta… na toolbar');
     } catch (error) {
         console.error(`GUI PAGE ERRORS:\n${pageErrors.join('\n') || '(empty)'}`);
         console.error(`GUI FAIL: ${error.stack || error}`);

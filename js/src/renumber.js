@@ -82,7 +82,7 @@ Ext.define('MM.panel.Vmid', {
 		success: () => {
 		    me.digest = undefined;
 		    me.reload();
-		    Ext.Msg.alert('MasterMind', gettext('Saved'));
+		    Ext.Msg.alert('MM Tools', gettext('Saved'));
 		},
 	    });
 	};
@@ -93,7 +93,7 @@ Ext.define('MM.panel.Vmid', {
 	me.saveNextId = function () {
 	    let first = store.getAt(0);
 	    if (!first || !first.get('from') || !first.get('to')) {
-		Ext.Msg.alert('MasterMind', 'Cadastre a faixa principal antes (primeira linha da grade).');
+		Ext.Msg.alert('MM Tools', 'Cadastre a faixa principal antes (primeira linha da grade).');
 		return;
 	    }
 	    MM.Api.request({
@@ -101,7 +101,7 @@ Ext.define('MM.panel.Vmid', {
 		url: '/cluster/options',
 		params: { 'next-id': `lower=${first.get('from')},upper=${first.get('to')}` },
 		success: () => Ext.Msg.alert(
-		    'MasterMind',
+		    'MM Tools',
 		    `next-id do datacenter gravado: ${first.get('from')}–${first.get('to')}`,
 		),
 	    });
@@ -327,7 +327,7 @@ Ext.define('MM.VmidSchemeCache', {
 	    if (vmid >= r.from && vmid <= r.to) { return null; }
 	}
 	let labels = ranges.map((r) => r.label).join(', ');
-	return `AVISO: VMID ${vmid} fora das faixas MasterMind (${labels}). ` +
+	return `AVISO: VMID ${vmid} fora das faixas do MM Tools (${labels}). ` +
 	    'Confirme se é intencional.';
     },
 });

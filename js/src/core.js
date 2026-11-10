@@ -1,4 +1,4 @@
-/* mm-tools.js — núcleo da interface MasterMind (Datacenter → MasterMind).
+/* mm-tools.js — núcleo da interface MM Tools (Datacenter → MM Tools).
  * Carregado pelo <script> extra inserido no index.html.tpl (patch de 1 linha).
  * Namespace MM.*; módulos registram abas com MM.registerTab(...).
  * Estilo: Ext JS 6, mesmo padrão do pvemanagerlib.js.
@@ -6,7 +6,7 @@
 
 Ext.define('MM.Version', { singleton: true, version: '@MM_PVE_VERSION@' });
 
-/* Registro de abas da tela MasterMind (cada módulo adiciona a sua). */
+/* Registro de abas da tela MM Tools (cada módulo adiciona a sua). */
 Ext.define('MM.Registry', {
     singleton: true,
     tabs: [],
@@ -263,12 +263,95 @@ Ext.define('MM.panel.Diag', {
     },
 });
 
+/* ------------------------- Sobre ------------------------- */
+
+Ext.define('MM.About', {
+    singleton: true,
+    repo: 'https://github.com/MasterMindTIBR/mm-pve-tools',
+    ntfs3g: 'https://github.com/junglivre/pve-file-restore-ntfs3g',
+    apt: 'https://apt.mastermindti.cloud/debian',
+    license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+    // Colaboradores: [nome, usuário do GitHub].
+    contributors: [
+	['jung', 'junglivre'],
+    ],
+    modules: [
+	['Renumber', 'troca o VMID de VMs e CTs sem copiar os discos.'],
+	['Restore', 'publica uma pasta de um backup do PBS para a VM do cliente, por SMB somente leitura.'],
+	['Branding', 'logo e título em todos os nodes.'],
+	['Interface', 'console padrão por tipo e sem o pop-up de assinatura.'],
+	['Updates', 'atualiza os nodes pela GUI e sugere reboot só quando o kernel muda.'],
+	['Limites de pool', 'vCPU, RAM e disco por pool, valendo em todo o PVE.'],
+    ],
+
+    version: function () {
+	let v = MM.Version.version;
+	return v && v.indexOf('@') !== 0 ? v : 'desenvolvimento';
+    },
+
+    link: function (url, text) {
+	let u = MM.Utils.html(url);
+	return `<a href="${u}" target="_blank" rel="noopener noreferrer">${MM.Utils.html(text || url)}</a>`;
+    },
+
+    html: function () {
+	let h = MM.Utils.html;
+	let section = (title, body) =>
+	    `<div style="margin-top:18px"><div style="font-size:14px;font-weight:600;margin-bottom:6px">${h(title)}</div>${body}</div>`;
+	let list = (items) => `<ul style="margin:0;padding-left:20px;line-height:1.7">${items.map((i) => `<li>${i}</li>`).join('')}</ul>`;
+	return [
+	    '<div style="max-width:760px">',
+	    '<div style="display:flex;align-items:center;gap:12px">',
+	    '<i class="fa fa-puzzle-piece" style="font-size:32px"></i>',
+	    '<div><div style="font-size:20px;font-weight:600">MM Tools</div>',
+	    `<div>Versão <b class="mm-about-version">${h(MM.About.version())}</b> · pacote <code>mm-pve-tools</code></div></div>`,
+	    '</div>',
+	    '<p style="margin-top:12px">Extensões da MasterMindTI para a GUI do Proxmox VE. ',
+	    'Cada módulo é ligado à parte e pode ser desligado sem deixar resto.</p>',
+	    section('Módulos', list(MM.About.modules.map(([name, text]) => `<b>${h(name)}</b>: ${h(text)}`))),
+	    section('Links', list([
+		`Código-fonte: ${MM.About.link(MM.About.repo, 'github.com/MasterMindTIBR/mm-pve-tools')}`,
+		`Novidades de cada versão: ${MM.About.link(`${MM.About.repo}/blob/master/CHANGELOG.md`, 'CHANGELOG')}`,
+		`Reportar um problema: ${MM.About.link(`${MM.About.repo}/issues`, 'issues no GitHub')}`,
+		`Repositório APT: ${MM.About.link(MM.About.apt, 'apt.mastermindti.cloud')}`,
+	    ])),
+	    section('Créditos', list([
+		'Desenvolvido pela <b>MasterMindTI</b>:'
+		    + list(MM.About.contributors.map(([name, user]) =>
+			`${h(name)} ${MM.About.link(`https://github.com/${user}`, `(@${user})`)}`)),
+		`Restauração de NTFS com deduplicação do Windows: ${MM.About.link(MM.About.ntfs3g, 'pve-file-restore-ntfs3g')}`,
+		'Feito sobre o Proxmox VE, o Proxmox Widget Toolkit e o Ext JS.',
+	    ])),
+	    section('Licença', `<p style="margin:0">Software livre sob a ${MM.About.link(MM.About.license, 'GNU AGPL 3.0 ou posterior')}. `
+		+ '© 2026 MasterMindTI.</p>'
+		+ '<p style="margin-top:8px;color:#888">Proxmox é marca registrada da Proxmox Server Solutions GmbH.<br>'
+		+ 'O MM Tools é um projeto independente, sem vínculo com a Proxmox.</p>'),
+	    '</div>',
+	].join('');
+    },
+});
+
+Ext.define('MM.panel.About', {
+    extend: 'Ext.panel.Panel',
+    alias: 'widget.mmPanelAbout',
+    title: 'Sobre',
+    iconCls: 'fa fa-fw fa-info-circle',
+    itemId: 'about',
+    scrollable: true,
+    bodyPadding: 20,
+
+    initComponent: function () {
+	this.html = MM.About.html();
+	this.callParent();
+    },
+});
+
 /* ------------------------- Painel principal ------------------------- */
 
 Ext.define('MM.panel.Tools', {
     extend: 'Ext.tab.Panel',
     alias: 'widget.mmToolsPanel',
-    title: 'MasterMind',
+    title: 'MM Tools',
     iconCls: 'fa fa-fw fa-puzzle-piece',
 
     initComponent: function () {
@@ -280,6 +363,7 @@ Ext.define('MM.panel.Tools', {
 	MM.Registry.tabs.forEach((cfg) => {
 	    items.push(Ext.apply({ closable: false }, cfg));
 	});
+	items.push({ xtype: 'mmPanelAbout' });
 	Ext.apply(me, { items });
 	me.callParent();
     },
@@ -295,8 +379,9 @@ Ext.define('PVE.dc.Config', {
 	if (caps.dc?.['Sys.Audit']) {
 	    items.push({
 		xtype: 'mmToolsPanel',
+		// itemId antigo mantido: é o que fica no estado/URL da GUI.
 		itemId: 'mastermind',
-		title: 'MasterMind',
+		title: 'MM Tools',
 		iconCls: 'fa fa-fw fa-puzzle-piece',
 	    });
 	}
