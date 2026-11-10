@@ -16,7 +16,7 @@ Architecture: all
 Depends: ${misc:Depends},
  ${perl:Depends},
  pve-manager (>= 9.0),
- pve-file-restore-ntfs3g (>= 2.0)
+ pve-file-restore-ntfs3g (>= 2.1.11)
 Description: MasterMind tool modules for the Proxmox VE GUI
  Extensible toolset from MasterMind TI that lives inside the Proxmox VE
  web GUI and survives PVE package updates.
