@@ -11,7 +11,8 @@ package PVE::API2::MMTools;
 #   PUT  mm-tools/config           salva (digest obrigatório p/ CAS)
 #   POST mm-tools/apply            aplica neste node (worker → Task Log)
 #   GET  mm-tools/status           diagnóstico deste node
-# Módulos (subclass): mm-tools/renumber, mm-tools/restore, mm-tools/branding
+# Módulos (subclass): mm-tools/renumber, mm-tools/restore, mm-tools/branding,
+# mm-tools/ui, mm-tools/updates, mm-tools/poollimits
 
 use strict;
 use warnings;
@@ -115,7 +116,7 @@ __PACKAGE__->register_method({
             node => get_standard_option('pve-node'),
             section => {
                 type => 'string',
-                pattern => '^(modules|vmid_scheme|restore|branding)$',
+                pattern => '^(modules|vmid_scheme|restore|branding|ui|updates|poollimits)$',
             },
             digest => {
                 type => 'string',
@@ -174,9 +175,9 @@ __PACKAGE__->register_method({
         my $node = $param->{node};
         my $realcmd = sub {
             my ($upid) = @_;
-            my $res = MMPve::Core::Runner->run([
-                '/usr/sbin/mm-pve', '--json', 'apply', '--no-reload',
-            ], timeout => 240);
+            my @cmd = ('/usr/sbin/mm-pve', '--json', 'apply', '--no-reload');
+            push @cmd, '--no-patches' if exists($param->{patches}) && !$param->{patches};
+            my $res = MMPve::Core::Runner->run(\@cmd, timeout => 240);
             die "mm-pve apply falhou (rc=$res->{rc}): "
                 . ($res->{err} || $res->{error} || 'sem diagnóstico') . "\n"
                 unless $res->{ok};
@@ -190,7 +191,8 @@ __PACKAGE__->register_method({
                 my $unit = 'mm-pve-reload-' . substr(random_uuid(), 0, 12);
                 my $reload = MMPve::Core::Runner->run([
                     'systemd-run', '--no-block', '--collect', "--unit=$unit",
-                    'systemctl', 'reload', 'pveproxy.service', 'pvedaemon.service',
+                    '/usr/sbin/mm-pve', '--json', 'patch', 'reload-verify',
+                    '--fallback-daemons', 'pveproxy,pvedaemon',
                 ], timeout => 30);
                 die "não consegui agendar reload pós-apply (unit $unit): "
                     . ($reload->{err} || $reload->{error} || "rc=$reload->{rc}") . "\n"
@@ -248,6 +250,24 @@ use PVE::API2::MMTools::Branding;
 __PACKAGE__->register_method({
     subclass => "PVE::API2::MMTools::Branding",
     path => 'branding',
+});
+
+use PVE::API2::MMTools::Ui;
+__PACKAGE__->register_method({
+    subclass => "PVE::API2::MMTools::Ui",
+    path => 'ui',
+});
+
+use PVE::API2::MMTools::Updates;
+__PACKAGE__->register_method({
+    subclass => "PVE::API2::MMTools::Updates",
+    path => 'updates',
+});
+
+use PVE::API2::MMTools::Poollimits;
+__PACKAGE__->register_method({
+    subclass => "PVE::API2::MMTools::Poollimits",
+    path => 'poollimits',
 });
 
 1;

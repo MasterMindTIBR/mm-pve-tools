@@ -12,9 +12,15 @@ lab_init_evidence
 repo_root=$(cd -- "${script_dir}/../.." && pwd -P)
 build_log="${LAB_EVIDENCE_RUN_DIR}/build.log"
 
-lab_step 'build: scripts/build-deb.sh'
+# Versão acima da publicada: senão um dist-upgrade real no lab (prova do
+# módulo updates) troca o build em teste pelo mm-pve-tools do APT.
+version_suffix="lab$(date -u +%Y%m%d%H%M%S)"
+if git_rev=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null); then
+    version_suffix+=".g${git_rev}"
+fi
+lab_step "build: scripts/build-deb.sh (+${version_suffix})"
 rc=0
-"${repo_root}/scripts/build-deb.sh" >"$build_log" 2>&1 || rc=$?
+"${repo_root}/scripts/build-deb.sh" "--version-suffix=${version_suffix}" >"$build_log" 2>&1 || rc=$?
 cat "$build_log"
 (( rc == 0 )) || lab_fail "build dos pacotes falhou (consulte $build_log)"
 

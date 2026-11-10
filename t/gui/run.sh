@@ -7,6 +7,7 @@ IMAGE='mm-pve-tools-gui:playwright-1.49.1'
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 ASSETS="$REPO/refs/upstream/pve-9.2.24"
 EXPECT_FAIL=''
+STALL_UI=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -19,6 +20,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo 'uso: --expect-fail-with JS' >&2; exit 2; }
             EXPECT_FAIL=$2
             shift 2
+            ;;
+        --stall-ui)
+            STALL_UI=1
+            shift
             ;;
         *)
             echo "opção desconhecida: $1" >&2
@@ -61,6 +66,7 @@ timeout --foreground 240s docker run --rm --init --network=none --ipc=host \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e MM_GUI_ASSETS=/assets \
+    -e MM_GUI_STALL_UI="$STALL_UI" \
     -e MM_GUI_OLD_JS="$OLD_JS_CONTAINER" \
     -v "$REPO:/repo:ro" \
     -v "$ASSETS:/assets:ro" \

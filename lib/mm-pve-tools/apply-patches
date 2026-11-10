@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# apply-patches — aplica/verifica/reverte os patches de 1 linha no pve-manager.
+# apply-patches — aplica/verifica/reverte patches de uma linha do núcleo e dos módulos.
 # Chamado por: postinst (configure/triggered), mm-pve apply, CI (--check).
 #
 # Saída/exit (modo apply): sempre 0 exceto catástrofe interna (5). Âncora

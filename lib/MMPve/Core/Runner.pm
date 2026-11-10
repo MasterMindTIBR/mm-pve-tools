@@ -91,6 +91,78 @@ sub run {
     return { ok => ($rc == 0 ? 1 : 0), rc => $rc, out => $out, err => $err };
 }
 
+sub run_stream {
+    my ($class, $argv, %opts) = @_;
+    die "argv precisa ser arrayref\n" unless ref $argv eq 'ARRAY';
+    die "comando vazio\n" unless @{$argv};
+
+    if ($OVERRIDE) {
+        my $res = $OVERRIDE->($argv, $opts{stdin});
+        die "OVERRIDE retornou valor inválido\n" unless ref $res eq 'HASH';
+        $res->{ok} = (($res->{rc} // 1) == 0) ? 1 : 0;
+        $res->{$_} //= '' for qw(out err);
+        $opts{on_output}->($res->{out}, 'stdout') if $opts{on_output} && length $res->{out};
+        $opts{on_output}->($res->{err}, 'stderr') if $opts{on_output} && length $res->{err};
+        return $res;
+    }
+
+    my $timeout = $opts{timeout};
+    my ($out, $err) = ('', '');
+    my ($infh, $outfh, $errfh);
+    $errfh = gensym;
+    my @argv = map { (defined $_ && /\A(.*)\z/s) ? $1 : $_ } @{$argv};
+    my $pid = eval { open3($infh, $outfh, $errfh, @argv) };
+    if (!$pid) {
+        return { ok => 0, rc => 127, out => '', err => '',
+            error => "não consegui executar '$argv->[0]': $@" };
+    }
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    my $died;
+    eval {
+        alarm($timeout) if defined $timeout;
+        if (defined $opts{stdin}) {
+            print {$infh} $opts{stdin};
+        }
+        close($infh);
+        my $ready = IO::Select->new($outfh, $errfh);
+        while ($ready->count) {
+            for my $fh ($ready->can_read) {
+                my $chunk = '';
+                my $read = sysread($fh, $chunk, 8192);
+                if (!defined($read) || $read == 0) {
+                    $ready->remove($fh);
+                    close($fh);
+                    next;
+                }
+                if ($fh == $outfh) {
+                    $out .= $chunk;
+                    $opts{on_output}->($chunk, 'stdout') if $opts{on_output};
+                } else {
+                    $err .= $chunk;
+                    $opts{on_output}->($chunk, 'stderr') if $opts{on_output};
+                }
+            }
+        }
+        alarm(0) if defined $timeout;
+        1;
+    } or do { $died = 1 };
+    if ($died) {
+        kill('TERM', $pid);
+        my $i = 0;
+        while (kill(0, $pid) && $i++ < 20) { select(undef, undef, undef, 0.1) }
+        kill('KILL', $pid) if kill(0, $pid);
+        close($outfh);
+        close($errfh);
+        waitpid($pid, 0);
+        my $emsg = $@ // 'erro desconhecido';
+        chomp $emsg;
+        return { ok => 0, rc => -1, out => $out, err => $err,
+            timeout => 1, error => "timeout/erro executando @$argv: $emsg" };
+    }
+    my $rc = waitpid($pid, 0) ? $? >> 8 : -1;
+    return { ok => ($rc == 0 ? 1 : 0), rc => $rc, out => $out, err => $err };
+}
+
 # die em falha; retorna estrutura decodificada ('null' → undef)
 sub run_json {
     my ($class, @args) = @_;
@@ -103,14 +175,24 @@ sub run_json {
     return decode_json($out);
 }
 
+# Token UPID até espaço, aspas ou barra invertida (o \" da string JSON do
+# proxy); não exige o formato hexadecimal para aceitar o que o PVE devolver.
+my $UPID_RE = qr/UPID:[^\s"\\]+/;
+
 sub extract_upid {
     my ($class, $output) = @_;
     for my $line (reverse split /\n/, $output // '') {
         $line =~ s/^\s+|\s+$//g;
         next unless length $line;
+        # Para outro node o pvesh faz proxy e devolve a saída inteira do worker
+        # remoto numa única string JSON, sem quebras de linha, com a UPID no
+        # fim ("job ... agendado\"UPID:node:...\""). Vale a última UPID da linha.
         my $value = eval { decode_json($line) };
-        return $value if !$@ && defined($value) && !ref($value) && $value =~ /^UPID:/;
-        return $1 if $line =~ /^"?(UPID:[^"\r\n]+)"?,?$/;
+        my @texts = (!$@ && defined($value) && !ref($value)) ? ($value, $line) : ($line);
+        for my $text (@texts) {
+            my @all = $text =~ /($UPID_RE)/g;
+            return $all[-1] if @all;
+        }
     }
     die "saída do pvesh não contém UPID\n";
 }

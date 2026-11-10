@@ -10,6 +10,10 @@ key_url='https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gp
 key_sha256='136673be77aba35dcce385b28737689ad64fd785a797e57897589aed08db6e45'
 tag="mm-pve-tools-api:${key_sha256:0:12}"
 
+pve_version() {
+    awk -F= -v package="$1" '$1 == package { print $2 }' "$repo_dir/ci/pve-package-versions"
+}
+
 if ! command -v docker >/dev/null 2>&1; then
     echo 'test-api requer Docker no ambiente do Visionary/CI' >&2
     exit 2
@@ -27,8 +31,18 @@ RUN curl -fsSL '$key_url' -o /tmp/proxmox-archive-keyring-trixie.gpg \\
     && install -m 0644 /tmp/proxmox-archive-keyring-trixie.gpg /usr/share/keyrings/proxmox-archive-keyring-trixie.gpg \\
     && printf '%s\\n' 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring-trixie.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription' > /etc/apt/sources.list.d/pve.list
 RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \\
-    libpve-common-perl=9.2.5 libpve-access-control=9.1.2 libpve-cluster-perl=9.1.7 \\
-    libpve-rs-perl=0.15.3 libpve-storage-perl=9.1.13 && rm -rf /var/lib/apt/lists/*
+    libpve-common-perl=$(pve_version libpve-common-perl) \\
+    libpve-guest-common-perl=$(pve_version libpve-guest-common-perl) \\
+    libpve-access-control=$(pve_version libpve-access-control) \\
+    libpve-cluster-perl=$(pve_version libpve-cluster-perl) \\
+    pve-cluster=$(pve_version pve-cluster) \\
+    libpve-notify-perl=$(pve_version libpve-notify-perl) \\
+    libpve-cluster-api-perl=$(pve_version libpve-cluster-api-perl) \\
+    libpve-rs-perl=$(pve_version libpve-rs-perl) \\
+    libproxmox-rs-perl=$(pve_version libproxmox-rs-perl) \\
+    libpve-storage-perl=$(pve_version libpve-storage-perl) \\
+    qemu-server=$(pve_version qemu-server) \\
+    pve-container=$(pve_version pve-container) && rm -rf /var/lib/apt/lists/*
 EOF
 
 run_rc=0
@@ -48,8 +62,8 @@ if grep -Eqi 'skipped|skip:' /tmp/mm-pve-tools-api.tap; then
 fi
 files=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\1/p' /tmp/mm-pve-tools-api.tap)
 tests=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\2/p' /tmp/mm-pve-tools-api.tap)
-if [[ $files != 4 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
-    echo 't/api não executou exatamente 4 arquivos com testes bem-sucedidos' >&2
+if [[ $files != 7 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
+    echo 't/api não executou exatamente 7 arquivos com testes bem-sucedidos' >&2
     exit 4
 fi
 CONTAINER

@@ -16,6 +16,10 @@ sub name {
     return lc($n);
 }
 
+sub patch_targets {
+    return [];
+}
+
 sub validate_section {
     my ($class, $section) = @_;
     return ();    # sem erros por padrão

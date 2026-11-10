@@ -6,6 +6,7 @@ use base 'Exporter';
 our @EXPORT_OK = qw(get_standard_option register_standard_option);
 my %std = (
     'pve-node' => { type => 'string', format => 'pve-node' },
+    'pve-poolid' => { type => 'string', format => 'pve-poolid' },
 );
 sub register_standard_option { my ($name, $def) = @_; $std{$name} = $def }
 sub get_standard_option { my ($name, %extra) = @_; die "standard option '$name' não conhecida no stub\n" unless $std{$name}; return { %{$std{$name}}, %extra } }

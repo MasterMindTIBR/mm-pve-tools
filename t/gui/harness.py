@@ -11,12 +11,14 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 
 REPO = pathlib.Path('/repo')
 WORK = pathlib.Path('/work')
 ASSETS = pathlib.Path(os.environ['MM_GUI_ASSETS'])
 OLD_JS = os.environ.get('MM_GUI_OLD_JS', '')
+STALL_UI = os.environ.get('MM_GUI_STALL_UI') == '1'
 VERSION = re.search(r'^mm-pve-tools \(([^)-]+)', (REPO / 'debian/changelog').read_text()).group(1)
 
 
@@ -47,7 +49,7 @@ def build_js():
         shutil.copy2(OLD_JS, output)
         return output
     chunks = ['/* mm-tools.js — harness build */\n']
-    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js'):
+    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
         source = (REPO / 'js/src' / name).read_text(encoding='utf-8')
         chunks.append(f'\n/* ===== js/src/{name} ===== */\n')
         chunks.append(source.replace('@MM_PVE_VERSION@', VERSION))
@@ -84,6 +86,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     index = ''
     mm_js = pathlib.Path()
     requests = []
+    bulk_refused = False
+    pool_limits = {}
 
     def log_message(self, fmt, *args):
         return
@@ -93,9 +97,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         del self.requests[:-40]
 
     def send_json(self, value, status=200):
-        raw = json.dumps({'data': value}).encode()
+        body = {'data': value}
+        # /api2/extjs responde como o PVE: Proxmox.Utils.API2Request trata
+        # a falta de success como falha.
+        if urllib.parse.urlparse(self.path).path.startswith('/api2/extjs/'):
+            body['success'] = 1 if status < 400 else 0
+        raw = json.dumps(body).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def send_raw_json(self, value, status=200):
+        raw = json.dumps(value).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -114,6 +132,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/pve2/js/mm-tools.js':
             self.serve(self.mm_js, 'application/javascript')
             return
+        if path == '/pve2/js/mm-ui.json':
+            if STALL_UI:
+                time.sleep(5)
+                return
+            self.send_raw_json({
+                'revision': 2,
+                'console': {'qemu': 'vv', 'lxc': 'xtermjs'},
+                'hide_subscription_popup': True,
+            })
+            return
         asset = self.asset(path)
         if asset is not None:
             self.serve(asset, self.content_type(path))
@@ -127,6 +155,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         self.record('POST', path)
+        size = int(self.headers.get('Content-Length', '0'))
+        self.post_body = self.rfile.read(size) if size else b''
+        self.api(path)
+
+    def do_PUT(self):
+        path = urllib.parse.urlparse(self.path).path
+        self.record('PUT', path)
+        size = int(self.headers.get('Content-Length', '0'))
+        self.post_body = self.rfile.read(size) if size else b''
         self.api(path)
 
     @staticmethod
@@ -158,6 +195,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def api(self, path):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        post = {}
+        if self.command in ('POST', 'PUT') and getattr(self, 'post_body', b''):
+            raw = self.post_body.decode('utf-8')
+            if 'application/json' in self.headers.get('Content-Type', ''):
+                post = json.loads(raw or '{}')
+            else:
+                post = {key: values[-1] for key, values in urllib.parse.parse_qs(raw).items()}
         if path.endswith('/access/ticket'):
             self.send_json({'ticket': 'PVE:root@pam:harness', 'username': 'root@pam', 'cap': {
                 'dc': {'Sys.Audit': 1, 'Sys.Modify': 1},
@@ -165,22 +210,120 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'nodes': {'Sys.Audit': 1, 'Sys.Modify': 1},
             }})
         elif path.endswith('/cluster/status'):
-            self.send_json([{'type': 'node', 'node': 'localhost', 'name': 'localhost', 'online': 1}])
+            self.send_json([{'type': 'node', 'node': 'localhost', 'name': 'localhost', 'online': 1},
+                            {'type': 'node', 'node': 'offline-node', 'name': 'offline-node', 'online': 0}])
         elif path.endswith('/cluster/resources'):
             self.send_json([{'type': 'node', 'node': 'localhost', 'status': 'online'},
                             {'type': 'qemu', 'vmid': 100, 'node': 'localhost', 'name': 'harness'}])
         elif path.endswith('/storage'):
-            self.send_json([{'storage': 'pbs', 'type': 'pbs', 'content': 'backup'}])
+            self.send_json([{'storage': 'pbs', 'type': 'pbs', 'content': 'backup'},
+                            {'storage': 'local', 'type': 'dir', 'content': 'images'},
+                            {'storage': 'fast', 'type': 'lvmthin', 'content': 'images'}])
         elif '/storage/pbs/content' in path:
             self.send_json([{'volid': 'pbs:backup/vm/100/2026-10-30T00:00:00Z',
                              'vmid': 100, 'format': 'pbs-vm', 'text': 'backup'}])
         elif path.endswith('/version'):
             self.send_json({'version': '9.2.24', 'release': '9.2'})
+        elif path.endswith('/subscription'):
+            self.send_json({'status': 'inactive'})
+        elif path.endswith('/qemu/100/config') and self.command == 'PUT':
+            self.send_raw_json({'data': None, 'success': 0,
+                                'message': "pool 'labpool': limite de RAM excedido (uso atual 1024, pedido 4096, limite 2048)"})
+        elif path.endswith('/qemu/100/resize') and self.command == 'PUT':
+            self.send_raw_json({'data': None, 'success': 0,
+                                'message': "pool 'labpool': limite de disco total excedido (uso atual 3, pedido 5, limite 4)"})
         elif path.endswith('/config'):
-            self.send_json({'digest': 'sha256:' + '0' * 64, 'config': {'modules': {}}})
+            self.send_json({'digest': 'sha256:' + '0' * 64, 'config': {
+                'modules': {'ui': 1},
+                'ui': {'console': {'qemu': 'vv', 'lxc': 'xtermjs'},
+                        'hide_subscription_popup': True},
+            }})
         elif path.endswith('/mm-tools/status'):
             self.send_json({'node': 'localhost', 'package_version': VERSION,
-                            'pve_version': '9.2.24', 'applied': {'state': 'applied'}})
+                            'pve_version': '9.2.24', 'applied': {'state': 'applied'},
+                            'modules': {'ui': {'check': {'ok': True, 'note': 'símbolos compatíveis'}}}})
+        elif path.endswith('/mm-tools/updates/status'):
+            self.send_json({'node': 'localhost', 'online': 1, 'pending': [
+                            {'Package': 'pve-manager', 'Version': '9.2.25'}],
+                            'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': True},
+                            'reboot_suggested': True, 'job': None, 'results': [],
+                            'reboot_context': {'running_guests': [{'type': 'qemu', 'vmid': 100,
+                                                                    'name': 'harness'}],
+                                               'ha': {'state': 'started'}}})
+        elif path.endswith('/mm-tools/updates/run'):
+            self.send_json('UPID:harness:updates-run')
+        elif path.endswith('/mm-tools/updates/refresh'):
+            self.send_json('apt-get update concluído')
+        elif path.endswith('/mm-tools/updates/bulk'):
+            override = post.get('override_preflight', query.get('override_preflight', ['0'])[-1]) in ('1', 'true')
+            if not override and not Handler.bulk_refused:
+                Handler.bulk_refused = True
+                self.send_raw_json({'data': None, 'success': 0, 'message': 'preflight: HA migrando'})
+            else:
+                self.send_json({'bulk_id': '11111111-1111-4111-8111-111111111111',
+                                'mode': 'parallel', 'nodes': ['localhost'],
+                                'override': override})
+        elif path.endswith('/mm-tools/updates/log'):
+            self.send_json({'lines': ['job de teste'], 'total': 1})
+        elif path.endswith('/mm-tools/updates/reboot'):
+            self.send_json({'node': 'localhost', 'running_guests': [{'type': 'qemu', 'vmid': 100,
+                                                                     'name': 'harness'}],
+                            'ha': {'state': 'started'}})
+        elif path.endswith('/mm-tools/ui/preference'):
+            if self.command == 'PUT':
+                incoming = post
+                self.user_preference.update({k: v for k, v in incoming.items()
+                                             if k in ('qemu', 'lxc') and v != 'cluster'})
+                for k, v in incoming.items():
+                    if k in ('qemu', 'lxc') and v == 'cluster':
+                        self.user_preference.pop(k, None)
+            self.send_json({'preference': dict(self.user_preference),
+                            'effective': {'qemu': self.user_preference.get('qemu', 'vv'),
+                                          'lxc': self.user_preference.get('lxc', 'xtermjs')},
+                            'cluster': {'qemu': 'vv', 'lxc': 'xtermjs',
+                                        'hide_subscription_popup': True}})
+        elif '/mm-tools/poollimits/' in path:
+            pool = path.rsplit('/', 1)[-1]
+            if pool == 'offpool':
+                self.send_json({'poolid': pool, 'module_enabled': 0})
+            elif pool == 'auditpool':
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 0,
+                                'digest': 'sha256:' + '0' * 64,
+                                'mode': 'running', 'limits': {
+                                    'cpu': {'enabled': True, 'max': 4},
+                                    'memory_mib': {'enabled': True, 'max': 2048},
+                                    'disk_total_gib': {'enabled': False},
+                                    'disk_storage': {'enabled': False, 'limits': {}},
+                                }, 'usage': {'cpu': 2, 'memory_mib': 1024,
+                                            'disk_total_bytes': 0, 'disk_storage_bytes': {}},
+                                'errors': [], 'disk_errors': []})
+            elif pool == 'conflictpool' and self.command == 'PUT':
+                self.send_raw_json({'data': None, 'success': 0,
+                                    'message': 'DIGEST_MISMATCH: a configuração do pool mudou no servidor'})
+            elif self.command == 'PUT':
+                Handler.pool_limits[pool] = json.loads(json.dumps(post))
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 1,
+                                'digest': 'sha256:' + '1' * 64, 'limits': json.loads(json.dumps(post)),
+                                'mode': post.get('mode', 'allocated'), 'usage': {
+                                    'cpu': 2, 'memory_mib': 1024, 'disk_total_bytes': 3 * 1024 ** 3,
+                                    'disk_storage_bytes': {'local': 2 * 1024 ** 3,
+                                                           'fast': 1 * 1024 ** 3}},
+                                'errors': [], 'disk_errors': []})
+            else:
+                limits = {'cpu': {'enabled': True, 'max': 4},
+                          'memory_mib': {'enabled': True, 'max': 2048},
+                          'disk_total_gib': {'enabled': True, 'max': 8},
+                          'disk_storage': {'enabled': False, 'limits': {}}}
+                limits = Handler.pool_limits.get(pool, limits)
+                self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 1,
+                                'digest': 'sha256:' + '0' * 64, 'mode': 'running',
+                                'limits': limits,
+                                'usage': {'cpu': 2, 'memory_mib': 1024,
+                                          'disk_total_bytes': 3 * 1024 ** 3,
+                                          'disk_storage_bytes': {'local': 2 * 1024 ** 3,
+                                                                 'fast': 1 * 1024 ** 3}},
+                                'errors': ['guest 101: contabilidade de recursos indisponível'],
+                                'disk_errors': []})
         elif path.endswith('/mm-tools/restore/sessions'):
             self.send_json([])
         else:
@@ -212,6 +355,7 @@ def main():
     if '__MM_HARNESS_READY__' not in Handler.index:
         raise RuntimeError('renderização do index não encontrou o ponto de prontidão')
     Handler.mm_js = js
+    Handler.user_preference = {'qemu': 'html5'}
     class Server(socketserver.ThreadingTCPServer):
         allow_reuse_address = True
         daemon_threads = True

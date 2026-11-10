@@ -33,7 +33,7 @@ sub default {
     my ($class) = @_;
     return {
         revision => 1,
-        modules => { renumber => 1, restore => 0, branding => 0 },
+        modules => { renumber => 1, restore => 0, branding => 0, ui => 0, updates => 0, poollimits => 0 },
         vmid_scheme => [],
         restore => {
             gateway_vmid => undef,
@@ -50,6 +50,16 @@ sub default {
             login_text => '',
             assets_hash => '',
         },
+        ui => {
+            console => { qemu => 'default', lxc => 'default' },
+            hide_subscription_popup => 0,
+        },
+        updates => {
+            job_timeout => 3600,
+            dpkg_lock_timeout => 300,
+            retention => 10,
+        },
+        poollimits => { pools => {} },
     };
 }
 
@@ -89,6 +99,30 @@ sub _numify_schema {
             }
         }
     }
+    my $updates = $data->{updates};
+    if (ref $updates eq 'HASH') {
+        for my $field (qw(job_timeout dpkg_lock_timeout retention)) {
+            $updates->{$field} = $numify->($updates->{$field}) if exists $updates->{$field};
+        }
+    }
+    my $poollimits = $data->{poollimits};
+    if (ref $poollimits eq 'HASH' && ref $poollimits->{pools} eq 'HASH') {
+        for my $pool (values %{ $poollimits->{pools} }) {
+            next unless ref $pool eq 'HASH';
+            for my $resource (qw(cpu memory_mib disk_total_gib)) {
+                next unless ref $pool->{$resource} eq 'HASH';
+                $pool->{$resource}{max} = $numify->($pool->{$resource}{max})
+                    if exists $pool->{$resource}{max};
+            }
+            if (ref $pool->{disk_storage} eq 'HASH'
+                && ref $pool->{disk_storage}{limits} eq 'HASH') {
+                for my $storeid (keys %{ $pool->{disk_storage}{limits} }) {
+                    $pool->{disk_storage}{limits}{$storeid} =
+                        $numify->($pool->{disk_storage}{limits}{$storeid});
+                }
+            }
+        }
+    }
     return $data;
 }
 
@@ -110,7 +144,7 @@ sub _is_bool {
 }
 
 sub validate {
-    my ($class, $data) = @_;
+    my ($class, $data, %opts) = @_;
     my @e = $class->validate_structure($data);
     return @e if @e;    # chaves/tipos quebrados: nem tenta validar módulo
 
@@ -120,7 +154,7 @@ sub validate {
     require MMPve::Core::Modules;
     for my $m (MMPve::Core::Modules->all) {
         my $name = $m->name;
-        my @me = $m->validate_section($data);
+        my @me = $m->validate_section($data, %opts);
         _err(\@e, "[$name] $_") for @me;
     }
     return @e;
@@ -131,7 +165,7 @@ sub validate_structure {
     my @e;
     return ('config não é um objeto') unless ref $data eq 'HASH';
 
-    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding);
+    my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding ui updates poollimits);
     for my $k (sort keys %{$data}) {
         _err(\@e, "chave desconhecida '$k'") unless $known{$k};
     }
@@ -148,7 +182,7 @@ sub validate_structure {
         if (ref $m ne 'HASH') {
             _err(\@e, 'modules precisa ser objeto');
         } else {
-            my %mk = map { $_ => 1 } qw(renumber restore branding);
+            my %mk = map { $_ => 1 } qw(renumber restore branding ui updates poollimits);
             for my $k (sort keys %{$m}) {
                 if (!$mk{$k}) { _err(\@e, "módulo desconhecido '$k'"); next }
                 _err(\@e, "modules.$k precisa ser booleano") unless _is_bool($m->{$k});
@@ -279,6 +313,61 @@ sub validate_structure {
         }
     }
 
+    # ui (detalhes dos valores também são validados pelo módulo Ui)
+    if (exists $data->{ui}) {
+        my $u = $data->{ui};
+        if (ref $u ne 'HASH') {
+            _err(\@e, 'ui precisa ser objeto');
+        } else {
+            my %uk = map { $_ => 1 } qw(console hide_subscription_popup);
+            for my $k (sort keys %{$u}) {
+                _err(\@e, "ui: chave desconhecida '$k'") unless $uk{$k};
+            }
+            if (exists $u->{console}) {
+                if (ref $u->{console} ne 'HASH') {
+                    _err(\@e, 'ui.console precisa ser objeto');
+                } else {
+                    for my $k (sort keys %{ $u->{console} }) {
+                        _err(\@e, "ui.console: chave desconhecida '$k'")
+                            unless $k eq 'qemu' || $k eq 'lxc';
+                        _err(\@e, "ui.console.$k precisa ser texto")
+                            if $k eq 'qemu' || $k eq 'lxc'
+                                ? ref($u->{console}{$k}) || !defined($u->{console}{$k})
+                                : 0;
+                    }
+                }
+            }
+            _err(\@e, 'ui.hide_subscription_popup precisa ser booleano')
+                if exists $u->{hide_subscription_popup}
+                    && !_is_bool($u->{hide_subscription_popup});
+        }
+    }
+
+    # updates (detalhes dos limites também são validados pelo módulo Updates)
+    if (exists $data->{updates}) {
+        my $u = $data->{updates};
+        if (ref $u ne 'HASH') {
+            _err(\@e, 'updates precisa ser objeto');
+        } else {
+            my %uk = map { $_ => 1 } qw(job_timeout dpkg_lock_timeout retention);
+            for my $k (sort keys %{$u}) {
+                _err(\@e, "updates: chave desconhecida '$k'") unless $uk{$k};
+                _err(\@e, "updates.$k precisa ser inteiro >= 1")
+                    if $uk{$k} && (!_is_int($u->{$k}) || $u->{$k} < 1);
+            }
+        }
+    }
+
+    # poollimits (detalhes são validados pelo módulo)
+    if (exists $data->{poollimits}) {
+        my $p = $data->{poollimits};
+        if (ref $p ne 'HASH') {
+            _err(\@e, 'poollimits precisa ser objeto');
+        } elsif (exists($p->{pools}) && ref($p->{pools}) ne 'HASH') {
+            _err(\@e, 'poollimits.pools precisa ser objeto');
+        }
+    }
+
     return @e;
 }
 
@@ -333,12 +422,18 @@ sub _write_locked {
     delete $data->{revision};
 
     my $def = $class->default;
-    for my $k (qw(modules vmid_scheme restore branding)) {
+    for my $k (qw(modules vmid_scheme restore branding ui updates poollimits)) {
         if (!exists $data->{$k}) {
             $data->{$k} = $def->{$k};
         } elsif (ref $def->{$k} eq 'HASH' && ref $data->{$k} eq 'HASH') {
             for my $kk (keys %{$def->{$k}}) {
                 $data->{$k}{$kk} = $def->{$k}{$kk} unless exists $data->{$k}{$kk};
+            }
+            if ($k eq 'ui' && ref $data->{$k}{console} eq 'HASH') {
+                for my $kk (keys %{ $def->{ui}{console} }) {
+                    $data->{$k}{console}{$kk} = $def->{ui}{console}{$kk}
+                        unless exists $data->{$k}{console}{$kk};
+                }
             }
         }
     }
@@ -346,12 +441,17 @@ sub _write_locked {
     $data->{revision} = ($previous->{revision} // 0) + 1;
     _numify_schema($data);
 
-    my @e = $class->validate($data);
+    my @e = $class->validate($data, resources => $opt{resources});
     die "config rejeitado:\n" . join("\n", @e) . "\n" if @e;
 
     my $json = JSON::PP->new->canonical->pretty->utf8->encode($data);
     die "config excede 1 MiB (limite do pmxcfs)\n" if length($json) > MAX_BYTES;
     write_file_atomic($class->config_path, $json . "\n", 0644);
+    eval {
+        require MMPve::Module::Poollimits;
+        MMPve::Module::Poollimits->record_last_known_good($data);
+        1;
+    } or log_line('poollimits: não consegui atualizar a cópia local válida');
     log_line("config salvo revision $data->{revision}");
     return ($data, $class->digest_of($json . "\n"));
 }
@@ -409,7 +509,7 @@ sub save {
 
 sub save_section {
     my ($class, $section, $value, %opt) = @_;
-    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding);
+    my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding ui updates poollimits);
     die "seção inválida '$section'\n" unless $allowed{$section};
     my $lock_domain = delete $opt{lock_domain} // 'mm-tools';
     my $before_write = delete $opt{before_write};

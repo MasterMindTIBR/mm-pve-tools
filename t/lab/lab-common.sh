@@ -65,6 +65,24 @@ lab_ssh() {
     ssh -F "$LAB_SSH_CONFIG" "$node" "$remote_command"
 }
 
+# lab_kick_apply NODE...: o set-module só grava o config e cada node aplica no
+# timer de 5 min. Pede o apply agora pela própria unit, como o operador faria.
+# Um apply já em curso pode ter lido o config antigo e o start se juntaria a
+# ele sem rodar de novo; por isso espera ele acabar antes de pedir outro.
+lab_kick_apply() {
+    local node
+    for node in "$@"; do
+        # shellcheck disable=SC2016  # o script roda no node
+        lab_ssh "$node" bash -c 'for _ in $(seq 1 150); do
+            case $(systemctl show --property=ActiveState --value mm-pve-apply.service) in
+                activating|deactivating|reloading) sleep 2 ;;
+                *) break ;;
+            esac
+        done
+        systemctl start --no-block mm-pve-apply.service'
+    done
+}
+
 lab_scp_to() {
     local source=$1 node=$2 destination=$3
     scp -F "$LAB_SSH_CONFIG" "$source" "${node}:${destination}"

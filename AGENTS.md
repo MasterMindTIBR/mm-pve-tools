@@ -32,8 +32,10 @@ logs de CI, fixtures ou capturas.
 
 ## Regras invioláveis
 
-1. **Nada de módulo interno do PVE fora de `perl/PVE/API2/MMTools*.pm`.**
-   O resto fala com o cluster por `pvesh`/`qm` via `MMPve::Core::Runner`.
+1. **Módulos internos do PVE só podem ser usados em código de processo dentro
+   de `perl/PVE/MMTools/` e nos endpoints de `perl/PVE/API2/MMTools*.pm`.**
+   Esses hooks em processo podem usar os módulos do PVE diretamente; o resto
+   fala com o cluster por `pvesh`/`qm` via `MMPve::Core::Runner`.
 2. **Nenhuma senha/token em log, Task Log, journal, URL ou pacote.**
 3. `apply`/`revert` de módulo são idempotentes; módulo desligado roda `revert`.
 4. Falha de patch deixa o PVE original; `pveproxy`/`pvedaemon` nunca ficam

@@ -19,6 +19,9 @@ my @classes = qw(
     PVE::API2::MMTools::Renumber
     PVE::API2::MMTools::Restore
     PVE::API2::MMTools::Branding
+    PVE::API2::MMTools::Ui
+    PVE::API2::MMTools::Updates
+    PVE::API2::MMTools::Poollimits
 );
 my %methods;
 for my $class (@classes) {
@@ -28,17 +31,46 @@ for my $class (@classes) {
         next if $info->{subclass};
         my $name = "$class/$info->{path} [$info->{method}]";
         $methods{$name} = $info;
-        my $check = $info->{permissions}{check};
-        ok($check && $check->[0] eq 'perm' && $check->[1] eq '/',
-            "$name usa perm real em /") or diag explain $info->{permissions};
-        ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',
-            "$name não usa user=all") or diag explain $info->{permissions};
+        my $is_ui_pref = $class eq 'PVE::API2::MMTools::Ui'
+            && ($info->{name} eq 'preference' || $info->{name} eq 'set_preference');
+        if ($is_ui_pref) {
+            is($info->{permissions}{user}, 'all', "$name está aberto a usuário logado")
+                or diag explain $info->{permissions};
+            ok(!$info->{permissions}{check}, "$name não exige permissão de cluster")
+                or diag explain $info->{permissions};
+        } else {
+            my $check = $info->{permissions}{check};
+            my $scope = $class eq 'PVE::API2::MMTools::Updates' ? '/nodes/{node}'
+                : ($class eq 'PVE::API2::MMTools::Poollimits'
+                    && $info->{name} eq 'read_pool' ? '/pool/{poolid}' : '/');
+            ok($check && $check->[0] eq 'perm' && $check->[1] eq $scope,
+                "$name usa perm real em $scope") or diag explain $info->{permissions};
+            ok(!$info->{permissions}{user} || $info->{permissions}{user} ne 'all',
+                "$name não usa user=all") or diag explain $info->{permissions};
+        }
         if ($info->{name} eq 'set' || $info->{name} eq 'upload') {
             ok($info->{parameters}{properties}{digest}{optional},
                 "$name aceita digest ausente no primeiro write");
         }
     }
 }
+
+# Achado do lab: método sem protected roda no pveproxy como www-data, que não
+# enxerga /etc/pve/priv (locks de domínio do cfs) nem acessa storage como root;
+# updates/status e poollimits davam HTTP 500 num cluster saudável. Só os index
+# que listam rotas ou leem a config podem ficar no pveproxy.
+my @in_pveproxy;
+for my $class (@classes) {
+    for my $info (grep { !$_->{subclass} && !$_->{protected} } @{ $class->method_attributes }) {
+        push @in_pveproxy, "$class $info->{name}";
+    }
+}
+is_deeply([ sort @in_pveproxy ], [
+    'PVE::API2::MMTools index',
+    'PVE::API2::MMTools::Branding index',
+    'PVE::API2::MMTools::Renumber index',
+    'PVE::API2::MMTools::Restore index',
+], 'só os index estáticos rodam no pveproxy (www-data)') or diag explain \@in_pveproxy;
 
 my ($publish) = grep { $_->{name} eq 'publish' } values %methods;
 ok($publish->{returns}{properties}{result_key}, 'publish devolve result_key');

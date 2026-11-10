@@ -22,13 +22,19 @@ case "$1" in
         mkdir -p /var/lib/mm-pve-tools /var/log
         touch /var/log/mm-pve-tools.log || true
 
+        # Código novo merece nova tentativa: falhas de patch registradas pela
+        # versão anterior não bloqueiam o apply desta.
+        if command -v mm-pve >/dev/null 2>&1; then
+            mm-pve patch clear-failures >/dev/null 2>&1 || true
+        fi
+
         # O apply único faz o patch, os módulos e, quando necessário, agenda
         # o reload gracioso depois do apply. Falhas ficam registradas; a
         # instalação nunca deixa o PVE original indisponível.
         apply_state
         ;;
     triggered)
-        # Trigger dpkg: pve-manager atualizado → reaplica patch + estado.
+        # Trigger dpkg: qualquer pacote owner atualizado → reaplica patches + estado.
         apply_state
         ;;
 esac
