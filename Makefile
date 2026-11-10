@@ -112,7 +112,8 @@ check-anchors: js
 	grep -Fq "MM.PoolLimits" build/mm-tools.js; \
 	grep -Fq "MM.panel.Updates" build/mm-tools.js; \
 	grep -Fq "checked_command" build/mm-tools.js; \
-	scripts/check-ui-bundles.sh refs/upstream/pve-9.2.24/pvemanagerlib.js refs/upstream/pve-9.2.24/proxmoxlib.js \
+	scripts/check-ui-bundles.sh "$$pinned_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
+		"$$pinned_root/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js" \
 		"$$newest_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
 		"$$newest_root/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
 

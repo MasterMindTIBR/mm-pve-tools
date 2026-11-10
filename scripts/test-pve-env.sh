@@ -35,7 +35,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \
     libpve-guest-common-perl=$(pve_version libpve-guest-common-perl) \\
     libpve-access-control=$(pve_version libpve-access-control) \\
     libpve-cluster-perl=$(pve_version libpve-cluster-perl) \\
+    pve-cluster=$(pve_version pve-cluster) \\
+    libpve-notify-perl=$(pve_version libpve-notify-perl) \\
+    libpve-cluster-api-perl=$(pve_version libpve-cluster-api-perl) \\
     libpve-rs-perl=$(pve_version libpve-rs-perl) \\
+    libproxmox-rs-perl=$(pve_version libproxmox-rs-perl) \\
     libpve-storage-perl=$(pve_version libpve-storage-perl) \\
     qemu-server=$(pve_version qemu-server) \\
     pve-container=$(pve_version pve-container) && rm -rf /var/lib/apt/lists/*

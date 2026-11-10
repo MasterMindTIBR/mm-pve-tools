@@ -4,7 +4,14 @@ libpve-common-perl=9.2.5
 libpve-guest-common-perl=6.0.5
 libpve-access-control=9.2.0
 libpve-cluster-perl=9.1.8
+# Mesmo fonte do libpve-cluster-perl. Soltos, o apt puxa as versões novas, que
+# exigem libpve-common-perl, libpve-rs-perl e libpve-cluster-perl acima do fixado.
+pve-cluster=9.1.8
+libpve-notify-perl=9.1.8
+libpve-cluster-api-perl=9.1.8
 libpve-rs-perl=0.15.4
+# 0.4.2 quebra o libpve-notify-perl 9.1.8 fixado acima.
+libproxmox-rs-perl=0.4.1
 libpve-storage-perl=9.1.13
 qemu-server=9.2.14
 pve-container=6.1.18
