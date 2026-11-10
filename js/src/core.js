@@ -271,7 +271,10 @@ Ext.define('MM.About', {
     ntfs3g: 'https://github.com/junglivre/pve-file-restore-ntfs3g',
     apt: 'https://apt.mastermindti.cloud/debian',
     license: 'https://www.gnu.org/licenses/agpl-3.0.html',
-    contact: 'infra@mastermindti.cloud',
+    // Colaboradores: [nome, usuário do GitHub].
+    contributors: [
+	['jung', 'junglivre'],
+    ],
     modules: [
 	['Renumber', 'troca o VMID de VMs e CTs sem copiar os discos.'],
 	['Restore', 'publica uma pasta de um backup do PBS para a VM do cliente, por SMB somente leitura.'],
@@ -303,7 +306,7 @@ Ext.define('MM.About', {
 	    '<div><div style="font-size:20px;font-weight:600">MM Tools</div>',
 	    `<div>Versão <b class="mm-about-version">${h(MM.About.version())}</b> · pacote <code>mm-pve-tools</code></div></div>`,
 	    '</div>',
-	    '<p style="margin-top:12px">Extensões da MasterMind TI para a GUI do Proxmox VE. ',
+	    '<p style="margin-top:12px">Extensões da MasterMindTI para a GUI do Proxmox VE. ',
 	    'Cada módulo é ligado à parte e pode ser desligado sem deixar resto.</p>',
 	    section('Módulos', list(MM.About.modules.map(([name, text]) => `<b>${h(name)}</b>: ${h(text)}`))),
 	    section('Links', list([
@@ -313,13 +316,15 @@ Ext.define('MM.About', {
 		`Repositório APT: ${MM.About.link(MM.About.apt, 'apt.mastermindti.cloud')}`,
 	    ])),
 	    section('Créditos', list([
-		`Desenvolvido pela <b>MasterMind TI</b>. Contato: ${MM.About.link(`mailto:${MM.About.contact}`, MM.About.contact)}`,
+		'Desenvolvido pela <b>MasterMindTI</b>:'
+		    + list(MM.About.contributors.map(([name, user]) =>
+			`${h(name)} ${MM.About.link(`https://github.com/${user}`, `(@${user})`)}`)),
 		`Restauração de NTFS com deduplicação do Windows: ${MM.About.link(MM.About.ntfs3g, 'pve-file-restore-ntfs3g')}`,
 		'Feito sobre o Proxmox VE, o Proxmox Widget Toolkit e o Ext JS.',
 	    ])),
 	    section('Licença', `<p style="margin:0">Software livre sob a ${MM.About.link(MM.About.license, 'GNU AGPL 3.0 ou posterior')}. `
-		+ '© 2026 MasterMind TI.</p>'
-		+ '<p style="margin-top:8px;color:#888">Proxmox é marca registrada da Proxmox Server Solutions GmbH. '
+		+ '© 2026 MasterMindTI.</p>'
+		+ '<p style="margin-top:8px;color:#888">Proxmox é marca registrada da Proxmox Server Solutions GmbH.<br>'
 		+ 'O MM Tools é um projeto independente, sem vínculo com a Proxmox.</p>'),
 	    '</div>',
 	].join('');

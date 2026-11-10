@@ -167,6 +167,8 @@ async function main() {
                 version: !!last.body?.dom.querySelector('.mm-about-version')?.textContent,
                 repo: html.includes('https://github.com/MasterMindTIBR/mm-pve-tools'),
                 license: html.includes('AGPL'),
+                credits: html.includes('MasterMindTI') && !html.includes('MasterMind TI')
+                    && html.includes('https://github.com/junglivre') && !html.includes('mailto:'),
                 blank: [...last.body.dom.querySelectorAll('a[target="_blank"]')]
                     .every((a) => a.rel.includes('noopener')),
             };
@@ -174,10 +176,10 @@ async function main() {
             return result;
         });
         if (about.title !== 'MM Tools' || about.last !== 'Sobre' || about.itemId !== 'about'
-            || !about.version || !about.repo || !about.license || !about.blank) {
+            || !about.version || !about.repo || !about.license || !about.credits || !about.blank) {
             throw new Error(`aba Sobre incompleta: ${JSON.stringify(about)}`);
         }
-        console.log('GUI: MM Tools com a aba Sobre por último (versão, repositório, licença)');
+        console.log('GUI: MM Tools com a aba Sobre por último (versão, repositório, créditos, licença)');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();
