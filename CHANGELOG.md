@@ -6,6 +6,60 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
+Limites por pool, atualização dos nodes pela GUI, console padrão por tipo e
+fim do pop-up de assinatura. Provada num cluster PVE 9.2 de três nodes
+(`docs/lab-evidence/2026-11-10.md`). Os três módulos novos vêm desligados.
+
+### Adicionado
+
+- Módulo **poollimits**: limite de vCPU, RAM, disco total e disco por
+  storage em cada pool, cada um com seu liga/desliga. O pool conta o que está
+  alocado ou só o que está ligado. O limite vale em create, clone, restore,
+  entrada no pool, hardware edit, resize, import, alocação no storage, start
+  pela CLI, API e HA, e migração; a recusa acontece antes de qualquer efeito
+  e diz o pool, o uso atual, o pedido e o limite. Aba "Limites" no painel do
+  pool: edita quem tem `Sys.Modify` em `/`; quem tem só `Pool.Audit` vê sem
+  editar.
+- Módulo **updates**: dashboard de atualização dos nodes no Datacenter. Um
+  node, uma seleção ou todos, em sequência ou em paralelo, com o status de
+  cada node. Sugere reboot só quando o kernel muda; o reboot pede
+  confirmação tripla na GUI, e o backend repete a checagem e exige
+  `Sys.PowerMgmt`. O trabalho roda numa unit transitória do systemd, com
+  log no Task Log.
+- Módulo **ui**: console padrão separado para VM e CT, com padrão do
+  cluster e preferência por usuário em "My Settings" (sem preferência, vale
+  a do cluster). Opção de esconder só o pop-up de assinatura.
+
+### Alterado
+
+- Os patches agora podem mirar módulos de outros pacotes do PVE
+  (`qemu-server`, `pve-container`, `libpve-guest-common-perl`,
+  `libpve-storage-perl`, `libpve-access-control`), além do `pve-manager`.
+  Cada grupo é aplicado e revertido inteiro; cada arquivo é validado como o
+  próprio módulo antes de entrar; um patch que falhou antes não trava o
+  apply (`mm-pve patch clear-failures`, também chamado na instalação).
+- Depois de um patch, os daemons são recarregados com
+  `systemctl try-reload-or-restart` (os do HA não aceitam reload).
+
+### Limites conhecidos
+
+- Ligar ou desligar um módulo leva até ~5 minutos para valer em cada node
+  (o apply roda num timer). Para valer na hora, rode `mm-pve apply` em cada
+  node.
+- O modo paralelo do updates atualiza todos os nodes escolhidos ao mesmo
+  tempo; o preflight só exige quórum, HA sem erro e Ceph `HEALTH_OK`. Em
+  produção, prefira o sequencial. O reboot é o do próprio PVE: os guests
+  seguem a política de shutdown do HA e do `pve-guests`, e nada é migrado
+  antes.
+- Não provados no lab: replicação, import de OVA, migração de CT com troca
+  de storage, cluster com Ceph e desempenho com muitos guests por pool.
+- `mm-pve updates reboot` sem `--confirm`, ou com o nome errado, recusa mas
+  sai com rc 255 em vez de 2.
+- Erros do gateway com acento chegam ao Task Log com UTF-8 codificado mais
+  de uma vez (vem da 0.2.0).
+
 ## [0.2.0] - 2026-11-04
 
 Primeira versão publicada. Provada num cluster PVE 9 de três nodes com PBS e
