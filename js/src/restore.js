@@ -4,7 +4,7 @@
  *  b) diálogo MM.window.RestorePublish: navegação do backup (FileBrowser
  *     apenas-visual + campo de caminho), VM destino/duração/chamado/IP,
  *     Publicar → Task Log → resultado one-shot (UNC/usuário/senha+copiar);
- *  c) painel "Publicações ativas" (aba Restore da tela MasterMind) com
+ *  c) painel "Publicações ativas" (aba Restore da tela MM Tools) com
  *     sessões (GET restore/sessions) e botão Revogar;
  *  d) em falha: passo/erro + comando pronto `mm-pve restore publish
  *     ... --resume` com botão copiar.

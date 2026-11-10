@@ -273,7 +273,7 @@ Ext.define('MM.Ui', {
 		    comboItems: [['cluster', 'Padrão do cluster'], ['default', 'Padrão do PVE'],
 			['html5', 'HTML5 (noVNC)'], ['xtermjs', 'xterm.js'], ['vv', 'SPICE (remote-viewer)']],
 		});
-		column.add({ xtype: 'fieldset', title: 'Console padrão (MasterMind)', items: [qemu, lxc] });
+		column.add({ xtype: 'fieldset', title: 'Console padrão (MM Tools)', items: [qemu, lxc] });
 		let sync = function () {
 		    qemu.suspendEvents(); qemu.setValue(MM.Ui.preferredValue('qemu')); qemu.resumeEvents();
 		    lxc.suspendEvents(); lxc.setValue(MM.Ui.preferredValue('lxc')); lxc.resumeEvents();
