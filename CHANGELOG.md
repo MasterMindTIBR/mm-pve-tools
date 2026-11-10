@@ -6,6 +6,8 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
 ### Alterado
 
 - O `mm-pve-tools` passa a exigir o `pve-file-restore-ntfs3g` 2.1.11 ou mais

@@ -1,3 +1,13 @@
+mm-pve-tools (0.3.1-1) unstable; urgency=medium
+
+  * Alterado:
+
+  * O `mm-pve-tools` passa a exigir o `pve-file-restore-ntfs3g` 2.1.11 ou mais
+    novo, a versão com a imagem de restore `1.0.0+ntfs3g11`, que é a publicada
+    no canal `stable` e a usada na prova do lab. Antes aceitava a 2.0.0.
+
+ -- MasterMind TI <infra@mastermindti.cloud>  Tue, 10 Nov 2026 20:38:01 -0300
+
 mm-pve-tools (0.3.0-1) unstable; urgency=medium
 
   * Limites por pool, atualização dos nodes pela GUI, console padrão por
