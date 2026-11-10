@@ -6,6 +6,12 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+### Alterado
+
+- O `mm-pve-tools` passa a exigir o `pve-file-restore-ntfs3g` 2.1.11 ou mais
+  novo, a versão com a imagem de restore `1.0.0+ntfs3g11`, que é a publicada
+  no canal `stable` e a usada na prova do lab. Antes aceitava a 2.0.0.
+
 ## [0.3.0] - 2026-11-10
 
 Limites por pool, atualização dos nodes pela GUI, console padrão por tipo e
