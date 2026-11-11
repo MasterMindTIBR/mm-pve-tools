@@ -6,6 +6,8 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-11
+
 ### Adicionado
 
 - Aba General do MM Tools com **Ligar** e **Desligar** por módulo: confirma

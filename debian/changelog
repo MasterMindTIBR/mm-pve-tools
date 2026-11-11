@@ -1,3 +1,15 @@
+mm-pve-tools (0.3.2-1) unstable; urgency=medium
+
+  * Adicionado:
+
+  * Aba General do MM Tools com **Ligar** e **Desligar** por módulo: confirma
+    o que vai acontecer (no poollimits, o recarregamento dos daemons em todos
+    os nodes), grava a lista de módulos conferindo o digest e já aplica em
+    todos os nodes. Todos os módulos aparecem sempre, com o que cada um faz.
+    Só quem tem `Sys.Modify` em `/` vê os botões habilitados.
+
+ -- MasterMind TI <infra@mastermindti.cloud>  Wed, 11 Nov 2026 12:15:18 -0300
+
 mm-pve-tools (0.3.1-1) unstable; urgency=medium
 
   * Alterado:
