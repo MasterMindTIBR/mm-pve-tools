@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind gw-restore: coleta de sessões vencidas
+Description=MasterMind gw-restore: collect expired sessions
 Documentation=file:///usr/share/doc/mm-gw-restore
 
 [Service]

@@ -6,9 +6,9 @@ package MMPve::Core::Config;
 
 use strict;
 use warnings;
-use JSON::PP qw(encode_json decode_json);
+use JSON::PP qw(decode_json);
 use Digest::SHA ();
-use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir flock_ex unlock log_line);
+use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir flock_ex unlock log_line json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -163,16 +163,16 @@ sub validate {
 sub validate_structure {
     my ($class, $data) = @_;
     my @e;
-    return ('config não é um objeto') unless ref $data eq 'HASH';
+    return ('config must be an object') unless ref $data eq 'HASH';
 
     my %known = map { $_ => 1 } qw(revision modules vmid_scheme restore branding ui updates poollimits);
     for my $k (sort keys %{$data}) {
-        _err(\@e, "chave desconhecida '$k'") unless $known{$k};
+        _err(\@e, "unknown key '$k'") unless $known{$k};
     }
 
     # revision
     if (exists $data->{revision}) {
-        _err(\@e, 'revision precisa ser inteiro >= 1')
+        _err(\@e, 'revision must be an integer >= 1')
             unless _is_int($data->{revision}) && $data->{revision} >= 1;
     }
 
@@ -180,12 +180,12 @@ sub validate_structure {
     if (exists $data->{modules}) {
         my $m = $data->{modules};
         if (ref $m ne 'HASH') {
-            _err(\@e, 'modules precisa ser objeto');
+            _err(\@e, 'modules must be an object');
         } else {
             my %mk = map { $_ => 1 } qw(renumber restore branding ui updates poollimits);
             for my $k (sort keys %{$m}) {
-                if (!$mk{$k}) { _err(\@e, "módulo desconhecido '$k'"); next }
-                _err(\@e, "modules.$k precisa ser booleano") unless _is_bool($m->{$k});
+                if (!$mk{$k}) { _err(\@e, "unknown module '$k'"); next }
+                _err(\@e, "modules.$k must be boolean") unless _is_bool($m->{$k});
             }
         }
     }
@@ -194,32 +194,32 @@ sub validate_structure {
     if (exists $data->{vmid_scheme}) {
         my $s = $data->{vmid_scheme};
         if (ref $s ne 'ARRAY') {
-            _err(\@e, 'vmid_scheme precisa ser lista');
+            _err(\@e, 'vmid_scheme must be a list');
         } else {
             my @ranges;
             my $i = 0;
             for my $r (@{$s}) {
                 $i++;
-                if (ref $r ne 'HASH') { _err(\@e, "vmid_scheme[$i] precisa ser objeto"); next }
+                if (ref $r ne 'HASH') { _err(\@e, "vmid_scheme[$i] must be an object"); next }
                 for my $k (sort keys %{$r}) {
-                    _err(\@e, "vmid_scheme[$i]: chave desconhecida '$k'")
+                    _err(\@e, "vmid_scheme[$i]: unknown key '$k'")
                         unless $k =~ /^(label|from|to)$/;
                 }
-                _err(\@e, "vmid_scheme[$i].label obrigatório (texto)")
+                _err(\@e, "vmid_scheme[$i].label is required (text)")
                     unless defined $r->{label} && !ref $r->{label} && length $r->{label} <= 64;
-                _err(\@e, "vmid_scheme[$i].from/to precisam ser inteiros 100..9999999")
+                _err(\@e, "vmid_scheme[$i].from/to must be integers 100..9999999")
                     unless _is_int($r->{from}) && _is_int($r->{to})
                     && $r->{from} >= 100 && $r->{to} <= 9999999;
-                _err(\@e, "vmid_scheme[$i].from precisa ser < to")
+                _err(\@e, "vmid_scheme[$i].from must be < to")
                     if _is_int($r->{from}) && _is_int($r->{to}) && $r->{from} >= $r->{to};
-                push @ranges, [$r->{from}, $r->{to}, $r->{label} // "faixa$i"];
+                push @ranges, [$r->{from}, $r->{to}, $r->{label} // "range$i"];
             }
             # sobreposição
             my @sorted = sort { $a->[0] <=> $b->[0] } @ranges;
             for my $j (1 .. $#sorted) {
                 if ($sorted[$j][0] <= $sorted[$j - 1][1]) {
                     _err(\@e,
-                        "vmid_scheme: faixas sobrepostas '$sorted[$j-1][2]' e '$sorted[$j][2]'");
+                        "vmid_scheme: overlapping ranges '$sorted[$j-1][2]' and '$sorted[$j][2]'");
                 }
             }
         }
@@ -229,53 +229,53 @@ sub validate_structure {
     if (exists $data->{restore}) {
         my $r = $data->{restore};
         if (ref $r ne 'HASH') {
-            _err(\@e, 'restore precisa ser objeto');
+            _err(\@e, 'restore must be an object');
         } else {
             my %rk = map { $_ => 1 } qw(gateway_vmid vlans session_default_hours session_max_hours max_sessions);
             for my $k (sort keys %{$r}) {
-                _err(\@e, "restore: chave desconhecida '$k'") unless $rk{$k};
+                _err(\@e, "restore: unknown key '$k'") unless $rk{$k};
             }
             if (defined $r->{gateway_vmid} && length($r->{gateway_vmid} // '')) {
-                _err(\@e, 'restore.gateway_vmid precisa ser inteiro 100..9999999')
+                _err(\@e, 'restore.gateway_vmid must be an integer 100..9999999')
                     unless _is_int($r->{gateway_vmid}) && $r->{gateway_vmid} >= 100 && $r->{gateway_vmid} <= 9999999;
             }
             if (exists $r->{vlans}) {
                 if (ref $r->{vlans} ne 'HASH') {
-                    _err(\@e, 'restore.vlans precisa ser objeto');
+                    _err(\@e, 'restore.vlans must be an object');
                 } else {
                     for my $vid (sort keys %{$r->{vlans}}) {
-                        _err(\@e, "restore.vlans: VLAN '$vid' precisa ser 1..4094")
+                        _err(\@e, "restore.vlans: VLAN '$vid' must be 1..4094")
                             unless $vid =~ /^\d+$/ && $vid >= 1 && $vid <= 4094;
                         my $v = $r->{vlans}{$vid};
-                        if (ref $v ne 'HASH') { _err(\@e, "restore.vlans.$vid precisa ser objeto"); next }
+                        if (ref $v ne 'HASH') { _err(\@e, "restore.vlans.$vid must be an object"); next }
                         for my $k (sort keys %{$v}) {
-                            _err(\@e, "restore.vlans.$vid: chave desconhecida '$k'")
+                            _err(\@e, "restore.vlans.$vid: unknown key '$k'")
                                 unless $k =~ /^(gw_ip|prefix|note)$/;
                         }
-                        _err(\@e, "restore.vlans.$vid.gw_ip IPv4 inválido") unless _is_ipv4($v->{gw_ip});
-                        _err(\@e, "restore.vlans.$vid.prefix precisa ser 8..32")
+                        _err(\@e, "restore.vlans.$vid.gw_ip is not a valid IPv4 address") unless _is_ipv4($v->{gw_ip});
+                        _err(\@e, "restore.vlans.$vid.prefix must be 8..32")
                             unless _is_int($v->{prefix}) && $v->{prefix} >= 8 && $v->{prefix} <= 32;
                         if (defined $v->{note} && (!defined $v->{note} || ref $v->{note} || length($v->{note} // '') > 256)) {
-                            _err(\@e, "restore.vlans.$vid.note precisa ser texto <= 256");
+                            _err(\@e, "restore.vlans.$vid.note must be text <= 256 characters");
                         }
                     }
                     # gw_ip não pode se repetir
                     my %seen;
                     for my $vid (sort keys %{$r->{vlans}}) {
                         my $ip = $r->{vlans}{$vid}{gw_ip} // next;
-                        _err(\@e, "restore.vlans: IP $ip repetido nas VLANs") if $seen{$ip}++;
+                        _err(\@e, "restore.vlans: IP $ip is repeated across VLANs") if $seen{$ip}++;
                     }
                 }
             }
             for my $f (qw(session_default_hours session_max_hours max_sessions)) {
                 next unless exists $r->{$f};
-                _err(\@e, "restore.$f precisa ser inteiro >= 1")
+                _err(\@e, "restore.$f must be an integer >= 1")
                     unless _is_int($r->{$f}) && $r->{$f} >= 1;
             }
             _err(\@e, 'restore.session_default_hours > session_max_hours')
                 if _is_int($r->{session_default_hours}) && _is_int($r->{session_max_hours})
                     && $r->{session_default_hours} > $r->{session_max_hours};
-            _err(\@e, 'restore.session_max_hours > 168 (7 dias)')
+            _err(\@e, 'restore.session_max_hours > 168 (7 days)')
                 if _is_int($r->{session_max_hours}) && $r->{session_max_hours} > 168;
             _err(\@e, 'restore.max_sessions > 100')
                 if _is_int($r->{max_sessions}) && $r->{max_sessions} > 100;
@@ -286,11 +286,11 @@ sub validate_structure {
     if (exists $data->{branding}) {
         my $b = $data->{branding};
         if (ref $b ne 'HASH') {
-            _err(\@e, 'branding precisa ser objeto');
+            _err(\@e, 'branding must be an object');
         } else {
             my %bk = map { $_ => 1 } qw(title header_text logo favicon login_text assets_hash);
             for my $k (sort keys %{$b}) {
-                _err(\@e, "branding: chave desconhecida '$k'") unless $bk{$k};
+                _err(\@e, "branding: unknown key '$k'") unless $bk{$k};
             }
             _err(\@e, 'branding.title <= 100 caracteres')
                 if defined $b->{title} && length($b->{title} // '') > 100;
@@ -301,9 +301,9 @@ sub validate_structure {
             for my $f (qw(logo favicon)) {
                 my $v = $b->{$f};
                 next unless defined $v && length $v;
-                _err(\@e, "branding.$f: nome de arquivo inválido (use [A-Za-z0-9._-])")
+                _err(\@e, "branding.$f: invalid file name (use [A-Za-z0-9._-])")
                     unless $v =~ /^[A-Za-z0-9._-]+$/ && $v !~ /^\./;
-                _err(\@e, "branding.$f: só .png")
+                _err(\@e, "branding.$f: only .png is allowed")
                     unless $v =~ /^[0-9a-f]{64}\.png$/;
             }
             if (defined $b->{assets_hash} && length $b->{assets_hash}) {
@@ -317,27 +317,27 @@ sub validate_structure {
     if (exists $data->{ui}) {
         my $u = $data->{ui};
         if (ref $u ne 'HASH') {
-            _err(\@e, 'ui precisa ser objeto');
+            _err(\@e, 'ui must be an object');
         } else {
             my %uk = map { $_ => 1 } qw(console hide_subscription_popup);
             for my $k (sort keys %{$u}) {
-                _err(\@e, "ui: chave desconhecida '$k'") unless $uk{$k};
+                _err(\@e, "ui: unknown key '$k'") unless $uk{$k};
             }
             if (exists $u->{console}) {
                 if (ref $u->{console} ne 'HASH') {
-                    _err(\@e, 'ui.console precisa ser objeto');
+                    _err(\@e, 'ui.console must be an object');
                 } else {
                     for my $k (sort keys %{ $u->{console} }) {
-                        _err(\@e, "ui.console: chave desconhecida '$k'")
+                        _err(\@e, "ui.console: unknown key '$k'")
                             unless $k eq 'qemu' || $k eq 'lxc';
-                        _err(\@e, "ui.console.$k precisa ser texto")
+                        _err(\@e, "ui.console.$k must be text")
                             if $k eq 'qemu' || $k eq 'lxc'
                                 ? ref($u->{console}{$k}) || !defined($u->{console}{$k})
                                 : 0;
                     }
                 }
             }
-            _err(\@e, 'ui.hide_subscription_popup precisa ser booleano')
+            _err(\@e, 'ui.hide_subscription_popup must be boolean')
                 if exists $u->{hide_subscription_popup}
                     && !_is_bool($u->{hide_subscription_popup});
         }
@@ -347,12 +347,12 @@ sub validate_structure {
     if (exists $data->{updates}) {
         my $u = $data->{updates};
         if (ref $u ne 'HASH') {
-            _err(\@e, 'updates precisa ser objeto');
+            _err(\@e, 'updates must be an object');
         } else {
             my %uk = map { $_ => 1 } qw(job_timeout dpkg_lock_timeout retention);
             for my $k (sort keys %{$u}) {
-                _err(\@e, "updates: chave desconhecida '$k'") unless $uk{$k};
-                _err(\@e, "updates.$k precisa ser inteiro >= 1")
+                _err(\@e, "updates: unknown key '$k'") unless $uk{$k};
+                _err(\@e, "updates.$k must be an integer >= 1")
                     if $uk{$k} && (!_is_int($u->{$k}) || $u->{$k} < 1);
             }
         }
@@ -362,9 +362,9 @@ sub validate_structure {
     if (exists $data->{poollimits}) {
         my $p = $data->{poollimits};
         if (ref $p ne 'HASH') {
-            _err(\@e, 'poollimits precisa ser objeto');
+            _err(\@e, 'poollimits must be an object');
         } elsif (exists($p->{pools}) && ref($p->{pools}) ne 'HASH') {
-            _err(\@e, 'poollimits.pools precisa ser objeto');
+            _err(\@e, 'poollimits.pools must be an object');
         }
     }
 
@@ -383,7 +383,7 @@ sub load_raw {
     my $path = $class->config_path;
     my $raw = eval { read_file($path) };
     if ($@ || !defined $raw) {
-        return (undef, undef, $@ || "config ausente em $path");
+        return (undef, undef, $@ || "config missing at $path");
     }
     return ($raw, $class->digest_of($raw), undef);
 }
@@ -396,9 +396,9 @@ sub load {
         return wantarray ? ($d, undef, 1) : $d;    # default + flag absent
     }
     my $data = eval { decode_json($raw) };
-    die "config.json inválido: $@\n" if $@;
+    die "invalid config.json: $@\n" if $@;
     my @e = $class->validate_structure($data);
-    die "config.json inválido:\n" . join("\n", @e) . "\n" if @e;
+    die "invalid config.json:\n" . join("\n", @e) . "\n" if @e;
     return wantarray ? ($data, $digest, 0) : $data;
 }
 
@@ -409,10 +409,10 @@ sub _write_locked {
     if (defined $raw_prev) {
         my $cur = $class->digest_of($raw_prev);
         if (defined $opt{digest} && $opt{digest} ne $cur) {
-            die "DIGEST_MISMATCH: config mudou desde a leitura (atual $cur). Releia e salve de novo.\n";
+            die "DIGEST_MISMATCH: config changed since it was read (current $cur). Read and save again.\n";
         }
         $previous = eval { decode_json($raw_prev) };
-        die "config.json inválido durante a gravação: $@\n" if $@;
+        die "invalid config.json while saving: $@\n" if $@;
     } else {
         $previous = $class->default;
     }
@@ -442,23 +442,23 @@ sub _write_locked {
     _numify_schema($data);
 
     my @e = $class->validate($data, resources => $opt{resources});
-    die "config rejeitado:\n" . join("\n", @e) . "\n" if @e;
+    die "config rejected:\n" . join("\n", @e) . "\n" if @e;
 
-    my $json = JSON::PP->new->canonical->pretty->utf8->encode($data);
-    die "config excede 1 MiB (limite do pmxcfs)\n" if length($json) > MAX_BYTES;
+    my $json = json_encode($data, pretty => 1);
+    die "config exceeds 1 MiB (pmxcfs limit)\n" if length($json) > MAX_BYTES;
     write_file_atomic($class->config_path, $json . "\n", 0644);
     eval {
         require MMPve::Module::Poollimits;
         MMPve::Module::Poollimits->record_last_known_good($data);
         1;
-    } or log_line('poollimits: não consegui atualizar a cópia local válida');
-    log_line("config salvo revision $data->{revision}");
+    } or log_line('poollimits: could not update the valid local copy');
+    log_line("config saved revision $data->{revision}");
     return ($data, $class->digest_of($json . "\n"));
 }
 
 sub _with_domain_lock {
     my ($class, $domain, $code) = @_;
-    die "domínio de lock inválido\n"
+    die "invalid lock domain\n"
         unless defined $domain && $domain =~ /^[A-Za-z0-9_-]+$/;
     ensure_dir($class->config_dir);
 
@@ -487,7 +487,7 @@ sub _with_domain_lock {
 
 sub with_domain_lock {
     my ($class, $domain, $code) = @_;
-    die 'with_domain_lock precisa de callback' unless ref $code eq 'CODE';
+    die 'with_domain_lock requires a callback' unless ref $code eq 'CODE';
     return $class->_with_domain_lock($domain, $code);
 }
 
@@ -498,7 +498,7 @@ sub _with_write_lock {
 
 sub save {
     my ($class, $data, %opt) = @_;
-    die 'save precisa de hashref' unless ref $data eq 'HASH';
+    die 'save requires a hashref' unless ref $data eq 'HASH';
     # cfs_lock_domain propagates scalar returns only. Keep the data/digest
     # pair in one reference so callers have the same contract on PVE and tests.
     my $saved = $class->_with_write_lock(sub {
@@ -510,7 +510,7 @@ sub save {
 sub save_section {
     my ($class, $section, $value, %opt) = @_;
     my %allowed = map { $_ => 1 } qw(modules vmid_scheme restore branding ui updates poollimits);
-    die "seção inválida '$section'\n" unless $allowed{$section};
+    die "invalid section '$section'\n" unless $allowed{$section};
     my $lock_domain = delete $opt{lock_domain} // 'mm-tools';
     my $before_write = delete $opt{before_write};
     my $after_write = delete $opt{after_write};
@@ -521,7 +521,7 @@ sub save_section {
             $cfg = $class->default;
         } else {
             $cfg = eval { decode_json($raw) };
-            die "config.json inválido durante a gravação: $@\n" if $@;
+            die "invalid config.json while saving: $@\n" if $@;
         }
         $cfg->{$section} = $value;
         $before_write->($cfg) if $before_write;

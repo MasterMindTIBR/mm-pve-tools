@@ -28,7 +28,7 @@ __PACKAGE__->register_method({
     method => 'GET',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Índice do módulo renumber.',
+    description => 'Renumber module index.',
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -53,30 +53,30 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
-    description => 'Pré-checagens da troca de VMID (somente leitura).',
+    description => 'VMID change prechecks (read-only).',
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
-            from => { %$vmid_desc, description => 'VMID antigo.' },
-            to   => { %$vmid_desc, description => 'VMID novo.' },
+            from => { %$vmid_desc, description => 'Previous VMID.' },
+            to   => { %$vmid_desc, description => 'New VMID.' },
             force_scheme => {
                 type => 'boolean',
                 optional => 1,
                 default => 0,
-                description => 'Aceitar ID novo fora do vmid_scheme.',
+                description => 'Accept a new ID outside vmid_scheme.',
             },
             handle_ha => {
                 type => 'boolean',
                 optional => 1,
                 default => 0,
-                description => 'Remover e recriar o recurso de HA.',
+                description => 'Remove and recreate the HA resource.',
             },
             handle_replication => {
                 type => 'boolean',
                 optional => 1,
                 default => 0,
-                description => 'Remover e recriar replicação (sync completo).',
+                description => 'Remove and recreate replication (full sync).',
             },
         },
     },
@@ -124,32 +124,32 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
     protected => 1,
-    description => 'Executa a troca de VMID (tarefa em worker; acompanhe no Task Log).',
+    description => 'Execute the VMID change (worker task; follow the Task Log).',
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
-            from => { %$vmid_desc, description => 'VMID antigo.' },
-            to   => { %$vmid_desc, description => 'VMID novo.' },
+            from => { %$vmid_desc, description => 'Previous VMID.' },
+            to   => { %$vmid_desc, description => 'New VMID.' },
             force_scheme => {
                 type => 'boolean', optional => 1, default => 0,
-                description => 'Aceitar ID novo fora do vmid_scheme.',
+                description => 'Accept a new ID outside vmid_scheme.',
             },
             handle_ha => {
                 type => 'boolean', optional => 1, default => 0,
-                description => 'Remover e recriar o recurso de HA.',
+                description => 'Remove and recreate the HA resource.',
             },
             handle_replication => {
                 type => 'boolean', optional => 1, default => 0,
-                description => 'Remover e recriar replicação (sync completo).',
+                description => 'Remove and recreate replication (full sync).',
             },
             resume => {
                 type => 'boolean', optional => 1, default => 0,
-                description => 'Continuar do primeiro passo não concluído (journal).',
+                description => 'Resume from the first incomplete step (journal).',
             },
             rollback => {
                 type => 'boolean', optional => 1, default => 0,
-                description => 'Desfazer os passos concluídos (ordem inversa).',
+                description => 'Undo completed steps (reverse order).',
             },
         },
     },
@@ -182,9 +182,9 @@ __PACKAGE__->register_method({
             } else {
                 $res = MMPve::Module::Renumber->run(%o);
                 if (!$res->{ok}) {
-                    printf "%s %s\n", ($_->{ok} ? 'OK ' : 'FALHA'), "$_->{check}: $_->{detail}"
+                    printf "%s %s\n", ($_->{ok} ? 'OK ' : 'FAIL'), "$_->{check}: $_->{detail}"
                         for @{$res->{checks} || []};
-                    die "pré-checagem falhou; nada foi alterado\n";
+                    die "precheck failed; nothing was changed\n";
                 }
             }
             print $res->{summary}, "\n" if $res->{summary};

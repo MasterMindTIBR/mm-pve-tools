@@ -136,7 +136,7 @@ subtest 'vdisk_alloc recusa antes da alocação e acumula target' => sub {
         1;
     };
     ok(!$refused && !$called, 'limite recusa antes do plugin');
-    like($@, qr/pool 'lab': limite de disco/, 'erro identifica disco');
+    like($@, qr/pool 'lab': disk .*limit exceeded/, 'error identifies disk');
 
     save_pool({ %{$pool}, disk_total_gib => { enabled => 1, max => 20 },
         disk_storage => { enabled => 1, limits => { local => 20, fast => 20 } } });
@@ -224,7 +224,7 @@ subtest 'resize, clone e import respeitam aumentos e tamanho desconhecido' => su
         );
         1;
     }, 'clone com tamanho desconhecido falha fechado') or diag $@;
-    like($@, qr/tamanho do clone indisponível/, 'mensagem de tamanho desconhecido');
+    like($@, qr/clone size unavailable/, 'unknown size message');
     ok(!eval {
         PVE::MMTools::PoolLimits->check_storage_import(
             $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, {}, 'local:vm-101-import',
@@ -379,7 +379,7 @@ subtest 'erros de disco só afetam aumentos de disco' => sub {
             { %{$configs{'qemu:101'}}, unused2 => 'local:vm-101-new-unknown' });
         1;
     }, 'aumento de disco ainda falha fechado com tamanho desconhecido') or diag $@;
-    like($@, qr/calcular disco/, 'erro do aumento é de disco');
+    like($@, qr/calculate disk/, 'increase error is about disk');
     delete $configs{'qemu:101'}{unused1};
     delete $configs{'qemu:102'}{unused1};
 };
@@ -457,7 +457,7 @@ subtest 'migração é isenta enquanto lock=migrate' => sub {
                 $gib / 1024);
             1;
         }, 'NBD alloc sem lock=migrate recusa sem warning de nome undef') or diag $@;
-        like($@, qr/^pool 'lab': limite de disco/, 'a recusa do alloc é da quota de disco');
+        like($@, qr/^pool 'lab': disk .*limit exceeded/, 'alloc refusal is disk quota');
     }
     local $PVE::MMTools::PoolLimits::TEST_VOLUME_SIZES = {
         %{ $PVE::MMTools::PoolLimits::TEST_VOLUME_SIZES || {} }, $new_import => $gib,
@@ -468,7 +468,7 @@ subtest 'migração é isenta enquanto lock=migrate' => sub {
             'raw', undef, undef, 0, 0);
         1;
     }, 'import de novo volid sem lock=migrate volta a respeitar a quota') or diag $@;
-    like($@, qr/^pool 'lab': limite de disco/, 'a recusa do import é da quota de disco');
+    like($@, qr/^pool 'lab': disk .*limit exceeded/, 'import refusal is disk quota');
 };
 
 # Achados do e2e no lab (Rock 7).
@@ -485,17 +485,17 @@ subtest 'clone de template é guest comum e a entrada não soma o próprio guest
     my $template = { template => 1, vcpus => 1, memory => 128, scsi0 => 'local:base-300-disk-0,size=1G' };
     ok(!eval { PVE::MMTools::PoolLimits->check_clone(305, 'lab', $template, 'qemu'); 1 },
         'linked clone de template para pool no limite é recusado na checagem prévia');
-    like($@, qr/limite de vCPU excedido \(uso atual 2, pedido 1, limite 2\)/, 'mensagem do vCPU');
+    like($@, qr/vCPU limit exceeded \(current 2, requested 1, limit 2\)/, 'vCPU message');
     ok($template->{template}, 'config da origem não é alterada');
 
     local $configs{'qemu:103'} = { vcpus => 1, memory => 128, scsi0 => 'local:vm-103-disk-0,size=1G' };
     local $PVE::MMTools::PoolLimits::TEST_VMLIST = { %{$PVE::MMTools::PoolLimits::TEST_VMLIST},
         103 => { type => 'qemu', node => 'node-a' } };
     ok(!eval { PVE::MMTools::PoolLimits->check_pool_entry(103, 'lab'); 1 }, 'entrada no pool no limite recusada');
-    like($@, qr/uso atual 2, pedido 1, limite 2/, 'uso atual da entrada é o do pool sem o guest');
+    like($@, qr/current 2, requested 1, limit 2/, 'entry usage is the pool without the guest');
     ok(!eval { PVE::MMTools::PoolLimits->check_pool_update({ poolid => 'lab', vms => '103' }); 1 },
         'update do pool no limite recusado');
-    like($@, qr/uso atual 2, pedido 1, limite 2/, 'mesma conta no update do pool');
+    like($@, qr/current 2, requested 1, limit 2/, 'same accounting on pool update');
 };
 
 subtest 'move com --delete não deixa capacidade presa no storage de origem' => sub {

@@ -17,8 +17,8 @@ package MMPve::Journal;
 
 use strict;
 use warnings;
-use JSON::PP qw(encode_json decode_json);
-use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir now_iso log_line flock_ex unlock);
+use JSON::PP qw(decode_json);
+use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir now_iso log_line flock_ex unlock json_encode);
 use Sys::Hostname qw(hostname);
 use POSIX qw(getpid);
 
@@ -33,7 +33,7 @@ sub dir {
 
 sub path_for {
     my ($class, $id) = @_;
-    die "id inválido\n" unless $id =~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+    die "invalid id\n" unless $id =~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
     return $class->dir . "/$id.json";
 }
 
@@ -57,7 +57,7 @@ sub open {
     my ($class, $id) = @_;
     my $file = $class->path_for($id);
     my $data = eval { decode_json(read_file($file)) };
-    die "journal $id não encontrado/inválido: $@\n" if $@ || !$data;
+    die "journal $id not found or invalid: $@\n" if $@ || !$data;
     return bless { id => $id, file => $file, data => $data }, $class;
 }
 
@@ -81,7 +81,7 @@ sub set_state {
 sub steps {
     my ($self, $list) = @_;
     if ($list) {
-        die "steps precisa de arrayref\n" unless ref $list eq 'ARRAY';
+        die "steps must be an arrayref\n" unless ref $list eq 'ARRAY';
         $self->{data}{step_order} = [@{$list}];
     }
     return @{ $self->{data}{step_order} };
@@ -89,7 +89,7 @@ sub steps {
 
 sub mark_running {
     my ($self, $step, %info) = @_;
-    die "passo desconhecido '$step'\n"
+    die "unknown step '$step'\n"
         unless grep { $_ eq $step } @{ $self->{data}{step_order} };
     $self->{data}{steps}{$step} = {
         %{ $self->{data}{steps}{$step} // {} },
@@ -108,7 +108,7 @@ sub mark_done {
 sub mark_failed {
     my ($self, $step, $err) = @_;
     $self->{data}{steps}{$step}{status} = 'failed';
-    $self->{data}{steps}{$step}{error} = $err // 'erro';
+    $self->{data}{steps}{$step}{error} = $err // 'error';
     $self->{data}{steps}{$step}{finished} = now_iso();
     $self->{data}{state} = 'failed';
     $self->_write;
@@ -151,8 +151,8 @@ sub _write {
     my ($self) = @_;
     $self->{data}{updated} = now_iso();
     ensure_dir($self->dir);
-    my $json = JSON::PP->new->canonical->pretty->utf8->encode($self->{data});
-    die "journal excede 1 MiB (pmxcfs)\n" if length($json) > $MAX;
+    my $json = json_encode($self->{data}, pretty => 1);
+    die "journal exceeds 1 MiB (pmxcfs)\n" if length($json) > $MAX;
     write_file_atomic($self->{file}, $json . "\n", 0644);
     return 1;
 }
@@ -185,8 +185,8 @@ sub claim_run {
     return $self->_with_run_lock(sub {
         my $current = $self->{data}{run_marker};
         if ($current && ($current->{heartbeat} // 0) > $now - $ttl) {
-            die "renumber já está em execução no node $current->{owner_node} "
-                . "(pid $current->{pid}); aguarde o heartbeat expirar\n";
+            die "renumber is already running on node $current->{owner_node} "
+                . "(pid $current->{pid}); wait for the heartbeat to expire\n";
         }
         $self->{data}{run_marker} = {
             owner_node => $node,
@@ -205,7 +205,7 @@ sub heartbeat_run {
     my $pid = $opt{pid} // getpid();
     return $self->_with_run_lock(sub {
         my $m = $self->{data}{run_marker} || {};
-        die "marcador de execução não pertence a este processo\n"
+        die "run marker does not belong to this process\n"
             unless ($m->{owner_node} // '') eq $node && ($m->{pid} // -1) == $pid;
         $m->{heartbeat} = 0 + time;
         $m->{heartbeat_at} = now_iso();
@@ -221,7 +221,7 @@ sub release_run {
     return $self->_with_run_lock(sub {
         my $m = $self->{data}{run_marker};
         return 1 unless $m;
-        die "marcador de execução pertence a outro processo\n"
+        die "run marker belongs to another process\n"
             unless ($m->{owner_node} // '') eq $node && ($m->{pid} // -1) == $pid;
         delete $self->{data}{run_marker};
         $self->_write;

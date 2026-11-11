@@ -117,8 +117,8 @@ sub handler {
     # -------- GET
     if ($method eq 'get') {
         if ($path eq '/cluster/nextid') {
-            return _err("ID '$args{vmid}' já em uso\n") if $S{used_ids}{$args{vmid}};
-            return $S{nextid_free} ? _ok($S{to} + 1) : _err("ID '$args{vmid}' já em uso\n");
+            return _err("ID '$args{vmid}' is already in use\n") if $S{used_ids}{$args{vmid}};
+            return $S{nextid_free} ? _ok($S{to} + 1) : _err("ID '$args{vmid}' is already in use\n");
         }
         return _ok([{ vmid => $S{vmid}, type => 'qemu', node => 'n1' }])
             if $path eq '/cluster/resources';
@@ -133,14 +133,14 @@ sub handler {
             return _ok($S{orphan} ? [{ volid => "$1:vm-$S{to}-disk-9" }] : []);
         }
         if ($path eq '/nodes/n1/qemu/100/status/current') {
-            return _err("VM inexistente\n") if $S{old_destroyed};
+            return _err("VM does not exist\n") if $S{old_destroyed};
             if ($S{external_digest_on_status} && --$S{external_digest_on_status} == 0) {
                 $S{vm_config}{digest} = 'mock-external-change';
             }
             return _ok($S{vm_status});
         }
-        if ($path eq '/nodes/n1/qemu/100/config')   { return _err("VM inexistente\n") if $S{old_destroyed}; return _ok($S{vm_config}) }
-        if ($path eq '/nodes/n1/qemu/1100/config')  { return _err("VM inexistente\n") unless $S{new_created}; return _ok($S{new_vm_config}) }
+        if ($path eq '/nodes/n1/qemu/100/config')   { return _err("VM does not exist\n") if $S{old_destroyed}; return _ok($S{vm_config}) }
+        if ($path eq '/nodes/n1/qemu/1100/config')  { return _err("VM does not exist\n") unless $S{new_created}; return _ok($S{new_vm_config}) }
         if ($path eq '/nodes/n1/qemu/100/snapshot') { return _ok($S{snapshots}) }
         if ($path eq '/nodes/n1/qemu/100/pending')  { return _ok($S{pending}) }
         return _ok($S{ha})  if $path eq '/cluster/ha/resources';
@@ -153,7 +153,7 @@ sub handler {
         if ($path =~ m{^/nodes/([^/]+)/tasks/(.+)/status$}) {
             my ($node, $upid) = ($1, $2);
             my $t = $S{task_status}{$upid};
-            return _err("tarefa desconhecida: $upid\n") unless $t;
+            return _err("unknown task: $upid\n") unless $t;
             my $status = _task_status_now($t);
             return _ok({ upid => $upid, node => $node, status => $status,
                          exitstatus => $t->{exitstatus} });
@@ -165,16 +165,16 @@ sub handler {
     if ($method eq 'create') {
         _record(create => $path, %args);
         if ($path eq '/nodes/n1/qemu') {
-            return _err("create falhou (injetado)\n") if $S{fail_at} eq 'reserve';
+            return _err("create failed (injected)\n") if $S{fail_at} eq 'reserve';
             $S{new_created} = 1;
             $S{new_vm_config}{name} = $args{name};
             $S{new_vm_config}{description} = $args{description};
             return _ok(undef);
         }
         if ($path eq '/nodes/n1/qemu/100/move_disk') {
-            return _err("move_disk falhou (injetado)\n") if $S{fail_at} eq 'move_disks';
+            return _err("move_disk failed (injected)\n") if $S{fail_at} eq 'move_disks';
             if (defined $S{fail_after_moves} && $S{moves_done} >= $S{fail_after_moves}) {
-                return _err("move_disk falhou (injetado após $S{fail_after_moves} move(s), simulando processo morto)\n");
+                return _err("move_disk failed (injected after $S{fail_after_moves} move(s), simulating a dead process)\n");
             }
             # efeito: drive sai da VM antiga e (de verdade) aparece na nova
             my $val = $S{vm_config}{ $args{disk} };
@@ -204,7 +204,7 @@ sub handler {
     if ($method eq 'set') {
         _record(set => $path, %args);
         if ($path eq '/nodes/n1/qemu/1100/config') {
-            return _err("set config falhou (injetado)\n") if $S{fail_at} eq 'config';
+            return _err("set config failed (injected)\n") if $S{fail_at} eq 'config';
             if (defined $args{delete}) { delete $S{new_vm_config}{ $args{delete} }; return _ok(undef) }
             $S{new_vm_config}{$_} = $args{$_} for keys %args;
             return _ok(undef);
@@ -216,7 +216,7 @@ sub handler {
             return _ok(undef);
         }
         if ($path eq '/cluster/backup/job-1' && $S{fail_at} eq 'refs') {
-            return _err("backup set falhou (injetado)\n");
+            return _err("backup set failed (injected)\n");
         }
         return _ok(undef);
     }
@@ -225,14 +225,14 @@ sub handler {
     if ($method eq 'delete') {
         _record(delete => $path, %args);
         if ($path eq '/nodes/n1/qemu/100') {
-            return _err("destroy falhou (injetado)\n") if $S{fail_at} eq 'destroy';
+            return _err("destroy failed (injected)\n") if $S{fail_at} eq 'destroy';
             $S{old_destroyed} = 1;
             return _ok(undef);
         }
         return _ok(undef);
     }
 
-    return _err("método desconhecido: $method $path\n");
+    return _err("unknown method: $method $path\n");
 }
 
 # helpers de asserção: lista de ops (filtrável por op/path)

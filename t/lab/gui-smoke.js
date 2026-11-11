@@ -102,7 +102,7 @@ async function phasePool(browser) {
         return messages.join(' | ');
     }, { vmid, node, timeout: TIMEOUT });
     console.log(`GUI: erro mostrado no hardware edit: ${message}`);
-    if (!/limite de RAM MiB excedido/.test(message)) { throw new Error('mensagem do limite não chegou à GUI'); }
+    if (!/RAM MiB limit exceeded/.test(message)) { throw new Error('backend limit message did not reach the GUI'); }
 
     const audit = await openAs(browser, 'audit');
     const ro = await poolTab(audit.page, pool);

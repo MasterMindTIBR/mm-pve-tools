@@ -30,23 +30,23 @@ fetch() {
         -o "$2" "$1"
 }
 
-(( $# >= 2 )) || die "uso: $0 DIR PACOTE=VERSÃO|PACOTE=latest..."
+(( $# >= 2 )) || die "usage: $0 DIR PACKAGE=VERSION|PACKAGE=latest..."
 dir=$1
 shift
 for spec in "$@"; do
-    [[ $spec =~ ^[a-z0-9][a-z0-9.+-]*=(oldest|latest|[A-Za-z0-9.+:~-]+)$ ]] || die "pacote inválido: $spec"
+    [[ $spec =~ ^[a-z0-9][a-z0-9.+-]*=(oldest|latest|[A-Za-z0-9.+:~-]+)$ ]] || die "invalid package: $spec"
 done
 
 mkdir -p "$dir/meta" "$dir/debs" "$dir/x"
 
 fetch "$KEY_URL" "$dir/meta/keyring.gpg"
 printf '%s  %s\n' "$KEY_SHA256" "$dir/meta/keyring.gpg" | sha256sum --check --quiet - \
-    || die "chave da Proxmox com sha256 inesperado"
+    || die "Proxmox keyring has an unexpected sha256"
 gpg --batch --quiet --dearmor < "$dir/meta/keyring.gpg" > "$dir/meta/keyring.bin"
 
 fetch "$MIRROR/dists/$SUITE/InRelease" "$dir/meta/InRelease"
 gpgv --quiet --keyring "$dir/meta/keyring.bin" --output "$dir/meta/Release" \
-    "$dir/meta/InRelease" 2>/dev/null || die "assinatura do InRelease inválida"
+    "$dir/meta/InRelease" 2>/dev/null || die "invalid InRelease signature"
 
 fetch "$MIRROR/dists/$SUITE/$COMPONENT/binary-amd64/Packages" "$dir/meta/Packages"
 
@@ -70,10 +70,10 @@ for line in open(release_path, encoding="utf-8"):
         if name == packages_name:
             expected = digest
 if expected is None:
-    sys.exit(f"{packages_name} não está no InRelease")
+    sys.exit(f"{packages_name} is not in InRelease")
 data = open(packages_path, "rb").read()
 if hashlib.sha256(data).hexdigest() != expected:
-    sys.exit(f"{packages_name}: sha256 diferente do InRelease")
+    sys.exit(f"{packages_name}: sha256 differs from InRelease")
 
 wanted = dict(spec.split("=", 1) for spec in specs)
 chosen = {}
@@ -104,7 +104,7 @@ for stanza in re.split(r"\n\s*\n", data.decode("utf-8")):
 
 missing = [f"{name}={version}" for name, version in wanted.items() if name not in chosen]
 if missing:
-    sys.exit("pacote(s) ausente(s) no Packages: " + ", ".join(missing))
+    sys.exit("package(s) missing from Packages: " + ", ".join(missing))
 for package in wanted:
     item = chosen[package]
     print(f"{package}\t{item['Version']}\t{item['Filename']}\t{item['SHA256']}")
@@ -114,7 +114,7 @@ while IFS=$'\t' read -r package version filename sha256; do
     deb="$dir/debs/$package.deb"
     fetch "$MIRROR/$filename" "$deb"
     printf '%s  %s\n' "$sha256" "$deb" | sha256sum --check --quiet - \
-        || die "$package $version: sha256 diferente do Packages"
+        || die "$package $version: sha256 differs from Packages"
     rm -rf "${dir:?}/x/$package"
     dpkg-deb -x "$deb" "$dir/x/$package"
     printf '%s\t%s\n' "$package" "$version"

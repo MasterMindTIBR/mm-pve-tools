@@ -28,7 +28,7 @@ subtest 'defaults retrocompatíveis e schema estrito' => sub {
     @bad = MMPve::Core::Config->validate({ ui => {
         console => { qemu => 'default', lxc => 'default' }, hide_subscription_popup => 'yes',
     } });
-    ok(grep(/booleano/, @bad), 'popup não booleano recusado');
+    ok(grep(/must be boolean/, @bad), 'non-boolean popup refused');
 };
 
 subtest 'apply/revert e revisão estática' => sub {
@@ -68,7 +68,7 @@ subtest 'preferência por usuário usa lock próprio e fallback' => sub {
     eval { $M->save_user_preference('alice@pam', { qemu => 'spice' }) };
     like($@, qr/default, html5, xtermjs, vv/, 'viewer inválido recusado');
     eval { $M->get_user_preference("bad\nuser") };
-    like($@, qr/inválido/, 'principal com controle recusado');
+    like($@, qr/invalid/, 'principal with control refused');
 };
 
 done_testing();

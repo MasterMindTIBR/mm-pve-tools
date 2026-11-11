@@ -21,12 +21,12 @@ our $OVERRIDE;
 
 sub run {
     my ($class, $argv, %opts) = @_;
-    die "argv precisa ser arrayref\n" unless ref $argv eq 'ARRAY';
-    die "comando vazio\n" unless @{$argv};
+    die "argv must be an arrayref\n" unless ref $argv eq 'ARRAY';
+    die "empty command\n" unless @{$argv};
 
     if ($OVERRIDE) {
         my $res = $OVERRIDE->($argv, $opts{stdin});
-        die "OVERRIDE retornou valor inválido\n" unless ref $res eq 'HASH';
+        die "OVERRIDE returned an invalid value\n" unless ref $res eq 'HASH';
         $res->{ok} = (($res->{rc} // 1) == 0) ? 1 : 0;
         $res->{$_} //= '' for qw(out err);
         return $res;
@@ -44,7 +44,7 @@ sub run {
     if (!$pid) {
         return {
             ok => 0, rc => 127, out => '', err => '',
-            error => "não consegui executar '$argv->[0]': $@",
+            error => "could not execute '$argv->[0]': $@",
         };
     }
     local $SIG{ALRM} = sub { die "timeout\n" };
@@ -80,11 +80,11 @@ sub run {
         close($outfh);
         close($errfh);
         waitpid($pid, 0);
-        my $emsg = $@ // 'erro desconhecido';
+        my $emsg = $@ // 'unknown error';
         chomp $emsg;
         return {
             ok => 0, rc => -1, out => $out, err => $err,
-            timeout => 1, error => "timeout/erro executando @$argv: $emsg",
+            timeout => 1, error => "timeout/error executing @$argv: $emsg",
         };
     }
     my $rc = waitpid($pid, 0) ? $? >> 8 : -1;
@@ -93,12 +93,12 @@ sub run {
 
 sub run_stream {
     my ($class, $argv, %opts) = @_;
-    die "argv precisa ser arrayref\n" unless ref $argv eq 'ARRAY';
-    die "comando vazio\n" unless @{$argv};
+    die "argv must be an arrayref\n" unless ref $argv eq 'ARRAY';
+    die "empty command\n" unless @{$argv};
 
     if ($OVERRIDE) {
         my $res = $OVERRIDE->($argv, $opts{stdin});
-        die "OVERRIDE retornou valor inválido\n" unless ref $res eq 'HASH';
+        die "OVERRIDE returned an invalid value\n" unless ref $res eq 'HASH';
         $res->{ok} = (($res->{rc} // 1) == 0) ? 1 : 0;
         $res->{$_} //= '' for qw(out err);
         $opts{on_output}->($res->{out}, 'stdout') if $opts{on_output} && length $res->{out};
@@ -114,7 +114,7 @@ sub run_stream {
     my $pid = eval { open3($infh, $outfh, $errfh, @argv) };
     if (!$pid) {
         return { ok => 0, rc => 127, out => '', err => '',
-            error => "não consegui executar '$argv->[0]': $@" };
+            error => "could not execute '$argv->[0]': $@" };
     }
     local $SIG{ALRM} = sub { die "timeout\n" };
     my $died;
@@ -154,10 +154,10 @@ sub run_stream {
         close($outfh);
         close($errfh);
         waitpid($pid, 0);
-        my $emsg = $@ // 'erro desconhecido';
+        my $emsg = $@ // 'unknown error';
         chomp $emsg;
         return { ok => 0, rc => -1, out => $out, err => $err,
-            timeout => 1, error => "timeout/erro executando @$argv: $emsg" };
+            timeout => 1, error => "timeout/error executing @$argv: $emsg" };
     }
     my $rc = waitpid($pid, 0) ? $? >> 8 : -1;
     return { ok => ($rc == 0 ? 1 : 0), rc => $rc, out => $out, err => $err };
@@ -194,7 +194,7 @@ sub extract_upid {
             return $all[-1] if @all;
         }
     }
-    die "saída do pvesh não contém UPID\n";
+    die "pvesh output does not contain a UPID\n";
 }
 
 sub _last_json_line {
@@ -246,7 +246,7 @@ sub pvesh {
         log_line("pvesh $method $path: $task_text") if length $task_text;
         return undef;
     }
-    die join(' ', @cmd) . ": saída não contém JSON\n";
+    die join(' ', @cmd) . ": output does not contain JSON\n";
 }
 
 1;

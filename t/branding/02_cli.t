@@ -62,7 +62,7 @@ subtest 'set com arquivos em tmp' => sub {
 subtest 'set recusa PNG inválido' => sub {
     my ($rc, $out) = mm('branding', 'set', '--logo', "$tmp/evil.png");
     isnt($rc, 0, 'exit != 0');
-    like($out, qr/não é um PNG válido/, 'mensagem sobre assinatura PNG');
+    like($out, qr/not a valid PNG/, 'PNG signature message');
     ok(!-f "$tmp/etc/pve/mm-tools/branding/evil.png", 'não gravou o PNG inválido');
 };
 
@@ -115,7 +115,7 @@ subtest 'assets_hash desatualizado nunca derruba load nem o clear' => sub {
 subtest 'uso' => sub {
     my ($rc, $out) = mm('branding');
     isnt($rc, 0);
-    like($out, qr/uso: mm-pve branding/, 'mensagem de uso');
+    like($out, qr/usage: mm-pve branding/, 'usage message');
 };
 
 done_testing();

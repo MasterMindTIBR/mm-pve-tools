@@ -73,7 +73,7 @@ is($data->{user}, 'gwr-abc123', 'resultado user');
 ok(length($data->{password}), 'resultado password');
 ok(!-f $path, 'leitura apaga o arquivo (one-shot)');
 eval { $R->fetch_result($file, 'root@pam') };
-like($@, qr/já foi lido|não existe/, 'segunda leitura falha');
+like($@, qr/already read|not found/, 'second read fails');
 
 # senha NUNCA em journal/log
 my @hits = RestoreTest::grep_files($ENV{MM_PVE_CONFIG_DIR}, 'SECRETA-xyz');
@@ -104,18 +104,18 @@ is($payload->{vm_ip}, '10.20.120.50', 'vm_ip manual prevalece');
 
 # ---------- validações que recusam ----------
 ($res, $err) = run_publish(hours => 169);
-like($err, qr/duração precisa ser inteiro 1\.\.168/, 'duração acima do máximo');
+like($err, qr/duration must be an integer from 1 to 168/, 'duration above maximum');
 like($err, qr/mm-pve restore publish .* --resume\n?\z/, 'erro termina com comando --resume');
 
 ($res, $err) = run_publish(ticket => 'X-1');
-like($err, qr/GLPI-<número>/, 'ticket inválido');
+like($err, qr/GLPI-<number>/, 'invalid ticket');
 
 ($res, $err) = run_publish(vm_ip => '10.99.99.99');
-like($err, qr/fora do prefixo do gateway/, 'vm_ip fora do prefixo');
+like($err, qr/outside the gateway prefix/, 'vm_ip outside prefix');
 
 # sem guest agent e sem --vm-ip
 ($res, $err) = run_publish(agent_ip => undef);
-like($err, qr/guest agent indisponível .*--vm-ip/s, 'sem agent exige --vm-ip');
+like($err, qr/guest agent unavailable .*--vm-ip/s, 'missing agent requires --vm-ip');
 like($err, qr/--resume\n?\z/, 'mensagem de continuação presente');
 unlike($err, qr/SECRETA/, 'sem senha no erro');
 
@@ -125,11 +125,11 @@ unlike($err, qr/SECRETA/, 'sem senha no erro');
     { id => 'b', target_vmid => 101, source_vmid => 101, vlan => 120, vm_ip => '10.20.120.11', expires_at => '2026-10-29T00:00:00Z' },
     { id => 'c', target_vmid => 102, source_vmid => 102, vlan => 120, vm_ip => '10.20.120.12', expires_at => '2026-10-29T00:00:00Z' },
 ]);
-like($err, qr/limite de sessões atingido \(max_sessions=3, ativas=3\)/, 'max_sessions');
+like($err, qr/session limit reached \(max_sessions=3, active=3\)/, 'max_sessions');
 
 # gateway devolve exit != 0
 ($res, $err) = run_publish(exitcode => 2, gw_out => 'map falhou');
-like($err, qr/gw-restore falhou \(exit 2\)/, 'erro do gateway sem stdout');
+like($err, qr/gw-restore failed \(exit 2\)/, 'gateway error without stdout');
 unlike($err, qr/map falhou/, 'stdout do gateway não vaza no erro');
 unlike($err, qr/SECRETA/, 'sem senha no erro do gateway');
 
@@ -151,7 +151,7 @@ like($err, qr/: \.\.\./, 'corte marcado no início');
 
 # timeout do poll
 ($res, $err) = run_publish(never_exit => 1, gw_timeout => 1);
-like($err, qr/timeou?t \(1s\) esperando o gateway/, 'timeout do poll');
+like($err, qr/timeout \(1s\) waiting for gateway/, 'gateway poll timeout');
 
 # resultado sem campo obrigatório
 ($res, $err) = run_publish(gw_result => { request_id => 'mock-request-id', unc => 'x', user => 'u', password => 'p' });

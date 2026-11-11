@@ -43,7 +43,7 @@ __PACKAGE__->register_method({
     name => 'index', path => '', method => 'GET', proxyto => 'node',
     protected => 1,
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Uso e limites de todos os pools.',
+    description => 'Usage and limits for all pools.',
     parameters => { additionalProperties => 0, properties => { node => get_standard_option('pve-node') } },
     returns => { type => 'object' },
     code => sub { return PVE::MMTools::PoolLimits->all_status },
@@ -53,7 +53,7 @@ __PACKAGE__->register_method({
     name => 'read_pool', path => '{poolid}', method => 'GET', proxyto => 'node',
     protected => 1,
     permissions => { check => ['perm', '/pool/{poolid}', ['Pool.Audit']] },
-    description => 'Uso e limites de um pool.',
+    description => 'Usage and limits for one pool.',
     parameters => {
         additionalProperties => 0,
         properties => { node => get_standard_option('pve-node'), poolid => $poolid },
@@ -73,7 +73,7 @@ __PACKAGE__->register_method({
     name => 'update_limits', path => '{poolid}', method => 'PUT', proxyto => 'node',
     protected => 1,
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Grava os limites de CPU, RAM e disco de um pool.',
+    description => 'Save CPU, RAM, and disk limits for a pool.',
     parameters => {
         additionalProperties => 0,
         properties => {

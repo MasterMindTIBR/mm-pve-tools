@@ -34,7 +34,7 @@ __PACKAGE__->register_method({
     method => 'GET',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Índice do módulo restore.',
+    description => 'Restore module index.',
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -61,7 +61,7 @@ my $publish_perms = sub {
     PVE::Storage::check_volume_access($rpcenv, $authuser, $cfg, undef, $param->{backup}, 'backup');
 
     my ($owner) = $param->{backup} =~ m{:backup/vm/(\d+)/};
-    die "volid sem VM de origem\n" unless defined $owner;
+    die "backup volume has no source VM\n" unless defined $owner;
     my $dest = $param->{vmid} // $owner + 0;
     $rpcenv->check($authuser, "/vms/$dest", ['VM.Audit']);
     $rpcenv->check($authuser, "/vms/$dest", ['VM.Backup']) if $dest != $owner;
@@ -74,52 +74,52 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
-    description => 'Publica uma pasta de backup PBS via VM gateway (tarefa em worker; '
-        . 'resultado com senha buscado uma única vez em results/{result_key}).',
+    description => 'Publish a PBS backup folder through the gateway VM (worker task; '
+        . 'the password result is fetched once from results/{result_key}).',
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
             backup => {
                 type => 'string',
-                description => 'volid do backup (<storage>:backup/vm/<id>/<ts>).',
+                description => 'Backup volume ID (<storage>:backup/vm/<id>/<ts>).',
                 pattern => '^[A-Za-z0-9][A-Za-z0-9_.-]*:backup/vm/\\d+/[0-9][0-9T:.\\-Z]*$',
             },
             path_b64 => {
                 type => 'string',
-                description => 'Caminho do File Restore em base64 '
-                    . '(decodifica /drive-scsi1.img.fidx/part/2/Dados).',
+                description => 'File Restore path in base64 '
+                    . '(decodes /drive-scsi1.img.fidx/part/2/Documents).',
                 pattern => '^[A-Za-z0-9+/]+={0,2}$',
                 maxLength => 4096,
             },
             vmid => {
                 type => 'integer',
-                description => 'VM destino (padrão: a dona do backup).',
+                description => 'Destination VM (default: the backup owner).',
                 minimum => 100,
                 maximum => 9999999,
                 optional => 1,
             },
             hours => {
                 type => 'integer',
-                description => 'Duração da sessão em horas (padrão/limite: config restore).',
+                description => 'Session duration in hours (default/limit: restore config).',
                 minimum => 1,
                 optional => 1,
             },
             ticket => {
                 type => 'string',
-                description => 'Chamado GLPI (GLPI-<número>), para auditoria.',
+                description => 'GLPI ticket (GLPI-<number>) for audit.',
                 pattern => '^GLPI-\\d+$',
                 optional => 1,
             },
             vm_ip => {
                 type => 'string',
                 format => 'ipv4',
-                description => 'IP da VM destino (obrigatório se sem guest agent).',
+                description => 'Destination VM IP (required without a guest agent).',
                 optional => 1,
             },
             resume => {
                 type => 'boolean',
-                description => 'Retomar a publicação interrompida do mesmo backup/caminho.',
+                description => 'Resume an interrupted publish for the same backup/path.',
                 optional => 1,
                 default => 0,
             },
@@ -154,10 +154,10 @@ __PACKAGE__->register_method({
             my ($upid) = @_;
             my $res = MMPve::Module::Restore->publish(%p,
                 result_key => MMPve::Module::Restore->result_key_for_upid($upid));
-            print "publicação criada (VM $res->{vmid}, VLAN $res->{vlan}, "
+            print "publish created (VM $res->{vmid}, VLAN $res->{vlan}, "
                 . "expira $res->{expires_at})\n";
-            print "busque o acesso (UNC/usuário/senha) na GUI — a senha não "
-                . "aparece no Task Log\n";
+            print "retrieve access (UNC/user/password) in the GUI; the password "
+                . "does not appear in the Task Log\n";
             return $res;
         };
         my $task_vmid = $param->{vmid} // 'owner';
@@ -175,14 +175,14 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit', 'Sys.Modify'], any => 1] },
     protected => 1,                      # lê /run (root)
-    description => 'Resultado da publicação (UNC/usuário/senha). Leitura ÚNICA: '
-        . 'só o dono da tarefa e o arquivo é apagado após a leitura.',
+    description => 'Publish result (UNC/user/password). Read ONCE: only the task '
+        . 'owner may read it and the file is deleted after reading.',
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
             result_key => {
-                description => 'Chave opaca SHA-256 da UPID da tarefa de publish.',
+                description => 'Opaque SHA-256 key for the publish task UPID.',
                 type => 'string',
                 pattern => '^[A-Fa-f0-9]{64}$',
             },
@@ -202,9 +202,9 @@ __PACKAGE__->register_method({
         if ($@) {
             my $err = $@;
             raise_perm_exc() if $err =~ /RESULT_FORBIDDEN/;
-            raise "resultado ainda está em execução\n", code => 503
+            raise "result is still running\n", code => 503
                 if $err =~ /RESULT_UNFINISHED/;
-            raise "resultado não encontrado ou expirado\n", code => 404
+            raise "result not found or expired\n", code => 404
                 if $err =~ /RESULT_NOT_FOUND/;
             die $err;
         }
@@ -219,7 +219,7 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
-    description => 'Sessões de restore ativas no gateway (gw-restore list).',
+    description => 'Active restore sessions on the gateway (gw-restore list).',
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -247,13 +247,13 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
-    description => 'Revoga uma sessão de restore (worker; remove a tag restore-ativo na última).',
+    description => 'Revoke a restore session (worker; remove the restore-active tag on the last one).',
     parameters => {
         additionalProperties => 0,
         properties => {
             node => get_standard_option('pve-node'),
             id => {
-                description => 'ID da sessão (veja sessions).',
+                description => 'Session ID (see sessions).',
                 type => 'string',
                 pattern => '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$',
             },
@@ -267,16 +267,16 @@ __PACKAGE__->register_method({
         my $authuser = $rpcenv->get_user();
         my $id = $param->{id};
         my ($session) = grep { ($_->{id} // '') eq $id } MMPve::Module::Restore->sessions;
-        die "sessão $id não encontrada\n" unless $session;
+        die "session $id not found\n" unless $session;
         my $vmid = $session->{target_vmid} // $session->{vmid};
-        die "sessão $id sem VM destino\n" unless defined $vmid;
+        die "session $id has no destination VM\n" unless defined $vmid;
         $rpcenv->check($authuser, "/vms/$vmid", ['VM.Audit']);
         if (($session->{source_vmid} // $vmid) != $vmid) {
             $rpcenv->check($authuser, "/vms/$vmid", ['VM.Backup']);
         }
         my $realcmd = sub {
             MMPve::Module::Restore->revoke($id);
-            print "sessão $id revogada\n";
+            print "session $id revoked\n";
         };
         return $rpcenv->fork_worker('mmrestore', "restore-revoke-$id", $authuser, $realcmd);
     },
@@ -289,7 +289,7 @@ __PACKAGE__->register_method({
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
     protected => 1,
-    description => 'Selfcheck do gateway por item (✔/✘).',
+    description => 'Gateway self-check by item (pass/fail).',
     parameters => {
         additionalProperties => 0,
         properties => {

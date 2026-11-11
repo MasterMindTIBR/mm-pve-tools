@@ -92,7 +92,7 @@ subtest 'defaults e schema estrito' => sub {
     my @bad = MMPve::Core::Config->validate({ updates => { retention => 0 } });
     ok(grep(/retention.*>= 1/, @bad), 'retenção inválida recusada');
     @bad = MMPve::Core::Config->validate({ updates => { unknown => 1 } });
-    ok(grep(/chave desconhecida/, @bad), 'chave extra recusada');
+    ok(grep(/unknown key/, @bad), 'extra key refused');
 };
 
 subtest 'reserva única, unit transitória, log e sucesso' => sub {
@@ -159,7 +159,7 @@ subtest 'kernel e reboot fail-closed' => sub {
     my $s = MMPve::Module::Updates->status('node-d', pending_cb => sub { [] });
     ok($s->{kernel}{reboot_suggested}, 'kernel diferente sugere reboot');
     ok(!eval { MMPve::Module::Updates->reboot_preflight('node-d', confirm => 'outro', pending_cb => sub { [] }); 1 }, 'confirm errado recusa');
-    like($@, qr/confirmação/, 'mensagem de confirmação');
+    like($@, qr/confirmation/, 'confirmation message');
     my $ctx = MMPve::Module::Updates->reboot_preflight('node-d', confirm => 'node-d', pending_cb => sub { [] });
     is($ctx->{node}, 'node-d', 'confirm correto aceita preflight');
     my $old = $MMPve::Core::Runner::OVERRIDE;
@@ -206,7 +206,7 @@ subtest 'preflight pvesh recusa desconhecido e Ceph ruim' => sub {
         return { rc => 0, out => '[]', err => '' };
     };
     ok(!eval { MMPve::Module::Updates->run_bulk(['missing'], actor => 'root@pam'); 1 }, 'node desconhecido recusa antes do bulk');
-    like($@, qr/desconhecido/, 'motivo do node desconhecido');
+    like($@, qr/unknown node/, 'unknown node reason');
     ok(!eval { MMPve::Module::Updates->run_bulk(['known'], actor => 'root@pam'); 1 }, 'Ceph ruim recusa o bulk');
     like($@, qr/Ceph/, 'motivo do Ceph');
     my $forced = MMPve::Module::Updates->run_bulk(['known'], actor => 'root@pam', override => 1,

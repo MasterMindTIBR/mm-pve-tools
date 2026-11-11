@@ -8,7 +8,7 @@ use warnings;
 use base qw(MMPve::Core::ModuleBase);
 
 use Fcntl qw(:flock);
-use JSON::PP qw(decode_json encode_json);
+use JSON::PP qw(decode_json);
 use POSIX qw(strftime);
 use Time::HiRes ();
 use Sys::Hostname qw(hostname);
@@ -16,7 +16,7 @@ use Sys::Hostname qw(hostname);
 use MMPve::Core::Apply;
 use MMPve::Core::Config;
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir random_uuid log_line);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir random_uuid log_line json_encode utf8_bytes);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -36,20 +36,20 @@ sub validate_section {
     my ($class, $cfg) = @_;
     return () unless ref($cfg) eq 'HASH' && exists $cfg->{updates};
     my $u = $cfg->{updates};
-    return ('updates precisa ser objeto') unless ref($u) eq 'HASH';
+    return ('updates must be an object') unless ref($u) eq 'HASH';
     my %known = map { $_ => 1 } qw(job_timeout dpkg_lock_timeout retention);
     my @errors;
     for my $k (sort keys %{$u}) {
-        push @errors, "updates: chave desconhecida '$k'" unless $known{$k};
+        push @errors, "updates: unknown key '$k'" unless $known{$k};
         next unless $known{$k};
-        push @errors, "updates.$k precisa ser inteiro >= 1"
+        push @errors, "updates.$k must be an integer >= 1"
             unless defined($u->{$k}) && !ref($u->{$k}) && $u->{$k} =~ /^\d+$/ && $u->{$k} >= 1;
     }
     return @errors;
 }
 
-sub apply { return { ok => 1, changed => 0, message => 'updates pronto (sem patch local)' } }
-sub revert { return { ok => 1, changed => 0, message => 'updates revertido (sem patch local)' } }
+sub apply { return { ok => 1, changed => 0, message => 'updates ready (no local patch)' } }
+sub revert { return { ok => 1, changed => 0, message => 'updates reverted (no local patch)' } }
 sub check {
     my ($class, $cfg) = @_;
     return { ok => 1, enabled => (($cfg->{modules} || {})->{updates} ? 1 : 0),
@@ -61,14 +61,14 @@ sub _safe_node {
     my ($node) = @_;
     my ($safe) = defined($node) && !ref($node)
         ? ($node =~ /\A([A-Za-z0-9][A-Za-z0-9_.-]{0,63})\z/) : ();
-    die "node inválido\n" unless defined $safe;
+    die "invalid node\n" unless defined $safe;
     return $safe;
 }
 sub _safe_job {
     my ($job) = @_;
     my ($safe) = defined($job) && !ref($job)
         ? ($job =~ /\A([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\z/) : ();
-    die "id de job inválido\n" unless defined $safe;
+    die "invalid job id\n" unless defined $safe;
     return $safe;
 }
 sub _safe_actor {
@@ -76,14 +76,14 @@ sub _safe_actor {
     $actor = 'root@pam' unless defined($actor) && !ref($actor) && length($actor);
     $actor =~ s/![^!\x00-\x1f\x7f]*\z//;
     my ($safe) = $actor =~ /\A([A-Za-z0-9._-]{1,64}\@[A-Za-z0-9._-]{1,64})\z/;
-    die "principal inválido\n" unless defined $safe;
+    die "invalid principal\n" unless defined $safe;
     return $safe;
 }
 sub _safe_path {
     my ($path) = @_;
     my ($safe) = defined($path) && !ref($path)
         ? ($path =~ /\A(\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)\z/) : ();
-    die "caminho interno inválido\n" unless defined $safe;
+    die "invalid internal path\n" unless defined $safe;
     return $safe;
 }
 sub _unit_name { 'mm-pve-update-' . _safe_job($_[0]) }
@@ -95,13 +95,13 @@ sub _read_json {
     return undef unless -e $path;
     my $raw = read_file($path);
     my $data = eval { decode_json($raw) };
-    die "estado de updates inválido: $path: $@\n" if $@ || ref($data) ne 'HASH';
+    die "invalid update state: $path: $@\n" if $@ || ref($data) ne 'HASH';
     return $data;
 }
 sub _write_json {
     my ($path, $data) = @_;
     ensure_dir(state_dir());
-    write_file_atomic($path, JSON::PP->new->canonical->pretty->utf8->encode($data) . "\n", 0644);
+    write_file_atomic($path, json_encode($data, pretty => 1) . "\n", 0644);
 }
 sub _bulk_path { state_dir() . '/bulk-' . _safe_job($_[0]) . '.json' }
 
@@ -215,11 +215,12 @@ sub _append_log {
     my ($path, $text) = @_;
     $path = _safe_path($path);
     ensure_dir(log_dir());
-    open(my $fh, '>>', $path) or die "não consegui abrir log do job: $!\n";
+    open(my $fh, '>>', $path) or die "could not open job log: $!\n";
+    binmode($fh, ':raw');
     for my $line (split /\n/, $text // '', -1) {
-        print {$fh} _sanitize_log($line) . "\n";
+        print {$fh} utf8_bytes(_sanitize_log($line) . "\n");
     }
-    close($fh) or die "não consegui fechar log do job: $!\n";
+    close($fh) or die "could not close job log: $!\n";
 }
 sub _unit_active {
     my ($unit) = @_;
@@ -274,7 +275,7 @@ sub _reconcile_locked {
     return $state if _unit_active($state->{unit});
     $state->{state} = 'lost';
     $state->{finished} = _now();
-    $state->{error} = 'unit transitória inativa sem estado final';
+    $state->{error} = 'transient unit is inactive without a final state';
     delete $state->{launching};
     _write_json(_current_path($node), $state);
     _write_json(_history_path($node, $state->{id}), $state);
@@ -539,8 +540,8 @@ sub _launch {
         '--unit=' . $state->{unit}, @env);
     my $res = MMPve::Core::Runner->run(\@cmd, timeout => 30);
     if (!$res->{ok}) {
-        $class->_finish($node, $id, $state, { ok => 0, error => 'systemd-run falhou: ' . ($res->{err} || $res->{error} || "rc=$res->{rc}") });
-        die "não consegui iniciar a unit do job $id: " . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n";
+        $class->_finish($node, $id, $state, { ok => 0, error => 'systemd-run failed: ' . ($res->{err} || $res->{error} || "rc=$res->{rc}") });
+        die "could not start job unit $id: " . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n";
     }
     _with_node_lock($node, sub {
         my $fresh = _read_json(_current_path($node));
@@ -633,32 +634,32 @@ sub refresh {
     my ($class, $node) = @_;
     $node = _safe_node($node // hostname());
     my $res = MMPve::Core::Runner->run(['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'update'], timeout => 900);
-    die "apt-get update falhou: " . ($res->{err} || "rc=$res->{rc}") . "\n" unless $res->{ok};
+    die "apt-get update failed: " . ($res->{err} || "rc=$res->{rc}") . "\n" unless $res->{ok};
     return { ok => 1, node => $node };
 }
 
 sub _cluster_preflight {
     my ($nodes) = @_;
     my $cluster = MMPve::Core::Runner->pvesh(get => '/cluster/status');
-    die "preflight: cluster sem quorum\n" if ref($cluster) eq 'ARRAY'
+    die "preflight: cluster has no quorum\n" if ref($cluster) eq 'ARRAY'
         && grep { ref($_) eq 'HASH' && exists($_->{quorate}) && !$_->{quorate} } @{$cluster};
     my %online = map { ($_->{name} // $_->{node} => $_->{online}) }
         grep { ref($_) eq 'HASH' && ($_->{type} // '') eq 'node' } (ref($cluster) eq 'ARRAY' ? @{$cluster} : ());
     for my $node (@{$nodes}) {
-        die "preflight: node $node desconhecido\n" unless exists $online{$node};
+        die "preflight: unknown node $node\n" unless exists $online{$node};
         die "preflight: node $node offline\n" unless $online{$node};
     }
     my $ha = eval { MMPve::Core::Runner->pvesh(get => '/cluster/ha/status/current') };
     if (ref($ha) eq 'ARRAY') {
         for my $item (@{$ha}) {
-            my $text = encode_json($item);
-            die "preflight: HA com erro ou migração\n" if $text =~ /(?:error|migrat)/i;
+            my $text = json_encode($item);
+            die "preflight: HA has an error or migration\n" if $text =~ /(?:error|migrat)/i;
         }
     }
     my $ceph = eval { MMPve::Core::Runner->pvesh(get => '/cluster/ceph/status') };
     if ($ceph && ref($ceph) eq 'HASH') {
         my $health = ref($ceph->{health}) eq 'HASH' ? $ceph->{health}{status} : $ceph->{health};
-        die "preflight: Ceph não está HEALTH_OK\n" if defined($health) && $health ne 'HEALTH_OK';
+        die "preflight: Ceph is not HEALTH_OK\n" if defined($health) && $health ne 'HEALTH_OK';
     }
     return { ok => 1, quorum => 1, nodes => \@{$nodes}, ha => 'ok', ceph => $ceph ? 'ok' : 'absent' };
 }
@@ -934,7 +935,7 @@ sub _wait_for_node {
         }
         select(undef, undef, undef, 1);
     }
-    return { ok => 0, state => 'timed_out', error => 'timeout esperando job do node' };
+    return { ok => 0, state => 'timed_out', error => 'timeout waiting for node job' };
 }
 
 sub reboot_context {
@@ -965,12 +966,12 @@ sub reboot_context {
 sub reboot_preflight {
     my ($class, $node, %opts) = @_;
     $node = _safe_node($node);
-    die "confirmação inválida: digite o nome do node\n" unless defined($opts{confirm}) && $opts{confirm} eq $node;
+    die "invalid confirmation: type the node name\n" unless defined($opts{confirm}) && $opts{confirm} eq $node;
     my $s = $class->status($node, pending_cb => ($opts{pending_cb} || sub { _default_pending($_[0]) }),
         online => exists($opts{online}) ? $opts{online} : 1);
-    die "node $node está offline\n" unless $s->{online};
-    die "há job de update ativo no node $node\n" if $s->{job} && ($s->{job}{state} eq 'queued' || $s->{job}{state} eq 'running');
-    die "não há kernel novo pendente\n" unless $s->{kernel}{reboot_suggested};
+    die "node $node is offline\n" unless $s->{online};
+    die "an update job is active on node $node\n" if $s->{job} && ($s->{job}{state} eq 'queued' || $s->{job}{state} eq 'running');
+    die "no new kernel is pending\n" unless $s->{kernel}{reboot_suggested};
     return { node => $node, running_guests => $opts{running_guests} || [], ha => $opts{ha} || {} };
 }
 
@@ -988,10 +989,10 @@ sub log_page {
     my ($class, $node, $id, %opts) = @_;
     $node = _safe_node($node); $id = _safe_job($id);
     my $state = _read_json(_history_path($node, $id)) || _read_json(_current_path($node));
-    die "job não pertence ao node\n" unless $state && $state->{id} eq $id && $state->{node} eq $node;
+    die "job does not belong to the node\n" unless $state && $state->{id} eq $id && $state->{node} eq $node;
     my $start = defined($opts{start}) && $opts{start} =~ /^\d+$/ ? 0 + $opts{start} : 0;
     my $limit = defined($opts{limit}) && $opts{limit} =~ /^\d+$/ ? 0 + $opts{limit} : 100;
-    die "limite de log inválido\n" if $limit < 1 || $limit > MAX_LOG_LIMIT;
+    die "invalid log limit\n" if $limit < 1 || $limit > MAX_LOG_LIMIT;
     my @lines;
     my $log_path = _safe_path($state->{log});
     if (open(my $fh, '<', $log_path)) { @lines = <$fh>; close($fh) }
@@ -1024,8 +1025,8 @@ sub cli {
     elsif ($sub eq 'bulk-worker') { return $class->bulk_worker($bulk // $job)->{state} eq 'succeeded' ? 0 : 1 }
     elsif ($sub eq 'log') { $out = $class->log_page($node, $job, start => $start, limit => $limit) }
     elsif ($sub eq 'reboot') { $out = $class->reboot($node, confirm => $confirm) }
-    else { print STDERR "uso: mm-pve updates status|refresh|run|log|reboot\n"; return 2 }
-    print JSON::PP->new->canonical->pretty->utf8->encode($out), "\n";
+    else { print STDERR "usage: mm-pve updates status|refresh|run|log|reboot\n"; return 2 }
+    print json_encode($out, pretty => 1), "\n";
     return 0;
 }
 

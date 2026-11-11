@@ -638,7 +638,7 @@ async function main() {
             throw new Error(`poollimits PUT incorreto: ${JSON.stringify(poolRequests)}`);
         }
         if (!poolAssertions.conflictMessage.includes('DIGEST_MISMATCH')
-            || !poolAssertions.conflictMessage.includes('configuração do pool mudou')) {
+            || !poolAssertions.conflictMessage.includes('config changed since it was read')) {
             throw new Error(`erro concorrente não chegou à GUI: ${JSON.stringify(poolAssertions)}`);
         }
         console.log('GUI OK: aba Limites, uso x limite, storages, warning, CAS, edição e modo leitura');
@@ -665,8 +665,8 @@ async function main() {
             hardware.destroy(); resize.destroy();
             return messages;
         }, TIMEOUT);
-        if (!nativeErrorAssertions.some((message) => message.includes('limite de RAM excedido'))
-            || !nativeErrorAssertions.some((message) => message.includes('limite de disco total excedido'))) {
+        if (!nativeErrorAssertions.some((message) => message.includes('RAM MiB limit exceeded'))
+            || !nativeErrorAssertions.some((message) => message.includes('disk total limit exceeded'))) {
             throw new Error(`mensagens nativas de poollimits perdidas: ${JSON.stringify(nativeErrorAssertions)}`);
         }
         console.log('GUI OK: hardware edit e resize exibem a mensagem de limite do servidor');

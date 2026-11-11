@@ -134,7 +134,7 @@ subtest 'extract_upid em saída de proxy para outro node' => sub {
 subtest 'pvesh get sem JSON falha com mensagem limpa' => sub {
     local $MMPve::Core::Runner::OVERRIDE = sub { return { rc => 0, out => "texto solto\n" } };
     eval { MMPve::Core::Runner->pvesh(get => '/nodes/n/status') };
-    like($@, qr/saída não contém JSON\n\z/, 'erro termina em quebra de linha real');
+    like($@, qr/output does not contain JSON\n\z/, 'error ends with a real newline');
     unlike($@, qr/ at \S+ line \d+/, 'sem "at ... line" do Perl');
 };
 

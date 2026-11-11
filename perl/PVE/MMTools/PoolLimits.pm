@@ -6,10 +6,10 @@ package PVE::MMTools::PoolLimits;
 use strict;
 use warnings;
 
-use JSON::PP qw(decode_json encode_json);
+use JSON::PP qw(decode_json);
 use MMPve::Core::Config;
 use MMPve::Module::Poollimits;
-use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir);
+use MMPve::Core::Util qw(read_file write_file_atomic ensure_dir json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 use constant RESERVATION_TTL => 120;
@@ -26,14 +26,14 @@ sub _safe_component {
     my ($value) = @_;
     my ($safe) = defined($value) && !ref($value)
         ? ($value =~ /\A([A-Za-z0-9_.-]+)\z/) : ();
-    die "identificador de pool inválido\n" unless defined $safe;
+    die "invalid pool identifier\n" unless defined $safe;
     return $safe;
 }
 
 sub _config_dir {
     my $path = MMPve::Core::Config->config_dir;
     my ($safe) = $path =~ /\A([A-Za-z0-9_+.,:\/-]+)\z/;
-    die "diretório de configuração inválido\n" unless defined $safe;
+    die "invalid configuration directory\n" unless defined $safe;
     return $safe;
 }
 
@@ -61,7 +61,7 @@ sub _write_reservations {
     my ($pool, $data) = @_;
     my $dir = _config_dir() . '/poollimits-reservations';
     ensure_dir($dir);
-    write_file_atomic(_reservation_path($pool), encode_json($data) . "\n", 0600);
+    write_file_atomic(_reservation_path($pool), json_encode($data) . "\n", 0600);
 }
 
 sub _usercfg {
@@ -70,7 +70,7 @@ sub _usercfg {
     return $TEST_USERCFG if ref($TEST_USERCFG) eq 'HASH';
     require PVE::Cluster;
     my $cfg = PVE::Cluster::cfs_read_file('user.cfg');
-    die "não consegui ler user.cfg\n" unless ref($cfg) eq 'HASH';
+    die "could not read user.cfg\n" unless ref($cfg) eq 'HASH';
     return $cfg;
 }
 
@@ -78,7 +78,7 @@ sub _storage_cfg {
     return $TEST_STORAGE_CFG if ref($TEST_STORAGE_CFG) eq 'HASH';
     require PVE::Storage;
     my $cfg = PVE::Storage::config();
-    die "não consegui ler storage.cfg\n" unless ref($cfg) eq 'HASH';
+    die "could not read storage.cfg\n" unless ref($cfg) eq 'HASH';
     return $cfg;
 }
 
@@ -108,12 +108,12 @@ sub _state {
         }
     }
     my $last = MMPve::Module::Poollimits->last_good;
-    return { active => 0, degraded => 1, error => $err || 'config ausente', poollimits => { pools => {} } }
+    return { active => 0, degraded => 1, error => $err || 'config missing', poollimits => { pools => {} } }
         unless $last && ref($last->{poollimits}) eq 'HASH';
     return {
         active => $last->{enabled} ? 1 : 0,
         degraded => 1,
-        error => $err || 'config inválida',
+        error => $err || 'invalid config',
         poollimits => $last->{poollimits},
         last_revision => $last->{revision},
     };
@@ -141,13 +141,13 @@ sub _error_detail {
 
 sub _fail_closed {
     my ($pool, $resource, $detail) = @_;
-    $detail = _error_detail($detail) || 'erro desconhecido';
-    die "pool '$pool': não foi possível calcular $resource ($detail); desative o módulo com 'modules.poollimits=0' e rode 'mm-pve apply'\n";
+    $detail = _error_detail($detail) || 'unknown error';
+    die "pool '$pool': could not calculate $resource ($detail); disable the module with 'modules.poollimits=0' and run 'mm-pve apply'\n";
 }
 
 sub _limit_error {
     my ($pool, $resource, $current, $requested, $limit) = @_;
-    die "pool '$pool': limite de $resource excedido (uso atual $current, pedido $requested, limite $limit)\n";
+    die "pool '$pool': $resource limit exceeded (current $current, requested $requested, limit $limit)\n";
 }
 
 sub _pool_members {
@@ -359,7 +359,7 @@ sub _disk_inventory {
         my $size = $entry->{size};
         $size = _volume_size($opts{storecfg}, $entry->{volid}) if !defined($size);
         if (!defined($size) || $size < 0) {
-            push @{$result->{errors}}, "$entry->{volid}: tamanho indisponível";
+            push @{$result->{errors}}, "$entry->{volid}: size unavailable";
             next;
         }
         my $old = $result->{volumes}{$entry->{volid}};
@@ -426,7 +426,7 @@ sub _check_disk_target_locked {
     my ($class, $pool, $vmid, $type, $disk, $state, %opts) = @_;
     my $limits = _limits($state, $pool);
     return unless $state->{active} && _disk_limits_enabled($limits);
-    _fail_closed($pool, 'disco', 'configuração atual inválida') if $state->{degraded};
+    _fail_closed($pool, 'disk', 'current configuration is invalid') if $state->{degraded};
     my $key = "$type:$vmid";
     my $reservations = $opts{reservations} || _read_reservations($pool);
     my $live = $reservations->{$key};
@@ -434,7 +434,7 @@ sub _check_disk_target_locked {
         && !defined($live->{target}{cpu}) && !defined($live->{target}{memory_mib});
     $live = $reservations->{$key};
     my $usage = $opts{usage} || $class->_usage($pool, $state, %opts, reservations => $reservations);
-    _fail_closed($pool, 'disco', join('; ', @{ $usage->{disk_errors} || [] }))
+    _fail_closed($pool, 'disk', join('; ', @{ $usage->{disk_errors} || [] }))
         if @{$usage->{disk_errors} || []};
     my $old = $usage->{guests}{$key} || {
         disk_total_bytes => 0, disk_storage_bytes => {},
@@ -447,7 +447,7 @@ sub _check_disk_target_locked {
     my $target = _disk_reservation_target($disk, $live);
     if ($limits->{disk_total_gib}{enabled}
         && $base_total + $target->{total} > $limits->{disk_total_gib}{max} * GIB) {
-        _limit_error($pool, 'disco total', $base_total + ($old->{disk_total_bytes} || 0),
+        _limit_error($pool, 'disk total', $base_total + ($old->{disk_total_bytes} || 0),
             $target->{total}, $limits->{disk_total_gib}{max} * GIB);
     }
     if ($limits->{disk_storage}{enabled}) {
@@ -457,7 +457,7 @@ sub _check_disk_target_locked {
             my $requested = $target->{by_storage}{$storeid} || 0;
             my $old_store = $old->{disk_storage_bytes}{$storeid} || 0;
             if (($base_storage{$storeid} || 0) + $requested > $store_limits->{$storeid} * GIB) {
-                _limit_error($pool, "disco em $storeid", ($base_storage{$storeid} || 0) + $old_store,
+                _limit_error($pool, "disk on $storeid", ($base_storage{$storeid} || 0) + $old_store,
                     $requested, $store_limits->{$storeid} * GIB);
             }
         }
@@ -482,7 +482,7 @@ sub _metrics {
     my ($cpu_current, $cpu_pending, $cpu_defined);
     if ($type eq 'qemu' || $type eq 'kvm') {
         my $class = 'PVE::QemuConfig';
-        eval { require PVE::QemuConfig; 1 } or die "configuração QEMU indisponível";
+        eval { require PVE::QemuConfig; 1 } or die "QEMU configuration unavailable";
         $cpu_current = $class->get_derived_property($current, 'max-cpu');
         $cpu_pending = $class->get_derived_property($pending, 'max-cpu');
         $cpu_defined = 1;
@@ -552,8 +552,8 @@ sub _usage {
         my $load_error = $@;
         if ($load_error || ref($conf) ne 'HASH') {
             my $detail = _error_detail($load_error);
-            push @errors, "guest $vmid: configuração indisponível" . ($detail ? " ($detail)" : '');
-            push @disk_errors, "guest $vmid: configuração de disco indisponível"
+            push @errors, "guest $vmid: configuration unavailable" . ($detail ? " ($detail)" : '');
+            push @disk_errors, "guest $vmid: disk configuration unavailable"
                 if $disk_enabled;
             next;
         }
@@ -561,8 +561,8 @@ sub _usage {
         my $metrics_error = $@;
         if ($metrics_error || !$metrics) {
             my $detail = _error_detail($metrics_error);
-            push @errors, "guest $vmid: contabilidade indisponível" . ($detail ? " ($detail)" : '');
-            push @disk_errors, "guest $vmid: contabilidade de disco indisponível"
+            push @errors, "guest $vmid: accounting unavailable" . ($detail ? " ($detail)" : '');
+            push @disk_errors, "guest $vmid: disk accounting unavailable"
                 if $disk_enabled;
             next;
         }
@@ -578,7 +578,7 @@ sub _usage {
             if ($starting) {
                 $count_cpu_memory = 1;
             } elsif (!defined($running)) {
-                push @errors, "guest $vmid: estado running indisponível"
+                push @errors, "guest $vmid: running state unavailable"
                     if _has_cpu_or_memory_limit($limits);
                 $count_cpu_memory = 0;
             } else {
@@ -591,7 +591,7 @@ sub _usage {
             my $disk_error = $@;
             if ($disk_error || !$disk || @{$disk->{errors} || []}) {
                 my $detail = _error_detail($disk_error || join('; ', @{$disk->{errors} || []}));
-                push @disk_errors, "guest $vmid: contabilidade de disco indisponível"
+                push @disk_errors, "guest $vmid: disk accounting unavailable"
                     . ($detail ? " ($detail)" : '');
             }
         }
@@ -660,17 +660,17 @@ sub check_config {
     return unless _has_any_limit($limits);
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
-    _fail_closed($pool, 'recursos', _error_detail($target_error) || 'configuração do guest indisponível')
+    _fail_closed($pool, 'resources', _error_detail($target_error) || 'guest configuration unavailable')
         if $target_error || !$target;
     return if $target->{template};
     if ($type eq 'lxc' && $limits->{cpu}{enabled} && !$target->{cpu_defined}) {
-        _fail_closed($pool, 'vCPU', "CT $vmid não tem cpulimit nem cores");
+        _fail_closed($pool, 'vCPU', "CT $vmid has neither cpulimit nor cores");
     }
     my $current = $opts{current_metrics} || $target;
     my $running = exists($opts{running}) ? $opts{running}
         : _running($type, $vmid, $opts{entry} || {}, \%opts);
     if (($limits->{mode} // 'allocated') eq 'running' && !defined($running) && !$opts{starting}) {
-        _fail_closed($pool, 'recursos', 'estado running indisponível')
+        _fail_closed($pool, 'resources', 'running state unavailable')
             if $target->{cpu} > ($current->{cpu} // 0)
                 || $target->{memory_mib} > ($current->{memory_mib} // 0);
     }
@@ -720,19 +720,19 @@ sub _check_guest_locked {
     return unless $state->{active} && $limits && _has_any_limit($limits);
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
-    _fail_closed($pool, 'recursos', _error_detail($target_error) || 'configuração do guest indisponível')
+    _fail_closed($pool, 'resources', _error_detail($target_error) || 'guest configuration unavailable')
         if $target_error || !$target;
     return if $target->{template};
     if ($type eq 'lxc' && $limits->{cpu}{enabled} && !$target->{cpu_defined}) {
-        _fail_closed($pool, 'vCPU', "CT $vmid não tem cpulimit nem cores");
+        _fail_closed($pool, 'vCPU', "CT $vmid has neither cpulimit nor cores");
     }
     if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}
         && !exists($opts{target_disk})) {
         my $disk = eval { _disk_inventory($type, $conf,
             storecfg => $opts{storecfg}, vmid => $vmid) };
         my $disk_error = $@;
-        _fail_closed($pool, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
-            || 'configuração do guest indisponível')
+        _fail_closed($pool, 'disk', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+            || 'guest configuration unavailable')
             if $disk_error || !$disk || @{$disk->{errors} || []};
         $opts{target_disk} = $disk;
     }
@@ -744,7 +744,7 @@ sub _check_guest_locked {
     my $count_cpu_memory = 1;
     if (($limits->{mode} // 'allocated') eq 'running') {
         if (!defined($running)) {
-            _fail_closed($pool, 'recursos', 'estado running indisponível')
+            _fail_closed($pool, 'resources', 'running state unavailable')
                 if ($target->{cpu} // 0) > $current_cpu
                     || ($target->{memory_mib} // 0) > $current_memory;
             $count_cpu_memory = 0;
@@ -753,7 +753,7 @@ sub _check_guest_locked {
         }
     }
     if ($type eq 'lxc' && $limits->{cpu}{enabled} && !$target->{cpu_defined}) {
-        _fail_closed($pool, 'vCPU', "CT $vmid não tem cpulimit nem cores");
+        _fail_closed($pool, 'vCPU', "CT $vmid has neither cpulimit nor cores");
     }
     my $target_cpu = $target->{cpu} // 0;
     my $target_memory = $target->{memory_mib} // 0;
@@ -782,9 +782,9 @@ sub _check_guest_locked {
     my $usage = $class->_usage($pool, $state, %opts,
         skip_disk => ($opts{skip_disk} || $opts{starting}) ? 1 : 0,
         reservations => $reservations);
-    _fail_closed($pool, 'recursos', join('; ', @{ $usage->{errors} }))
+    _fail_closed($pool, 'resources', join('; ', @{ $usage->{errors} }))
         if ($opts{starting} || $cpu_memory_increase) && @{$usage->{errors}};
-    _fail_closed($pool, 'disco', join('; ', @{ $usage->{disk_errors} || [] }))
+    _fail_closed($pool, 'disk', join('; ', @{ $usage->{disk_errors} || [] }))
         if !$opts{skip_disk} && $disk_increase && @{$usage->{disk_errors} || []};
     my $old = $usage->{guests}{$key} || {
         cpu => 0, memory_mib => 0, disk_total_bytes => 0, disk_storage_bytes => {},
@@ -802,7 +802,7 @@ sub _check_guest_locked {
         $base_disk_storage{$storeid} -= $old->{disk_storage_bytes}{$storeid};
     }
     if ($state->{degraded}) {
-        _fail_closed($pool, 'recursos', 'configuração atual inválida');
+        _fail_closed($pool, 'resources', 'current configuration is invalid');
     }
     if ($count_cpu_memory && $limits->{cpu}{enabled} && $base_cpu + $target_cpu > $limits->{cpu}{max}) {
         _limit_error($pool, 'vCPU', $base_cpu + ($shown->{cpu} // 0), $target_cpu, $limits->{cpu}{max});
@@ -822,7 +822,7 @@ sub _check_guest_locked {
     if (_disk_limits_enabled($limits) && !$opts{starting} && !$opts{skip_disk}) {
         if ($limits->{disk_total_gib}{enabled}
             && $base_disk_total + $disk_target->{total} > $limits->{disk_total_gib}{max} * GIB) {
-            _limit_error($pool, 'disco total', $base_disk_total + ($shown->{disk_total_bytes} || 0),
+            _limit_error($pool, 'disk total', $base_disk_total + ($shown->{disk_total_bytes} || 0),
                 $disk_target->{total}, $limits->{disk_total_gib}{max} * GIB);
         }
         if ($limits->{disk_storage}{enabled}) {
@@ -831,7 +831,7 @@ sub _check_guest_locked {
                 next unless defined($store_limits->{$storeid});
                 my $requested = $disk_target->{by_storage}{$storeid} || 0;
                 my $old_store = $shown->{disk_storage_bytes}{$storeid} || 0;
-                _limit_error($pool, "disco em $storeid", ($base_disk_storage{$storeid} || 0) + $old_store,
+                _limit_error($pool, "disk on $storeid", ($base_disk_storage{$storeid} || 0) + $old_store,
                     $requested, $store_limits->{$storeid} * GIB)
                     if ($base_disk_storage{$storeid} || 0) + $requested
                         > $store_limits->{$storeid} * GIB;
@@ -889,17 +889,17 @@ sub _storage_context {
     my $entry = $vmlist->{$vmid} || {};
     my $type = _type_for($vmid, $entry, $ucfg);
     my $conf = eval { _load_config($type, $vmid, { node => $entry->{node} }) };
-    _fail_closed($pool, 'disco', _error_detail($@) || 'configuração do guest indisponível')
+    _fail_closed($pool, 'disk', _error_detail($@) || 'guest configuration unavailable')
         if $@ || ref($conf) ne 'HASH';
     # Migração é isenta: sai antes do inventário (sem I/O no storage).
     return if $opts{exempt_migrate} && _guest_is_migrating($conf);
     my $disk = eval { _disk_inventory($type, $conf, storecfg => $storecfg, vmid => $vmid) };
     my $disk_error = $@;
-    _fail_closed($pool, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
-        || 'configuração do guest indisponível')
+    _fail_closed($pool, 'disk', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+        || 'guest configuration unavailable')
         if !$opts{allow_disk_errors} && ($disk_error || !$disk || @{$disk->{errors} || []});
     $disk ||= { total => 0, by_storage => {}, volumes => {}, errors => [
-        _error_detail($disk_error) || 'contabilidade de disco indisponível'
+        _error_detail($disk_error) || 'disk accounting unavailable'
     ] };
     return {
         vmid => $vmid,
@@ -922,7 +922,7 @@ sub _config_has_volid {
 sub _disk_context_is_known {
     my ($ctx) = @_;
     return 1 unless @{$ctx->{disk}{errors} || []};
-    _fail_closed($ctx->{pool}, 'disco', join('; ', @{$ctx->{disk}{errors}}));
+    _fail_closed($ctx->{pool}, 'disk', join('; ', @{$ctx->{disk}{errors}}));
 }
 
 sub _reserve_storage_delta {
@@ -936,13 +936,13 @@ sub _reserve_storage_delta {
         my $vmlist = _vmlist();
         my $entry = $vmlist->{$ctx->{vmid}} || $ctx->{entry} || {};
         my $conf = eval { _load_config($ctx->{type}, $ctx->{vmid}, { node => $entry->{node} }) };
-        _fail_closed($ctx->{pool}, 'disco', _error_detail($@) || 'configuração do guest indisponível')
+        _fail_closed($ctx->{pool}, 'disk', _error_detail($@) || 'guest configuration unavailable')
             if $@ || ref($conf) ne 'HASH';
         my $disk = eval { _disk_inventory($ctx->{type}, $conf,
             storecfg => $ctx->{storecfg}, vmid => $ctx->{vmid}) };
         my $disk_error = $@;
-        _fail_closed($ctx->{pool}, 'disco', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
-            || 'configuração do guest indisponível')
+        _fail_closed($ctx->{pool}, 'disk', _error_detail($disk_error || join('; ', @{$disk->{errors} || []}))
+            || 'guest configuration unavailable')
             if $disk_error || !$disk || @{$disk->{errors} || []};
         my $key = "$ctx->{type}:$ctx->{vmid}";
         my $reservations = _read_reservations($ctx->{pool});
@@ -971,7 +971,7 @@ sub check_storage_alloc {
     _disk_context_is_known($ctx);
     my $bytes = defined($size_kib) && !ref($size_kib) && $size_kib =~ /^\d+(?:\.\d+)?$/
         ? int($size_kib * 1024) : undef;
-    _fail_closed($ctx->{pool}, 'disco', 'tamanho da alocação indisponível')
+    _fail_closed($ctx->{pool}, 'disk', 'allocation size unavailable')
         unless defined($bytes);
     return if $bytes == 0;
     if (defined($name) && $ctx->{disk}{volumes}{"$storeid:$name"}) {
@@ -996,7 +996,7 @@ sub check_storage_clone {
     return unless defined($storeid);
     my $size = $ctx->{disk}{volumes}{$volid}{size};
     $size = _volume_size($storecfg, $volid) unless defined($size);
-    _fail_closed($ctx->{pool}, 'disco', 'tamanho do clone indisponível') unless defined($size);
+    _fail_closed($ctx->{pool}, 'disk', 'clone size unavailable') unless defined($size);
     return if $size == 0;
     return $class->_reserve_storage_delta($ctx, $storeid, $size);
 }
@@ -1038,7 +1038,7 @@ sub check_storage_resize {
     }
     return unless $old;
     my $new_size = _resize_requested_size($size);
-    _fail_closed($ctx->{pool}, 'disco', 'tamanho do volume indisponível')
+    _fail_closed($ctx->{pool}, 'disk', 'volume size unavailable')
         unless defined($new_size)
         && defined($old->{size});
     return if $new_size <= $old->{size};
@@ -1065,7 +1065,7 @@ sub check_storage_import {
     my ($storeid) = $volid =~ /\A([^:]+):/;
     return unless defined($storeid);
     my $size = _volume_size($storecfg, $volid);
-    _fail_closed($ctx->{pool}, 'disco', 'tamanho do volume importado indisponível')
+    _fail_closed($ctx->{pool}, 'disk', 'imported volume size unavailable')
         unless defined($size);
     return if $size == 0;
     return $class->_reserve_storage_delta($ctx, $storeid, $size);
@@ -1088,7 +1088,7 @@ sub check_write_config {
     my $type = $guest_class eq 'PVE::QemuConfig' ? 'qemu' : 'lxc';
     my $target = eval { _metrics($type, $conf) };
     my $target_error = $@;
-    _fail_closed($pool, 'recursos', _error_detail($target_error) || 'configuração do guest indisponível')
+    _fail_closed($pool, 'resources', _error_detail($target_error) || 'guest configuration unavailable')
         if $target_error || !$target;
     return if $target->{template};
     my $old = eval { $guest_class->load_config($vmid) };
@@ -1105,7 +1105,7 @@ sub check_write_config {
     my $cpu_memory_increase = ($target->{cpu} // 0) > ($current->{cpu} // 0)
         || ($target->{memory_mib} // 0) > ($current->{memory_mib} // 0);
     if (($limits->{mode} // 'allocated') eq 'running') {
-        _fail_closed($pool, 'recursos', 'estado running indisponível')
+        _fail_closed($pool, 'resources', 'running state unavailable')
             if !defined($running) && $cpu_memory_increase;
         $cpu_memory_increase = 0 if !$running;
     }
@@ -1202,7 +1202,7 @@ sub check_pool_update {
 sub _restore_qemu_conf {
     my ($archive, $storecfg, $param, $vmid) = @_;
     return undef unless ref($archive) eq 'HASH' && $archive->{volid};
-    die "vmid do restore ausente\n" unless defined($vmid) && $vmid =~ /^\d+$/;
+        die "restore VMID is missing\n" unless defined($vmid) && $vmid =~ /^\d+$/;
     require PVE::Storage;
     require PVE::QemuServer;
     my $old = PVE::Storage::extract_vzdump_config($storecfg, $archive->{volid});
@@ -1224,7 +1224,7 @@ sub check_qemu_create {
     my $conf = ref($archive) eq 'HASH' ? eval { _restore_qemu_conf($archive, $storecfg, $param, $vmid) } : undef;
     my $restore_failed = ref($archive) eq 'HASH' && !$conf;
     $conf ||= { %{ $param || {} } };
-    _fail_closed($pool, 'recursos', 'configuração do backup não pôde ser lida') if $restore_failed;
+        _fail_closed($pool, 'resources', 'backup configuration could not be read') if $restore_failed;
     return _with_pool_lock($pool, sub {
         $class->_check_guest_locked($pool, $vmid, 'qemu', $conf, $state,
             usercfg => $ucfg, vmlist => _vmlist(), running => 0,
@@ -1249,7 +1249,7 @@ sub check_lxc_create {
         my $recovered = eval { require PVE::LXC::Create; (PVE::LXC::Create::recover_config($storage_cfg, $archive, $vmid))[0] };
         $conf = { %{ $recovered || {} }, %{$conf} } if $recovered;
     }
-    _fail_closed($pool, 'recursos', 'configuração do backup não pôde ser lida')
+    _fail_closed($pool, 'resources', 'backup configuration could not be read')
         if $archive && $archive eq '-';
     return _with_pool_lock($pool, sub {
         $class->_check_guest_locked($pool, $vmid, 'lxc', $conf, $state,

@@ -228,11 +228,11 @@ subtest 'esquema vmid_scheme' => sub {
     ($r, $by) = pre(to => 500);
     ok(!$r->{ok}, '500 fora aborta');
     ok(!$by->{esquema}{ok}, 'check esquema falha');
-    ok(grep { /fora do esquema/ } @{$r->{warnings}}, 'aviso de esquema');
+    ok(grep { /outside the configured scheme/ } @{$r->{warnings}}, 'scheme warning');
 
     ($r, $by) = pre(to => 500, force_scheme => 1);
     ok($r->{ok}, 'force-scheme continua') or diag explain [fail_names($r->{checks})];
-    ok(grep { /fora do esquema/ } @{$r->{warnings}}, 'aviso continua com force');
+    ok(grep { /outside the configured scheme/ } @{$r->{warnings}}, 'warning remains with force');
     unlink "$dir/config.json";
 };
 
@@ -245,12 +245,12 @@ subtest 'recusa: VM não existe' => sub {
 
     ($r, $by) = pre(node => 'n1');
     ok(!$by->{'vm-existe'}{ok}, '--node não dispensa achar a VM');
-    like($by->{'vm-existe'}{detail}, qr/não encontrada no node n1/, 'detalhe cita o node');
+    like($by->{'vm-existe'}{detail}, qr/was not found on node n1/, 'detalhe cita o node');
 
     fresh();
     ($r, $by) = pre(node => 'n2');
     ok(!$by->{'vm-existe'}{ok}, 'VM em outro node é recusada');
-    like($by->{'vm-existe'}{detail}, qr/está no node n1, não em n2/, 'detalhe cita os dois nodes');
+    like($by->{'vm-existe'}{detail}, qr/is on node n1, not on n2/, 'detalhe cita os dois nodes');
 };
 
 subtest 'plano: ordem dos passos' => sub {

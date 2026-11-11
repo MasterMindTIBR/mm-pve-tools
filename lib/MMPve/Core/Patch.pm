@@ -13,7 +13,7 @@ use Digest::SHA qw(sha256_hex);
 use File::Copy qw(copy);
 use JSON::PP qw(decode_json encode_json);
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line random_uuid);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line random_uuid json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -58,24 +58,24 @@ sub targets {
 
 sub register_module {
     my ($class, $module) = @_;
-    die "módulo de patch inválido\n"
+    die "invalid patch module\n"
         unless defined($module) && $module =~ /\AMMPve::Module::[A-Za-z][A-Za-z0-9_]*\z/;
-    die "módulo $module não declara patch_targets\n"
+    die "patch module $module does not declare patch_targets\n"
         unless $module->can('patch_targets');
     my $declared = $module->patch_targets;
-    die "patch_targets de $module precisa ser arrayref\n" unless ref($declared) eq 'ARRAY';
+    die "patch_targets for $module must be an arrayref\n" unless ref($declared) eq 'ARRAY';
     return $class->register_targets($module, $declared);
 }
 
 sub register_targets {
     my ($class, $module, $declared) = @_;
-    die "módulo de patch inválido\n"
+    die "invalid patch module\n"
         unless defined($module) && $module =~ /\AMMPve::Module::[A-Za-z][A-Za-z0-9_]*\z/;
-    die "targets de $module precisam ser arrayref\n" unless ref($declared) eq 'ARRAY';
+    die "targets for $module must be an arrayref\n" unless ref($declared) eq 'ARRAY';
 
     my (%new, %new_paths);
     for my $source (@{$declared}) {
-        die "target de $module precisa ser hashref\n" unless ref($source) eq 'HASH';
+        die "target for $module must be a hashref\n" unless ref($source) eq 'HASH';
         my %t = %{$source};
         $t{id} //= $t{name};
         $t{owner} //= $t{owner_package} // $t{package};
@@ -83,46 +83,46 @@ sub register_targets {
         $t{daemons} //= $t{reload_daemons};
         $t{processes} //= $t{loaders};
         my $id = $t{id};
-        die "target de $module sem id\n"
+        die "target for $module has no id\n"
             unless defined($id) && $id =~ /\A[a-z][a-z0-9_-]*\z/;
-        die "target $id já declarado por $module\n" if exists $new{$id};
-        die "target $id já pertence a outro módulo\n" if exists $TARGETS{$id};
-        die "target $id já pertence a outro módulo\n"
+        die "target $id is already declared by $module\n" if exists $new{$id};
+        die "target $id already belongs to another module\n" if exists $TARGETS{$id};
+        die "target $id already belongs to another module\n"
             if grep { exists $MODULE_TARGETS{$_}{$id} && $_ ne $module } keys %MODULE_TARGETS;
 
         for my $required (qw(owner path line daemons processes)) {
-            die "target $id sem $required\n" unless exists $t{$required};
+        die "target $id has no $required\n" unless exists $t{$required};
         }
-        die "owner do target $id inválido\n"
+        die "owner of target $id is invalid\n"
             unless $t{owner} =~ /\A[a-z0-9][a-z0-9+.-]*\z/;
-        die "path do target $id inválido\n"
+        die "path of target $id is invalid\n"
             unless $t{path} =~ m{\A/[A-Za-z0-9_./:+-]+\z};
-        die "linha do target $id precisa ser uma linha\n"
+        die "line for target $id must be a single line\n"
             unless !ref($t{line}) && $t{line} !~ /\n/;
-        die "target $id sem âncora\n" unless exists $t{anchor};
-        die "âncora do target $id precisa ser regexp\n" unless ref($t{anchor}) eq 'Regexp';
-        die "escopo do target $id precisa ser regexp\n"
+        die "target $id has no anchor\n" unless exists $t{anchor};
+        die "anchor for target $id must be a regexp\n" unless ref($t{anchor}) eq 'Regexp';
+        die "scope for target $id must be a regexp\n"
             if exists($t{scope_anchor}) && ref($t{scope_anchor}) ne 'Regexp';
         for my $field (qw(daemons processes)) {
-            die "$field do target $id precisa ser arrayref\n" unless ref($t{$field}) eq 'ARRAY';
-            die "$field do target $id vazio\n" unless @{ $t{$field} };
+            die "$field for target $id must be an arrayref\n" unless ref($t{$field}) eq 'ARRAY';
+            die "$field for target $id cannot be empty\n" unless @{ $t{$field} };
             for my $name (@{ $t{$field} }) {
-                die "$field do target $id inválido\n"
+                die "$field for target $id is invalid\n"
                     unless defined($name) && $name =~ /\A[A-Za-z0-9_.\@:-]+\z/;
             }
         }
         my $path_key = $t{path};
-        die "arquivo $path_key já pertence a outro módulo\n"
+        die "file $path_key already belongs to another module\n"
             if exists($PATH_MODULE{$path_key}) && $PATH_MODULE{$path_key} ne $module;
         for my $other (keys %MODULE_TARGETS) {
             next if $other eq $module;
             for my $old (values %{ $MODULE_TARGETS{$other} }) {
-                die "arquivo $path_key já pertence a $other\n" if $old->{path} eq $t{path};
+                die "file $path_key already belongs to $other\n" if $old->{path} eq $t{path};
             }
         }
         $t{module} = $module;
         $t{marker} //= $t{line};
-        die "marker do target $id inválido\n"
+        die "marker for target $id is invalid\n"
             if ref($t{marker}) || $t{marker} eq '' || $t{marker} =~ /\n/;
         $t{syntax} //= ($t{path} =~ /\.pm\z/ ? 1 : 0);
         $new{$id} = \%t;
@@ -154,7 +154,7 @@ sub _patch_state {
 sub _save_patch_state {
     my ($class, $state) = @_;
     ensure_dir(root_path('/var/lib/mm-pve-tools'));
-    write_file_atomic(_patch_state_path(), encode_json($state) . "\n", 0644);
+    write_file_atomic(_patch_state_path(), json_encode($state) . "\n", 0644);
 }
 
 sub _read_lines {
@@ -433,7 +433,7 @@ sub _patch_nodes_pm {
     return { status => 'applied', changed => 0 } if grep { /PVE::API2::MMTools/ } @{$lines};
     my @uses = grep { $lines->[$_] =~ /^\s*use\s+PVE::API2::\w+(?:::\w+)*;/ } 0 .. $#{$lines};
     my $last_use = pop @uses;
-    return { status => 'anchor_missing', note => 'âncora use PVE::API2::* ausente no Nodes.pm' }
+    return { status => 'anchor_missing', note => 'use PVE::API2::* anchor is missing from Nodes.pm' }
         unless defined $last_use;
     my ($rep_line) = grep { $lines->[$_] =~ /subclass\s*=>\s*"PVE::API2::Replication"/ } 0 .. $#{$lines};
     my $close_after;
@@ -441,7 +441,7 @@ sub _patch_nodes_pm {
         ($close_after) = grep { $lines->[$_] =~ /^\s*\}\);\s*$/ && $_ >= $rep_line }
             $rep_line .. $#{$lines};
     }
-    return { status => 'anchor_missing', note => 'âncora subclass Replication ausente no Nodes.pm' }
+    return { status => 'anchor_missing', note => 'Replication subclass anchor is missing from Nodes.pm' }
         unless defined $close_after;
     my @new;
     for my $i (0 .. $#{$lines}) {
@@ -465,7 +465,7 @@ sub _generic_desired {
         return { ok => 1, content => join('', @lines) };
     }
     my $at = $class->_anchor_index($target, \@lines);
-    return { ok => 0, status => 'anchor_missing', note => "âncora ausente em $target->{id}" }
+    return { ok => 0, status => 'anchor_missing', note => "anchor is missing in $target->{id}" }
         unless defined $at;
     splice @lines, $at + 1, 0, $line;
     return { ok => 1, content => join('', @lines) };
@@ -488,7 +488,7 @@ sub _desired_content {
                 push @new, $line;
                 push @new, $insert . "\n" if $line =~ $target->{anchor};
             }
-            return { ok => 0, status => 'anchor_missing', note => 'âncora (pvemanagerlib.js) não encontrada; GUI fica original' }
+            return { ok => 0, status => 'anchor_missing', note => 'anchor (pvemanagerlib.js) not found; GUI remains unchanged' }
                 if @new == @lines;
             @lines = @new;
         }
@@ -545,7 +545,7 @@ my ($rel, $staged) = @ARGV;
 unshift @INC, sub {
     my (undef, $file) = @_;
     return unless $file eq $rel;
-    open(my $fh, '<', $staged) or die "não consegui abrir $staged: $!\n";
+    open(my $fh, '<', $staged) or die "could not open $staged: $!\n";
     return $fh;
 };
 require $rel;
@@ -608,10 +608,10 @@ sub _transaction_backup {
 sub _validate_staged {
     my ($class, $target, $path, $opts) = @_;
     my $raw = eval { read_file($path) };
-    return { ok => 0, error => "não consegui ler stage: $@" } if $@;
+    return { ok => 0, error => "could not read stage: $@" } if $@;
     if (!$opts->{reverting} && ($target->{kind} // '') eq 'index_tpl'
         && $raw !~ /mm-tools\.js\?ver=\Q$VERSION\E/) {
-        return { ok => 0, error => 'stage sem script mm-tools.js' };
+        return { ok => 0, error => 'stage has no mm-tools.js script' };
     }
     my $syntax = $target->{syntax} // (($target->{path} // '') =~ /\.pm\z/ ? 1 : 0);
     if ($syntax && $class->_syntax_check_mode($opts) ne 'never') {
@@ -745,11 +745,11 @@ sub _sync_group {
             my $valid = $class->_validate_staged($all->{$id}, $staged{root_path($all->{$id}{path})}, \%validate_opts);
             die "$id: $valid->{error}\n" unless $valid->{ok}; }
         for my $path (keys %changed_paths) { rename($staged{$path}, $path)
-            or die "rename do stage para $path: $!\n"; }
+            or die "rename stage to $path failed: $!\n"; }
         for my $path (keys %changed_paths) { my $after = read_file($path);
-            die "$path: verificação pós-commit falhou\n" unless $after eq $path_desired{$path}; }
+            die "$path: post-commit verification failed\n" unless $after eq $path_desired{$path}; }
         1;
-    } or do { $transaction_error = $@ || 'falha desconhecida na transação' };
+    } or do { $transaction_error = $@ || 'unknown transaction failure' };
     if ($transaction_error) {
         unlink($_) for values %staged; my @rollback_errors;
         my %rolled;
@@ -761,7 +761,7 @@ sub _sync_group {
         my $error = $transaction_error; $error .= ' rollback: ' . join('; ', @rollback_errors) if @rollback_errors;
         $out{$_} = { status => 'failed', error => $error, restored => @rollback_errors ? 0 : 1 } for @changed;
         $group->{ok} = 0; $group->{error} = $error;
-        log_line('patch apply: transação do grupo ' . $module . ' revertida: ' . $error);
+        log_line('patch apply: reverted failed group ' . $module . ': ' . $error);
         $group->{failure} = $class->_failure_record($state, $ids, $all, \%raw,
             \%source_hashes, $owner_versions, $changed[0], $error);
         $group->{failed_target} = $changed[0];
@@ -900,7 +900,7 @@ sub _restart_and_verify {
     my $ver = MMPve::Core::Runner->run(['pvesh', 'get', '/version', '--output-format', 'json'], timeout => 60);
     $v->{pve_version_ok} = $ver->{ok} ? 1 : 0;
     $v->{ok} = $restart->{ok} && $ver->{ok} && (grep { !$v->{"active_$_"} } @services) == 0 ? 1 : 0;
-    log_line('patch: pós-reload falhou (' . ($ver->{err} || $restart->{err} || 'daemon inativo após reload') . ')') unless $v->{ok};
+    log_line('patch: post-reload failed (' . ($ver->{err} || $restart->{err} || 'daemon inactive after reload') . ')') unless $v->{ok};
     return $v;
 }
 

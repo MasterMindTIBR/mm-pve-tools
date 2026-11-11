@@ -51,7 +51,7 @@ subtest 'record/step_info' => sub {
 
 subtest 'id inválido recusado' => sub {
     eval { MMPve::Journal->create('../escapa') };
-    like($@, qr/id inválido/, 'sem path traversal');
+    like($@, qr/invalid id/, 'sem path traversal');
 };
 
 done_testing();

@@ -14,7 +14,7 @@ use File::Copy qw(copy);
 use JSON::PP ();
 use MMPve::Core::Config;
 use MMPve::Core::Util qw(
-    root_path read_file write_file_atomic ensure_dir log_line
+    root_path read_file write_file_atomic ensure_dir log_line json_encode
 );
 
 our $VERSION = '@MM_PVE_VERSION@';
@@ -36,8 +36,8 @@ sub request_margin        { return MMPve::Core::Config::BRANDING_REQUEST_MARGIN_
 
 sub _request_json {
     my ($class, $payload) = @_;
-    die 'payload da requisição precisa ser objeto\n' unless ref $payload eq 'HASH';
-    return JSON::PP->new->canonical->utf8->encode($payload);
+    die 'request payload must be an object\n' unless ref $payload eq 'HASH';
+    return json_encode($payload);
 }
 
 sub encoded_request_bytes {
@@ -57,20 +57,20 @@ sub _asset_filename {
 
 sub _validate_png {
     my ($class, $data, $name) = @_;
-    my $label = defined $name && length $name ? $name : 'arquivo';
-    die "$label: tamanho excede o limite de " . $class->raw_asset_limit . " bytes\n"
+    my $label = defined $name && length $name ? $name : 'file';
+    die "$label: size exceeds the " . $class->raw_asset_limit . " byte limit\n"
         if length($data) > $class->raw_asset_limit;
-    die "$label: conteúdo não é um PNG válido\n"
+    die "$label: content is not a valid PNG\n"
         unless substr($data, 0, 8) eq "\x89PNG\r\n\x1a\n";
-    die "$label: PNG sem IHDR completo\n" if length($data) < 33;
+    die "$label: PNG has no complete IHDR\n" if length($data) < 33;
 
     my $length = unpack('N', substr($data, 8, 4));
-    die "$label: IHDR inválido\n"
+    die "$label: invalid IHDR\n"
         unless $length == 13 && substr($data, 12, 4) eq 'IHDR';
     my ($width, $height, $depth, $colour, $compression, $filter, $interlace)
         = unpack('NNCCCCC', substr($data, 16, 13));
-    die "$label: dimensões IHDR inválidas\n" unless $width && $height;
-    die "$label: profundidade IHDR inválida\n"
+    die "$label: invalid IHDR dimensions\n" unless $width && $height;
+    die "$label: invalid IHDR bit depth\n"
         unless $depth == 1 || $depth == 2 || $depth == 4 || $depth == 8 || $depth == 16;
     my %depths = (
         0 => { 1 => 1, 2 => 1, 4 => 1, 8 => 1, 16 => 1 },
@@ -79,24 +79,24 @@ sub _validate_png {
         4 => { 8 => 1, 16 => 1 },
         6 => { 8 => 1, 16 => 1 },
     );
-    die "$label: tipo IHDR inválido\n"
+    die "$label: invalid IHDR type\n"
         unless exists $depths{$colour} && $depths{$colour}{$depth};
-    die "$label: compressão/filtro/interlace IHDR inválidos\n"
+    die "$label: invalid IHDR compression/filter/interlace\n"
         unless !$compression && !$filter && ($interlace == 0 || $interlace == 1);
     return 1;
 }
 
 sub inspect_asset {
     my ($class, %opt) = @_;
-    my $kind = $opt{kind} // die "kind obrigatório (logo|favicon)\n";
-    die "kind inválido '$kind'\n" unless $kind eq 'logo' || $kind eq 'favicon';
+    my $kind = $opt{kind} // die "kind is required (logo|favicon)\n";
+    die "invalid kind '$kind'\n" unless $kind eq 'logo' || $kind eq 'favicon';
     my $submitted = basename($opt{filename} // ($kind . '.png'));
-    die "$submitted: apenas PNG é aceito\n" unless $submitted =~ /\.png\z/i;
-    die "nome de arquivo inválido para $kind\n"
+    die "$submitted: only PNG is accepted\n" unless $submitted =~ /\.png\z/i;
+    die "invalid file name for $kind\n"
         unless $submitted =~ /^[A-Za-z0-9._-]+$/ && $submitted !~ /^\./;
     my $data = $opt{data};
     $data = $$data if ref $data eq 'SCALAR';
-    die "$submitted: conteúdo ausente\n" unless defined $data && !ref $data && length $data;
+    die "$submitted: content is missing\n" unless defined $data && !ref $data && length $data;
     $class->_validate_png($data, $submitted);
     my $hex = Digest::SHA::sha256_hex($data);
     return {
@@ -111,7 +111,7 @@ sub _stage_asset_locked {
     my $dest = branding_dir() . '/' . $asset->{filename};
     if (-f $dest) {
         my $existing = read_file($dest);
-        die "asset content-addressed inconsistente: $asset->{filename}\n"
+        die "inconsistent content-addressed asset: $asset->{filename}\n"
             unless Digest::SHA::sha256_hex($existing) eq $asset->{sha256};
     } else {
         write_file_atomic($dest, $asset->{data}, 0644);
@@ -134,7 +134,7 @@ sub store_asset {
 
 sub store_asset_from_file {
     my ($class, %opt) = @_;
-    my $path = $opt{path} // die "path obrigatório\n";
+    my $path = $opt{path} // die "path is required\n";
     my $data = read_file($path);
     $opt{filename} //= basename($path);
     return $class->stage_asset(%opt, data => $data);
@@ -190,31 +190,31 @@ sub validate_section {
         my $name = $b->{$field};
         next unless defined $name && length $name;
         if ($name !~ /^[0-9a-f]{64}\.png$/) {
-            push @errors, "branding.$field: asset precisa ser <sha256>.png";
+            push @errors, "branding.$field: asset must be <sha256>.png";
             next;
         }
         my $path = "$dir/$name";
         if (!-f $path) {
-            push @errors, "branding.$field '$name' não existe em $dir";
+            push @errors, "branding.$field '$name' does not exist in $dir";
             next;
         }
         my $data = eval { read_file($path) };
         if ($@) {
-            push @errors, "branding.$field '$name' não pôde ser lido";
+            push @errors, "branding.$field '$name' could not be read";
             next;
         }
         my $hex = Digest::SHA::sha256_hex($data);
-        push @errors, "branding.$field '$name' não confere com o conteúdo"
+        push @errors, "branding.$field '$name' does not match its content"
             unless $hex eq substr($name, 0, 64);
         eval { $class->_validate_png($data, $name); 1 }
             or push @errors, $@;
     }
     if (defined $b->{assets_hash} && length $b->{assets_hash}) {
         my $cur = $class->assets_hash($cfg);
-        push @errors, "branding.assets_hash não confere com os assets referenciados"
+        push @errors, "branding.assets_hash does not match referenced assets"
             if $cur ne $b->{assets_hash};
     } elsif (grep { defined $b->{$_} && length $b->{$_} } qw(logo favicon)) {
-        push @errors, 'branding.assets_hash obrigatório quando há asset';
+        push @errors, 'branding.assets_hash is required when an asset exists';
     }
     return @errors;
 }
@@ -271,7 +271,7 @@ sub apply {
     my @wanted = grep { defined $b->{$_} && length $b->{$_} } qw(logo favicon);
     if (!$enabled) {
         my $r = $class->revert;
-        return { ok => 1, changed => $r->{changed}, message => 'branding desligado neste node' };
+        return { ok => 1, changed => $r->{changed}, message => 'branding disabled on this node' };
     }
 
     my $changed = 0;
@@ -280,10 +280,10 @@ sub apply {
         my $name = $b->{$field};
         my $src = branding_dir() . '/' . $name;
         my $dst = images_dir() . '/' . $name;
-        die "branding.$field '$name' não existe em " . branding_dir() . "\n" unless -f $src;
+        die "branding.$field '$name' does not exist in " . branding_dir() . "\n" unless -f $src;
         my $same = -f $dst
             && Digest::SHA::sha256_hex(read_file($src)) eq Digest::SHA::sha256_hex(read_file($dst));
-        if (!$same) { copy($src, $dst) or die "copiar $src -> $dst: $!\n"; $changed = 1 }
+        if (!$same) { copy($src, $dst) or die "could not copy $src -> $dst: $!\n"; $changed = 1 }
     }
     if (opendir(my $dh, images_dir())) {
         my %want = map { $b->{$_} => 1 } @wanted;
@@ -297,17 +297,17 @@ sub apply {
     }
 
     my ($json, $hash) = $class->_desired_json($cfg);
-    my $raw = JSON::PP->new->canonical->pretty->utf8->encode($json) . "\n";
+    my $raw = json_encode($json, pretty => 1) . "\n";
     my $cur = eval { read_file(json_path()) };
     if (!defined $cur || $cur ne $raw) {
         ensure_dir(root_path('/usr/share/pve-manager/js'));
         write_file_atomic(json_path(), $raw, 0644);
         $changed = 1;
     }
-    log_line("branding: aplicado (assets $hash)");
+    log_line("branding: applied (assets $hash)");
     return {
         ok => 1, changed => $changed,
-        message => $changed ? 'branding aplicado neste node' : 'branding já estava aplicado',
+        message => $changed ? 'branding applied on this node' : 'branding was already applied',
         assets_hash => $hash,
     };
 }
@@ -324,16 +324,16 @@ sub revert {
         closedir($dh);
         rmdir(images_dir());
     }
-    my $raw = JSON::PP->new->canonical->pretty->utf8->encode({ enabled => 0 }) . "\n";
+    my $raw = json_encode({ enabled => 0 }, pretty => 1) . "\n";
     my $cur = eval { read_file(json_path()) };
     if (!defined $cur || $cur ne $raw) {
         ensure_dir(root_path('/usr/share/pve-manager/js'));
         write_file_atomic(json_path(), $raw, 0644);
         $changed = 1;
     }
-    log_line('branding: desligado') if $changed;
+    log_line('branding: disabled') if $changed;
     return { ok => 1, changed => $changed,
-        message => $changed ? 'branding desligado neste node' : 'branding já estava desligado' };
+        message => $changed ? 'branding disabled on this node' : 'branding was already disabled' };
 }
 
 sub check {
@@ -383,8 +383,8 @@ sub cli {
         printf "%-14s %s\n", $_, (defined $state->{$_} ? $state->{$_} : '-') for sort keys %$state;
         return 0;
     }
-    print STDERR "uso: mm-pve branding set [--logo arq.png] [--favicon arq.png] [--title T] [--header-text T] [--login-text T]\n";
-    print STDERR "     mm-pve branding clear\n     mm-pve branding check\n";
+    print STDERR "usage: mm-pve branding set [--logo file.png] [--favicon file.png] [--title T] [--header-text T] [--login-text T]\n";
+    print STDERR "       mm-pve branding clear\n       mm-pve branding check\n";
     return 2;
 }
 
@@ -395,7 +395,7 @@ sub _cli_set {
     local $SIG{__WARN__} = sub { };
     Getopt::Long::GetOptionsFromArray($av, \%opt,
         'logo=s', 'favicon=s', 'title=s', 'header-text=s', 'login-text=s')
-        or do { print STDERR "uso: mm-pve branding set [--logo arq.png] [--favicon arq.png] [--title T] [--header-text T] [--login-text T]\n"; return 2 };
+        or do { print STDERR "usage: mm-pve branding set [--logo file.png] [--favicon file.png] [--title T] [--header-text T] [--login-text T]\n"; return 2 };
 
     my ($cfg, $digest, $absent) = MMPve::Core::Config->load;
     my $branding = { %{ $cfg->{branding} || {} } };
@@ -424,7 +424,7 @@ sub _cli_set {
     if ($@) { chomp(my $e = $@); print STDERR "$e\n"; return 1 }
     my $res = eval { $class->apply($saved) };
     if ($@) { chomp(my $e = $@); print STDERR "$e\n"; return 1 }
-    printf "branding salvo (revision %d) e %s\n", $saved->{revision}, $res->{message};
+    printf "branding saved (revision %d): %s\n", $saved->{revision}, $res->{message};
     return 0;
 }
 
@@ -438,7 +438,7 @@ sub _cli_clear {
     if ($@) { chomp(my $e = $@); print STDERR "$e\n"; return 1 }
     my $res = eval { $class->apply($saved) };
     if ($@) { chomp(my $e = $@); print STDERR "$e\n"; return 1 }
-    printf "branding limpo (revision %d); %s\n", $saved->{revision}, $res->{message};
+    printf "branding cleared (revision %d); %s\n", $saved->{revision}, $res->{message};
     return 0;
 }
 

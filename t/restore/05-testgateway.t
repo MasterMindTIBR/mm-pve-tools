@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# test-gateway: selfcheck do gw-restore reportando itens ✔/✘.
+# test-gateway: selfcheck from gw-restore reporting pass/fail items.
 use strict;
 use warnings;
 use utf8;
@@ -14,7 +14,7 @@ RestoreTest::setup();
 local $MMPve::Module::Restore::POLL_DELAY = 0;
 
 local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
-    gw_out => "\x{2714} plugin ntfs3g ok\n\x{2714} PBS alcancavel\n\x{2718} token sem permissao\n\x{2714} sysctls ok\n");
+    gw_out => "PASS plugin ntfs3g ok\nPASS PBS reachable\nFAIL token unauthorized\nPASS sysctls ok\n");
 my $res = $R->test_gateway;
 is($res->{gateway_vmid}, 9000, 'gateway_vmid');
 is($res->{node}, 'pvegwdon', 'node do gateway');
@@ -25,7 +25,7 @@ like($res->{items}[2]{line}, qr/token/, 'linha do item');
 
 # tudo ok
 local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
-    gw_out => "\x{2714} a\n\x{2714} b\n");
+    gw_out => "PASS a\nPASS b\n");
 $res = $R->test_gateway;
 is(scalar(grep { !$_->{ok} } @{ $res->{items} }), 0, 'selfcheck todo verde');
 

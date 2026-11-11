@@ -3,20 +3,20 @@
 # nunca é inserido nos bundles upstream; estes arquivos são somente leitura.
 set -u
 
-[ "$#" -eq 2 ] || [ "$#" -eq 4 ] || { echo "uso: $0 PVE PWT [NEWEST_PVE NEWEST_PWT]" >&2; exit 2; }
+[ "$#" -eq 2 ] || [ "$#" -eq 4 ] || { echo "usage: $0 PVE PWT [NEWEST_PVE NEWEST_PWT]" >&2; exit 2; }
 
 check_bundle() {
     path=$1
     label=$2
-    [ -f "$path" ] || { echo "UI âncora falhou: $label ausente: $path" >&2; return 1; }
+[ -f "$path" ] || { echo "UI anchor check failed: $label missing: $path" >&2; return 1; }
     shift 2
     for marker in "$@"; do
         grep -Fq -- "$marker" "$path" || {
-            echo "UI âncora falhou: $label não contém '$marker'" >&2
+            echo "UI anchor check failed: $label does not contain '$marker'" >&2
             return 1
         }
     done
-    echo "UI âncoras OK: $label ($path)"
+    echo "UI anchors OK: $label ($path)"
     return 0
 }
 

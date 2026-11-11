@@ -104,12 +104,12 @@ subtest 'resume sem pendente e rollback sem done' => sub {
     MockPve->reset;
     system("rm -rf $ENV{MM_PVE_CONFIG_DIR}/journal");
     my $r = eval { MMPve::Module::Renumber->resume(from => 100, to => 1100) };
-    like($@, qr/journal .*não encontrado/, 'resume sem journal explica');
+    like($@, qr/journal .*not found/, 'resume without journal explains');
 
     # journal sem nenhum passo done → rollback recusa
     MMPve::Journal->create('renumber-100-1100', from => 100, to => 1100, node => 'n1');
     my $e2 = eval { MMPve::Module::Renumber->rollback(from => 100, to => 1100) };
-    like($@, qr/nenhum passo concluído/, 'rollback sem done recusa');
+    like($@, qr/no completed step/, 'rollback without done refuses');
 };
 
 subtest 'rollback com refs: referências revertidas' => sub {

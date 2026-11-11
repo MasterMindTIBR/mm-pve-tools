@@ -7,10 +7,10 @@ use strict;
 use warnings;
 use base qw(MMPve::Core::ModuleBase);
 
-use JSON::PP qw(decode_json encode_json);
+use JSON::PP qw(decode_json);
 use MMPve::Core::Config;
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir json_encode);
 use Sys::Hostname qw(hostname);
 
 our $VERSION = '@MM_PVE_VERSION@';
@@ -42,21 +42,21 @@ sub _poolid { return defined($_[0]) && !ref($_[0]) && $_[0] =~ /^[A-Za-z][A-Za-z
 sub _resource {
     my ($errors, $pool, $key, $value) = @_;
     if (ref($value) ne 'HASH') {
-        push @{$errors}, "poollimits.pools.$pool.$key precisa ser objeto";
+        push @{$errors}, "poollimits.pools.$pool.$key must be an object";
         return;
     }
     my %known = map { $_ => 1 } qw(enabled max);
     for my $field (keys %{$value}) {
-        push @{$errors}, "poollimits.pools.$pool.$key: chave desconhecida '$field'"
+        push @{$errors}, "poollimits.pools.$pool.$key: unknown key '$field'"
             unless $known{$field};
     }
-    push @{$errors}, "poollimits.pools.$pool.$key.enabled precisa ser booleano"
+    push @{$errors}, "poollimits.pools.$pool.$key.enabled must be boolean"
         unless exists($value->{enabled}) && _bool($value->{enabled});
     if ($value->{enabled}) {
-        push @{$errors}, "poollimits.pools.$pool.$key.max precisa ser inteiro positivo"
+        push @{$errors}, "poollimits.pools.$pool.$key.max must be a positive integer"
             unless _positive($value->{max});
     } elsif (exists($value->{max}) && !_positive($value->{max})) {
-        push @{$errors}, "poollimits.pools.$pool.$key.max precisa ser inteiro positivo quando informado";
+        push @{$errors}, "poollimits.pools.$pool.$key.max must be a positive integer when set";
     }
 }
 
@@ -66,22 +66,22 @@ sub validate_section {
     my $p = $class->_poollimits($cfg);
     my @errors;
     my %known = (pools => 1);
-    push @errors, 'poollimits: chave desconhecida' for grep { !$known{$_} } keys %{$p};
+    push @errors, 'poollimits: unknown key' for grep { !$known{$_} } keys %{$p};
     if (ref($p->{pools}) ne 'HASH') {
-        push @errors, 'poollimits.pools precisa ser objeto';
+        push @errors, 'poollimits.pools must be an object';
         return @errors;
     }
     for my $pool (sort keys %{ $p->{pools} }) {
-        push @errors, "poollimits.pools.$pool: identificador inválido" unless _poolid($pool);
+        push @errors, "poollimits.pools.$pool: invalid identifier" unless _poolid($pool);
         my $value = $p->{pools}{$pool};
         if (ref($value) ne 'HASH') {
-            push @errors, "poollimits.pools.$pool precisa ser objeto";
+            push @errors, "poollimits.pools.$pool must be an object";
             next;
         }
         my %pk = map { $_ => 1 } qw(mode cpu memory_mib disk_total_gib disk_storage);
-        push @errors, "poollimits.pools.$pool: chave desconhecida '$_'"
+        push @errors, "poollimits.pools.$pool: unknown key '$_'"
             for grep { !$pk{$_} } keys %{$value};
-        push @errors, "poollimits.pools.$pool.mode precisa ser allocated ou running"
+        push @errors, "poollimits.pools.$pool.mode must be allocated or running"
             unless defined($value->{mode}) && !ref($value->{mode})
                 && ($value->{mode} eq 'allocated' || $value->{mode} eq 'running');
         for my $key (qw(cpu memory_mib disk_total_gib)) {
@@ -89,29 +89,29 @@ sub validate_section {
                 if exists($value->{$key});
         }
         for my $key (qw(cpu memory_mib disk_total_gib)) {
-            push @errors, "poollimits.pools.$pool.$key obrigatório"
+            push @errors, "poollimits.pools.$pool.$key is required"
                 unless exists($value->{$key});
         }
         my $ds = $value->{disk_storage};
         if (ref($ds) ne 'HASH') {
-            push @errors, "poollimits.pools.$pool.disk_storage precisa ser objeto";
+            push @errors, "poollimits.pools.$pool.disk_storage must be an object";
         } else {
             my %dk = map { $_ => 1 } qw(enabled limits);
-            push @errors, "poollimits.pools.$pool.disk_storage: chave desconhecida '$_'"
+            push @errors, "poollimits.pools.$pool.disk_storage: unknown key '$_'"
                 for grep { !$dk{$_} } keys %{$ds};
-            push @errors, "poollimits.pools.$pool.disk_storage.enabled precisa ser booleano"
+            push @errors, "poollimits.pools.$pool.disk_storage.enabled must be boolean"
                 unless exists($ds->{enabled}) && _bool($ds->{enabled});
             if (exists($ds->{limits})) {
                 if (ref($ds->{limits}) ne 'HASH') {
-                    push @errors, "poollimits.pools.$pool.disk_storage.limits precisa ser objeto";
+                    push @errors, "poollimits.pools.$pool.disk_storage.limits must be an object";
                 } else {
                     for my $storeid (sort keys %{ $ds->{limits} }) {
-                        push @errors, "poollimits.pools.$pool.disk_storage.limits.$storeid precisa ser inteiro positivo"
+                        push @errors, "poollimits.pools.$pool.disk_storage.limits.$storeid must be a positive integer"
                             unless _positive($ds->{limits}{$storeid});
                     }
                 }
             } elsif ($ds->{enabled}) {
-                push @errors, "poollimits.pools.$pool.disk_storage.limits obrigatório quando ligado";
+                push @errors, "poollimits.pools.$pool.disk_storage.limits is required when enabled";
             }
         }
     }
@@ -123,11 +123,11 @@ sub validate_section {
         my $pools = $opt{resources}{pools} || {};
         my $stores = $opt{resources}{storages} || {};
         for my $pool (keys %{ $p->{pools} }) {
-            push @errors, "poollimits.pools.$pool não existe"
+            push @errors, "poollimits.pools.$pool does not exist"
                 unless $pools->{$pool};
             my $limits = $p->{pools}{$pool}{disk_storage}{limits} || {};
             for my $storeid (keys %{$limits}) {
-                push @errors, "storage '$storeid' não existe"
+                push @errors, "storage '$storeid' does not exist"
                     unless $stores->{$storeid};
             }
         }
@@ -157,7 +157,7 @@ sub record_last_known_good {
     my ($class, $cfg) = @_;
     my $p = $class->_poollimits($cfg);
     ensure_dir(root_path('/var/lib/mm-pve-tools'));
-    write_file_atomic($class->last_good_path, encode_json({
+    write_file_atomic($class->last_good_path, json_encode({
         revision => $cfg->{revision} // 1,
         enabled => ($cfg->{modules} || {})->{poollimits} ? 1 : 0,
         poollimits => $p,
@@ -172,8 +172,8 @@ sub patch_enabled_for_invalid {
         && keys %{ $last->{poollimits}{pools} } ? 1 : 0;
 }
 
-sub apply { return { ok => 1, changed => 0, message => 'poollimits pronto' } }
-sub revert { return { ok => 1, changed => 0, message => 'poollimits revertido' } }
+sub apply { return { ok => 1, changed => 0, message => 'poollimits ready' } }
+sub revert { return { ok => 1, changed => 0, message => 'poollimits reverted' } }
 
 sub check {
     my ($class, $cfg) = @_;
@@ -195,7 +195,7 @@ sub check {
         last_known_good_revision => $last ? $last->{revision} : undef,
         pools_with_last_limits => $last && ref($last->{poollimits}{pools}) eq 'HASH'
             ? scalar(keys %{ $last->{poollimits}{pools} }) : 0,
-        note => $valid ? 'configuração válida' : 'configuração inválida; aumentos em pools antigos serão recusados',
+        note => $valid ? 'valid configuration' : 'invalid configuration; increases in existing pools will be refused',
     };
 }
 
@@ -257,8 +257,8 @@ sub cli {
         'check' => \$check, 'help|h' => \$help,
     ) or return 2;
     if ($help) {
-        print "uso: mm-pve poollimits status [--pool ID]\n";
-        print "     mm-pve poollimits set <pool> --mode allocated|running [--cpu-max N|--cpu-off] [--memory-max N|--memory-off]\n";
+        print "usage: mm-pve poollimits status [--pool ID]\n";
+        print "       mm-pve poollimits set <pool> --mode allocated|running [--cpu-max N|--cpu-off] [--memory-max N|--memory-off]\n";
         print "       [--disk-total-max GiB|--disk-total-off] [--disk-storage-max STORAGE=GiB ...|--disk-storage-off]\n";
         return 0;
     }
@@ -272,19 +272,19 @@ sub cli {
             $path .= '/' . $pool if defined($pool);
             $data = MMPve::Core::Runner->pvesh(get => $path);
         }
-        print JSON::PP->new->canonical->pretty->encode($data), "\n";
+        print json_encode($data, pretty => 1), "\n";
         return 0;
     }
-    die "uso: mm-pve poollimits set <pool> ...\n" unless @ARGV == 2 && $ARGV[0] eq 'set';
+    die "usage: mm-pve poollimits set <pool> ...\n" unless @ARGV == 2 && $ARGV[0] eq 'set';
     my $poolid = $ARGV[1];
-    die "--mode é obrigatório\n" unless defined($mode) && ($mode eq 'allocated' || $mode eq 'running');
-    die "use --cpu-max ou --cpu-off\n" if $cpu_off && defined($cpu);
-    die "use --memory-max ou --memory-off\n" if $memory_off && defined($memory);
-    die "use --disk-total-max ou --disk-total-off\n" if $disk_total_off && defined($disk_total);
-    die "use --disk-storage-max ou --disk-storage-off\n" if $disk_storage_off && @disk_storage_max;
+    die "--mode is required\n" unless defined($mode) && ($mode eq 'allocated' || $mode eq 'running');
+    die "use --cpu-max or --cpu-off\n" if $cpu_off && defined($cpu);
+    die "use --memory-max or --memory-off\n" if $memory_off && defined($memory);
+    die "use --disk-total-max or --disk-total-off\n" if $disk_total_off && defined($disk_total);
+    die "use --disk-storage-max or --disk-storage-off\n" if $disk_storage_off && @disk_storage_max;
     my %disk_storage_max;
     for my $spec (@disk_storage_max) {
-        die "--disk-storage-max precisa ser STORAGE=GiB\n"
+        die "--disk-storage-max must be STORAGE=GiB\n"
             unless $spec =~ /\A([A-Za-z][A-Za-z0-9_.-]*)=(\d+)\z/ && $2 >= 1;
         $disk_storage_max{$1} = 0 + $2;
     }
@@ -311,7 +311,7 @@ sub cli {
     my %opt = defined($digest) ? (digest => $digest) : ();
     my ($saved, $new_digest) = eval { $class->_save_pool($poolid, $value, %opt) };
     if ($@) { chomp(my $err = $@); print STDERR "$err\n"; return 1 }
-    print "poollimits salvo (revision $saved->{revision})\ndigest: $new_digest\n";
+    print "poollimits saved (revision $saved->{revision})\ndigest: $new_digest\n";
     return 0;
 }
 

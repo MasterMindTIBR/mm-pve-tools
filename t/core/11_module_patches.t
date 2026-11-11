@@ -182,7 +182,7 @@ subtest 'owner duplicado é recusado e o reload que falha reverte só o módulo'
         1;
     };
     ok(!$duplicate, 'arquivo duplicado recusado');
-    like($@, qr/arquivo/, 'diagnóstico do arquivo duplicado');
+    like($@, qr/file/, 'duplicate file diagnostic');
     MMPve::Core::Patch->unregister_module('MMPve::Module::OtherPatchFixture');
 
     my $root = fresh_root('reload-failure');

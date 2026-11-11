@@ -60,7 +60,7 @@ class FakeOps(gw.RealOps):
         if prog == "id":
             return {"rc": 0, "out": "1042\n", "err": ""}
         if prog == "ip" and argv[1] == "link" and argv[2] == "show":
-            return {"rc": 1, "out": "", "err": "não encontrado"}
+            return {"rc": 1, "out": "", "err": "not found"}
         if prog == "arping":
             return {"rc": self.arping_rc, "out": "", "err": ""}
         if prog == "nft" and argv[1:3] == ["--echo", "--handle"]:
@@ -293,7 +293,7 @@ class TestPublish(GatewayCase):
         self.ops.arping_rc = 1
         with self.assertRaises(gw.GwError) as cm:
             self.gwr.publish(base_payload())
-        self.assertIn("já em uso", str(cm.exception))
+        self.assertIn("already in use", str(cm.exception))
         # não configurou IP nem levantou a interface
         argvs = [a for (a, _s) in self.ops.calls]
         self.assertFalse(any(a[:3] == ["ip", "addr", "add"] for a in argvs))
@@ -321,7 +321,7 @@ class TestPublish(GatewayCase):
         self.ops.escape = True
         with self.assertRaises(gw.GwError) as cm:
             self.gwr.publish(base_payload(subpath="Dados/Users/joao"))
-        self.assertIn("escapa", str(cm.exception))
+        self.assertIn("escapes the mount root", str(cm.exception))
         self.assertFalse(os.path.isdir(self.ctx["state_dir"])
                          and os.listdir(self.ctx["state_dir"]))
 
@@ -352,7 +352,7 @@ class TestPublish(GatewayCase):
     def test_datastore_fora_da_allowlist_recusado(self):
         with self.assertRaises(gw.GwError) as cm:
             self.gwr.publish(base_payload(datastore="outro"))
-        self.assertIn("allowlist PBS_DATASTORES", str(cm.exception))
+        self.assertIn("PBS_DATASTORES allowlist", str(cm.exception))
 
     def test_crash_injetado_reconcilia_sem_senha_persistida(self):
         for step in ("map", "mount", "vlan", "nft", "samba", "state"):

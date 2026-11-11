@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind mm-pve-tools: aplicação periódica do estado desejado
+Description=MasterMind mm-pve-tools: periodically apply desired state
 
 [Timer]
 OnBootSec=2min

@@ -44,7 +44,7 @@ __PACKAGE__->register_method({
     method => 'GET',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Índice do mm-pve-tools (MasterMind).',
+    description => 'mm-pve-tools index (MasterMind).',
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -79,7 +79,7 @@ __PACKAGE__->register_method({
     method => 'GET',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Lê o estado desejado dos módulos MasterMind (/etc/pve/mm-tools/config.json).',
+    description => 'Read the desired MasterMind module state (/etc/pve/mm-tools/config.json).',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -108,7 +108,7 @@ __PACKAGE__->register_method({
     method => 'PUT',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Salva uma seção do estado desejado; digest CAS é opcional na primeira gravação.',
+    description => 'Save one desired-state section; the CAS digest is optional on the first write.',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -121,12 +121,12 @@ __PACKAGE__->register_method({
             digest => {
                 type => 'string',
                 optional => 1,
-                description => 'sha256 do arquivo atual, lido no GET (CAS).',
+                description => 'sha256 of the current file, read by GET (CAS).',
                 pattern => '^sha256:[0-9a-f]{64}$',
             },
             value => {
                 type => 'string',
-                description => 'JSON serializado somente da seção alterada.',
+                description => 'JSON serialized for the changed section only.',
                 maxLength => 1024 * 1024,
             },
         },
@@ -135,7 +135,7 @@ __PACKAGE__->register_method({
     code => sub {
         my ($param) = @_;
         my $value = eval { decode_json($param->{value}) };
-        die "value precisa conter JSON válido: $@\n" if $@;
+        die "value must contain valid JSON: $@\n" if $@;
         my ($saved, $digest) = MMPve::Core::Config->save_section(
             $param->{section}, $value, digest => $param->{digest});
         return {
@@ -153,7 +153,7 @@ __PACKAGE__->register_method({
     method => 'POST',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Aplica patches + módulos neste node (tarefa em worker; acompanhe no Task Log).',
+    description => 'Apply patches and modules on this node (worker task; follow the Task Log).',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -161,7 +161,7 @@ __PACKAGE__->register_method({
             node => get_standard_option('pve-node'),
             patches => {
                 type => 'boolean',
-                description => 'Aplicar também os patches do pve-manager (padrão: sim).',
+                description => 'Also apply pve-manager patches (default: yes).',
                 optional => 1,
                 default => 1,
             },
@@ -178,13 +178,13 @@ __PACKAGE__->register_method({
             my @cmd = ('/usr/sbin/mm-pve', '--json', 'apply', '--no-reload');
             push @cmd, '--no-patches' if exists($param->{patches}) && !$param->{patches};
             my $res = MMPve::Core::Runner->run(\@cmd, timeout => 240);
-            die "mm-pve apply falhou (rc=$res->{rc}): "
-                . ($res->{err} || $res->{error} || 'sem diagnóstico') . "\n"
+            die "mm-pve apply failed (rc=$res->{rc}): "
+                . ($res->{err} || $res->{error} || 'no diagnostic') . "\n"
                 unless $res->{ok};
             my $data = eval { decode_json($res->{out}) };
-            die "mm-pve apply não retornou JSON válido: $@\n" if $@ || ref($data) ne 'HASH';
-            die "mm-pve apply reportou falha (rc=0): "
-                . ($data->{error} || 'resultado ok=false') . "\n"
+            die "mm-pve apply did not return valid JSON: $@\n" if $@ || ref($data) ne 'HASH';
+            die "mm-pve apply reported failure (rc=0): "
+                . ($data->{error} || 'result ok=false') . "\n"
                 unless $data->{ok};
 
             if ($data->{reload_required}) {
@@ -194,12 +194,12 @@ __PACKAGE__->register_method({
                     '/usr/sbin/mm-pve', '--json', 'patch', 'reload-verify',
                     '--fallback-daemons', 'pveproxy,pvedaemon',
                 ], timeout => 30);
-                die "não consegui agendar reload pós-apply (unit $unit): "
+                die "could not schedule post-apply reload (unit $unit): "
                     . ($reload->{err} || $reload->{error} || "rc=$reload->{rc}") . "\n"
                     unless $reload->{ok};
-                print "apply concluído; reload agendado na unit $unit\n";
+                print "apply completed; reload scheduled in unit $unit\n";
             } else {
-                print "apply concluído; reload não necessário\n";
+                print "apply completed; reload not required\n";
             }
         };
         return $rpcenv->fork_worker('mmapply', "apply-$node", $authuser, $realcmd);

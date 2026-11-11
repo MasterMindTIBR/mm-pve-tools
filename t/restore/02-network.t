@@ -28,7 +28,7 @@ $conf = {
 is($R->pick_vlan($conf, $vlans), 120, 'ignora tag sem entrada');
 
 eval { $R->pick_vlan({ net0 => 'bridge=vmbr0' }, $vlans) };
-like($@, qr/nenhuma NIC/, 'sem NIC casada → erro');
+like($@, qr/no destination VM NIC/, 'no matching NIC -> error');
 
 # ---- ip_in_prefix
 ok($R->ip_in_prefix('10.20.120.10', '10.20.120.250', 24), 'ip no prefixo /24');

@@ -38,7 +38,7 @@ subtest 'limite exato da requisição e limite bruto' => sub {
     is(MMPve::Module::Branding->proxy_request_limit, 512 * 1024, 'limite é o do pveproxy');
     is(MMPve::Module::Branding->raw_asset_limit, 256 * 1024, 'PNG bruto limitado a 256 KiB');
     eval { MMPve::Module::Branding->inspect_asset(kind => 'logo', filename => 'big.png', data => png(1) . ('x' x (256 * 1024))) };
-    like($@, qr/excede o limite/, 'PNG bruto acima do limite recusado');
+    like($@, qr/exceeds the .* limit/, 'raw PNG over limit refused');
 };
 
 subtest 'assets_hash ignora orphan staged' => sub {

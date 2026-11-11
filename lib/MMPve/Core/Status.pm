@@ -22,11 +22,11 @@ sub _ntfs3g_state {
         MMPve::Core::Runner->run(
             ['pve-file-restore-ntfs3g-check', '--json'], timeout => 60);
     };
-    return { ok => 0, error => 'falha executando pve-file-restore-ntfs3g-check: ' . ($@ || '') }
+    return { ok => 0, error => 'pve-file-restore-ntfs3g-check failed: ' . ($@ || '') }
         if $@ || !$res;
     return { ok => 0, error => ($res->{err} || "rc=$res->{rc}") } unless $res->{ok};
     my $data = eval { JSON::PP::decode_json($res->{out}) };
-    return { ok => 0, error => 'saída inválida do pve-file-restore-ntfs3g-check: ' . ($@ || '') }
+    return { ok => 0, error => 'invalid pve-file-restore-ntfs3g-check output: ' . ($@ || '') }
         if $@ || !$data;
     return $data;
 }

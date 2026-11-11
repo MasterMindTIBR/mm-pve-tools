@@ -9,13 +9,13 @@ package MMPve::Core::Apply;
 
 use strict;
 use warnings;
-use JSON::PP qw(encode_json decode_json);
+use JSON::PP qw(decode_json);
 use POSIX qw(strftime);
 use MMPve::Core::Config;
 use MMPve::Core::Modules;
 use MMPve::Core::Patch;
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -35,7 +35,7 @@ sub apply_all {
         };
         if ($busy) {
             return {
-                ok => 1, skipped => 1, reason => 'update em execução ou lock do dpkg',
+                ok => 1, skipped => 1, reason => 'update is running or dpkg is locked',
                 revision => eval { MMPve::Core::Config->load->{revision} },
             };
         }
@@ -78,7 +78,7 @@ sub apply_all {
         my $enabled = $mode->{$name} ? 1 : 0;
         my $out;
         if ($cfg_err) {
-            $out = { ok => 0, error => "config inválido; módulo não aplicado: $cfg_err" };
+            $out = { ok => 0, error => "invalid config; module not applied: $cfg_err" };
         } elsif ($enabled) {
             $out = eval { $m->apply($cfg) };
             $out = { ok => 0, error => $@ } unless ref $out eq 'HASH';
@@ -107,7 +107,7 @@ sub apply_all {
     }
     if (!$opts{dry_run}) {
         ensure_dir(root_path('/var/lib/mm-pve-tools'));
-        write_file_atomic(state_path(), encode_json(\%res) . "\n", 0644);
+        write_file_atomic(state_path(), json_encode(\%res) . "\n", 0644);
     }
     log_line('apply: ok=' . $res{ok} . ' revision=' . $res{revision});
     return \%res;

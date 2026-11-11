@@ -45,7 +45,7 @@ my $status_count = 0;
         return { rc => 0, out => TestAPI::fixture('agent-exec-status-failed.stdout') };
     };
     eval { MMPve::Module::Restore->gw_exec('node1', 9000, ['gw-restore', 'selfcheck'], timeout => 2) };
-    like($@, qr/gw-restore falhou \(exit 3\)/, 'gw_exec propaga exitcode real');
+    like($@, qr/gw-restore failed \(exit 3\)/, 'gw_exec propagates the real exit code');
     unlike($@, qr/password|secret/i, 'erro não vaza segredo');
 }
 
@@ -57,7 +57,7 @@ my $status_count = 0;
     };
     local $MMPve::Module::Restore::POLL_DELAY = 0;
     eval { MMPve::Module::Restore->gw_exec('node1', 9000, ['gw-restore', 'selfcheck'], timeout => 0) };
-    like($@, qr/timeout .*esperando o gateway/, 'gw_exec limita poll que nunca termina');
+    like($@, qr/timeout .*waiting for gateway/, 'gw_exec limita poll que nunca termina');
 }
 
 done_testing();

@@ -7,16 +7,16 @@ readonly ENVIRONMENT="production"
 readonly GH_BIN="${RELEASE_PREFLIGHT_GH:-gh}"
 
 command -v "$GH_BIN" >/dev/null 2>&1 || {
-    printf 'gh não encontrado para consultar o ambiente %s\n' "$ENVIRONMENT" >&2
+    printf 'gh not found to query environment %s\n' "$ENVIRONMENT" >&2
     exit 127
 }
 
 if ! environment_json=$("$GH_BIN" api "repos/${REPOSITORY}/environments/${ENVIRONMENT}" 2>/dev/null); then
-    printf 'ambiente %s não existe ou não pôde ser consultado\n' "$ENVIRONMENT" >&2
+    printf 'environment %s does not exist or could not be queried\n' "$ENVIRONMENT" >&2
     exit 1
 fi
 if ! policy_json=$("$GH_BIN" api "repos/${REPOSITORY}/environments/${ENVIRONMENT}/deployment-branch-policies" 2>/dev/null); then
-    printf 'não foi possível consultar as restrições de branch do ambiente %s\n' "$ENVIRONMENT" >&2
+    printf 'could not query branch restrictions for environment %s\n' "$ENVIRONMENT" >&2
     exit 1
 fi
 
@@ -30,7 +30,7 @@ try:
     environment = json.loads(os.environ["environment_json"])
     policy = json.loads(os.environ["policy_json"])
 except (KeyError, json.JSONDecodeError) as exc:
-    print(f"resposta inválida do ambiente production: {exc}", file=sys.stderr)
+    print(f"invalid response from production environment: {exc}", file=sys.stderr)
     sys.exit(1)
 
 reviewers = any(
@@ -38,7 +38,7 @@ reviewers = any(
     for rule in environment.get("protection_rules", [])
 )
 if not reviewers:
-    print("ambiente production não possui required reviewer", file=sys.stderr)
+    print("production environment has no required reviewer", file=sys.stderr)
     sys.exit(1)
 
 names = {
@@ -47,8 +47,8 @@ names = {
     if isinstance(item, dict)
 }
 if names != {"master"}:
-    print("ambiente production não está restrito à branch master", file=sys.stderr)
+    print("production environment is not restricted to the master branch", file=sys.stderr)
     sys.exit(1)
 
-print("preflight de release OK: production exige reviewer e está restrito à master")
+print("release preflight OK: production requires a reviewer and is restricted to master")
 PY

@@ -27,22 +27,22 @@ sub validate_section {
 
 sub apply {
     my ($class, $cfg) = @_;
-    return { ok => 1, changed => 0, message => 'apply não implementado' };
+    return { ok => 1, changed => 0, message => 'apply not implemented' };
 }
 
 sub revert {
     my ($class) = @_;
-    return { ok => 1, changed => 0, message => 'revert não implementado' };
+    return { ok => 1, changed => 0, message => 'revert not implemented' };
 }
 
 sub check {
     my ($class, $cfg) = @_;
-    return { ok => 1, note => 'check não implementado' };
+    return { ok => 1, note => 'check not implemented' };
 }
 
 sub cli {
     my ($class, $argv) = @_;
-    print STDERR "mm-pve " . $class->name . ": subcomando não implementado\n";
+    print STDERR "mm-pve " . $class->name . ": subcommand not implemented\n";
     return 2;
 }
 

@@ -19,7 +19,7 @@ sub _node { return $_[0]{node} }
 sub _user {
     my $rpcenv = PVE::RPCEnvironment->get();
     my $user = $rpcenv->get_user();
-    die "usuário autenticado ausente\n" unless defined($user) && length($user);
+    die "authenticated user is missing\n" unless defined($user) && length($user);
     if (index($user, '!') >= 0) {
         require PVE::AccessControl;
         my ($owner) = PVE::AccessControl::split_tokenid($user, 1);
@@ -49,7 +49,7 @@ __PACKAGE__->register_method({
     # domínio do cfs falha com 'pve cluster filesystem not online'.
     protected => 1,
     permissions => $node_perm,
-    description => 'Status de pacotes e jobs de atualização do node.',
+    description => 'Node package and update job status.',
     parameters => { additionalProperties => 0, properties => $node_param },
     returns => { type => 'object' },
     code => sub {
@@ -66,7 +66,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'refresh', path => 'refresh', method => 'POST', proxyto => 'node',
     permissions => $node_perm,
-    description => 'Atualiza os índices APT do node.', protected => 1,
+    description => 'Update the node APT indexes.', protected => 1,
     parameters => { additionalProperties => 0, properties => $node_param },
     returns => { type => 'string' },
     code => sub {
@@ -82,7 +82,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'run', path => 'run', method => 'POST', proxyto => 'node',
     permissions => $node_perm,
-    description => 'Agenda atualização do node fora do pvedaemon.', protected => 1,
+    description => 'Schedule a node update outside pvedaemon.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -128,7 +128,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'bulk', path => 'bulk', method => 'POST', proxyto => 'node',
     permissions => $node_perm,
-    description => 'Agenda atualização de vários nodes com preflight.', protected => 1,
+    description => 'Schedule updates for multiple nodes with preflight.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -155,7 +155,7 @@ __PACKAGE__->register_method({
     name => 'log', path => 'log', method => 'GET', proxyto => 'node',
     protected => 1,
     permissions => $node_perm,
-    description => 'Lê uma página do log de um job gerado pelo sistema.',
+    description => 'Read one page of a system-generated job log.',
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -172,10 +172,10 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'reboot', path => 'reboot', method => 'POST', proxyto => 'node',
     permissions => { check => ['perm', '/nodes/{node}', ['Sys.Modify', 'Sys.PowerMgmt']] },
-    description => 'Reinicia o node somente com kernel novo e confirmação tripla.', protected => 1,
+    description => 'Reboot the node only with a new kernel and triple confirmation.', protected => 1,
     parameters => {
         additionalProperties => 0,
-        properties => { %{$node_param}, confirm => { type => 'string', description => 'Nome exato do node.' } },
+        properties => { %{$node_param}, confirm => { type => 'string', description => 'Exact node name.' } },
     },
     returns => { type => 'object' },
     code => sub {
@@ -188,7 +188,7 @@ __PACKAGE__->register_method({
         require PVE::API2::Nodes;
         my ($info) = grep { !$_->{subclass} && ($_->{name} // '') eq 'node_cmd' }
             @{ PVE::API2::Nodes::Nodeinfo->method_attributes };
-        die "endpoint nativo de reboot do PVE ausente\n" unless $info && ref($info->{code}) eq 'CODE';
+        die "native PVE reboot endpoint is unavailable\n" unless $info && ref($info->{code}) eq 'CODE';
         $info->{code}->({ node => $node, command => 'reboot' });
         return $context;
     },

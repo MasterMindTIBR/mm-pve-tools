@@ -15,7 +15,7 @@ use JSON::PP ();
 use MMPve::Core::Runner;
 use MMPve::Core::Config;
 use MMPve::Journal;
-use MMPve::Core::Util qw(read_file write_file_atomic root_path log_line);
+use MMPve::Core::Util qw(read_file write_file_atomic root_path log_line json_encode);
 use Sys::Hostname qw(hostname);
 use POSIX qw(getpid);
 
@@ -110,7 +110,7 @@ sub _scheme_warning {
         return undef if $to >= $r->{from} && $to <= $r->{to};
     }
     my @labels = map { $_->{label} } @{$ranges};
-    return "ID $to fora do esquema configurado (faixas: " . join(', ', @labels) . ")";
+    return "ID $to is outside the configured scheme (ranges: " . join(', ', @labels) . ")";
 }
 
 sub journal_id {
@@ -126,19 +126,19 @@ sub _pending_journal {
     my $file = MMPve::Journal->path_for($id);
     return undef unless -e $file;
     my $j = eval { MMPve::Journal->open($id) };
-    return "journal $id ilegível; confira $file antes de continuar" unless $j;
+    return "journal $id is unreadable; check $file before continuing" unless $j;
     my $state = $j->state // '';
     return undef if $state eq 'finished';
     my @done = $j->done_steps;
-    return "renumber $from>$to inacabado (journal $id, estado $state"
-        . (@done ? ', concluídos: ' . join(', ', @done) : '')
-        . "); use --resume ou --rollback. Se a operação já foi limpa à mão, "
-        . "remova $file";
+    return "renumber $from>$to is unfinished (journal $id, state $state"
+        . (@done ? ', completed: ' . join(', ', @done) : '')
+        . "); use --resume or --rollback. If the operation was cleaned manually, "
+        . "remove $file";
 }
 
 sub _config_digest {
     my ($class, $conf) = @_;
-    die "PVE não retornou digest da configuração; operação insegura\n"
+    die "PVE did not return a configuration digest; unsafe operation\n"
         unless ref $conf eq 'HASH' && defined $conf->{digest} && length $conf->{digest};
     return $conf->{digest};
 }
@@ -148,10 +148,10 @@ sub _source_snapshot {
     my $path = "/nodes/$meta->{node}/qemu/$meta->{from}";
     my ($status, $status_err) = $class->_pvesh_opt(get => "$path/status/current");
     my ($conf, $conf_err) = $class->_pvesh_opt(get => "$path/config");
-    return (undef, undef, 0) if $conf_err && $conf_err =~ /not found|does not exist|no such|inexistente|不存在/i;
-    die "não consegui consultar status da VM $meta->{from}: " . _chomp($status_err)
+    return (undef, undef, 0) if $conf_err && $conf_err =~ /not found|does not exist|no such/i;
+    die "could not query VM $meta->{from} status: " . _chomp($status_err)
         if $status_err;
-    die "não consegui consultar configuração da VM $meta->{from}: " . _chomp($conf_err)
+    die "could not query VM $meta->{from} configuration: " . _chomp($conf_err)
         if $conf_err || !$conf;
     return ($status, $conf, 1);
 }
@@ -160,12 +160,12 @@ sub _guard_source {
     my ($class, $j, $meta, %opt) = @_;
     my ($status, $conf, $exists) = $class->_source_snapshot($meta);
     return (undef, undef, 0) if !$exists && $opt{allow_absent};
-    die "VM $meta->{from} desapareceu antes do passo $opt{step}\n" unless $exists;
-    die "VM $meta->{from} não está parada antes do passo $opt{step}\n"
+    die "VM $meta->{from} disappeared before step $opt{step}\n" unless $exists;
+    die "VM $meta->{from} is not stopped before step $opt{step}\n"
         unless ($status->{status} // '') eq 'stopped';
     my $expected = $meta->{config_digest};
     my $actual = $class->_config_digest($conf);
-    die "digest da VM $meta->{from} mudou antes do passo $opt{step}\n"
+    die "VM $meta->{from} digest changed before step $opt{step}\n"
         unless defined $expected && $actual eq $expected;
     return ($status, $conf, 1);
 }
@@ -174,7 +174,7 @@ sub _refresh_source_digest {
     my ($class, $j, $meta, $where) = @_;
     my ($status, $conf, $exists) = $class->_source_snapshot($meta);
     return undef unless $exists;
-    die "VM $meta->{from} não está parada após $where\n"
+    die "VM $meta->{from} is not stopped after $where\n"
         unless ($status->{status} // '') eq 'stopped';
     my $digest = $class->_config_digest($conf);
     $meta->{config_digest} = $digest;
@@ -216,7 +216,7 @@ sub _config_edit {
             && PVE::QemuConfig->can('write_config') }) {
         return $class->_with_config_lock($vmid, sub {
             my $conf = PVE::QemuConfig->load_config($vmid);
-            die "não consegui carregar configuração da VM $vmid\n" unless $conf;
+            die "could not load VM $vmid configuration\n" unless $conf;
             if (exists $args{delete}) {
                 delete $conf->{ $args{delete} };
                 delete $args{delete};
@@ -232,7 +232,7 @@ sub _maybe_fail_after {
     my ($class, $step) = @_;
     return unless defined $ENV{MM_RENUMBER_FAIL_AFTER} && length $ENV{MM_RENUMBER_FAIL_AFTER};
     return unless $ENV{MM_RENUMBER_FAIL_AFTER} eq $step;
-    die "falha injetada após o passo '$step' (MM_RENUMBER_FAIL_AFTER)\n";
+    die "failure injected after step '$step' (MM_RENUMBER_FAIL_AFTER)\n";
 }
 
 # ------------------------------------------------------------- precheck
@@ -245,33 +245,33 @@ sub precheck {
     my %info;
 
     if (!_vmid_ok($from) || !_vmid_ok($to)) {
-        _check(\@checks, 'ids', 0, '--from e --to precisam ser inteiros 100..9999999');
+        _check(\@checks, 'ids', 0, '--from and --to must be integers from 100 to 9999999');
         return { ok => 0, checks => \@checks, warnings => \@warnings, info => \%info };
     }
     _check(\@checks, 'ids-diferentes', ($from != $to ? 1 : 0),
-        $from == $to ? 'ID novo é igual ao antigo' : 'ok');
+        $from == $to ? 'new ID equals old ID' : 'ok');
 
     # 0. Nenhum renumber inacabado para o mesmo par. Começar do zero por cima
     # de um journal running/failed pularia os passos 'done' e iria direto ao
     # destroy da VM antiga com os discos ainda nela.
     my $open_journal = $class->_pending_journal($from, $to);
     _check(\@checks, 'sem-journal-pendente', ($open_journal ? 0 : 1),
-        $open_journal // 'nenhum renumber inacabado para este par');
+        $open_journal // 'no unfinished renumber for this pair');
 
     # 1. ID novo livre (GET /cluster/nextid --vmid dá erro se em uso).
     my ($next, $next_err) = $class->_pvesh_opt(get => '/cluster/nextid', vmid => $to);
     _check(\@checks, 'id-novo-livre', ($next ? 1 : 0),
-        $next ? "livre (nextid sugeriria $next)"
-              : ($next_err ? _chomp($next_err) : "ID $to já está em uso"));
+        $next ? "free (nextid suggests $next)"
+              : ($next_err ? _chomp($next_err) : "ID $to is already in use"));
 
     # 2. Esquema de VMID.
     my $sw = $class->_scheme_warning($to);
     if ($sw) {
         push @warnings, $sw;
         _check(\@checks, 'esquema', ($o{force_scheme} ? 1 : 0),
-            "$sw (use --force-scheme para forçar)", 1);
+            "$sw (use --force-scheme to force)", 1);
     } else {
-        _check(\@checks, 'esquema', 1, 'dentro do esquema configurado (ou sem esquema)');
+        _check(\@checks, 'esquema', 1, 'inside the configured scheme (or no scheme)');
     }
 
     # Localizar a VM (com --node, confere que ela está mesmo lá).
@@ -279,9 +279,9 @@ sub precheck {
     my $node = ($o{node} && $o{node} ne $found) ? '' : $found;
     $info{node} = $node;
     _check(\@checks, 'vm-existe', ($node ? 1 : 0),
-        $node ? "VM $from no node $node"
-            : $o{node} && $found ? "VM $from está no node $found, não em $o{node}"
-            : ("VM $from não encontrada" . ($o{node} ? " no node $o{node}" : ' no cluster')));
+        $node ? "VM $from on node $node"
+            : $o{node} && $found ? "VM $from is on node $found, not on $o{node}"
+            : ("VM $from was not found" . ($o{node} ? " on node $o{node}" : ' in the cluster')));
 
     my $ok = (grep { !$_->{ok} } @checks) ? 0 : 1;
     return { ok => 0, checks => \@checks, warnings => \@warnings, info => \%info } if !$ok;
@@ -308,18 +308,18 @@ sub precheck {
                     get => "/nodes/$n->{name}/storage/$sid/content", vmid => $to);
                 if ($content_err) { $orphan_err = $content_err; last NODE }
                 if ($content && @{$content}) {
-                    $orphan_detail = "storage $sid já tem " . scalar(@{$content})
-                        . " volume(s) do ID $to (" . join(', ', map { $_->{volid} // '?' } @{$content}) . ")";
+                    $orphan_detail = "storage $sid already has " . scalar(@{$content})
+                        . " volume(s) for ID $to (" . join(', ', map { $_->{volid} // '?' } @{$content}) . ")";
                     last NODE;
                 }
             }
         }
     }
     if ($orphan_err) {
-        _check(\@checks, 'sem-volumes-orfaos', 0, 'erro consultando storages: ' . _chomp($orphan_err));
+        _check(\@checks, 'sem-volumes-orfaos', 0, 'error querying storages: ' . _chomp($orphan_err));
     } else {
         _check(\@checks, 'sem-volumes-orfaos', ($orphan_detail ? 0 : 1),
-            $orphan_detail || "nenhum volume vm-$to-* / base-$to-* em storage de images/rootdir");
+            $orphan_detail || "no vm-$to-* / base-$to-* volume on an images/rootdir storage");
     }
 
     # 4. Estado da VM de origem (status/lock vêm de status/current — GET
@@ -329,29 +329,29 @@ sub precheck {
     my ($vmstat, $vmstat_err) = $class->_pvesh_opt(get => "$vmpath/status/current");
     my ($conf, $conf_err) = $class->_pvesh_opt(get => "$vmpath/config");
     _check(\@checks, 'config-legivel', ($conf ? 1 : 0),
-        $conf ? 'ok' : ($conf_err ? 'erro lendo configuração: ' . _chomp($conf_err)
-                                   : 'não consegui ler a configuração da VM'));
+        $conf ? 'ok' : ($conf_err ? 'error reading configuration: ' . _chomp($conf_err)
+                                   : 'could not read VM configuration'));
     return { ok => 0, checks => \@checks, warnings => \@warnings, info => \%info } if !$conf;
 
     if ($vmstat_err) {
-        _check(\@checks, 'desligada', 0, 'erro consultando status: ' . _chomp($vmstat_err));
+        _check(\@checks, 'desligada', 0, 'error querying status: ' . _chomp($vmstat_err));
     } else {
         my $status = $vmstat->{status} // '?';
         _check(\@checks, 'desligada', ($status eq 'stopped' ? 1 : 0),
-            "status: $status" . ($status eq 'stopped' ? '' : ' (precisa estar desligada)'));
+            "status: $status" . ($status eq 'stopped' ? '' : ' (must be stopped)'));
     }
     my $lock = ($vmstat && $vmstat->{lock}) // $conf->{lock};
-    _check(\@checks, 'sem-lock', ($lock ? 0 : 1), $lock ? "lock: $lock" : 'sem lock');
+    _check(\@checks, 'sem-lock', ($lock ? 0 : 1), $lock ? "lock: $lock" : 'no lock');
     _check(\@checks, 'nao-template', ($conf->{template} ? 0 : 1),
-        $conf->{template} ? 'é template' : 'não é template');
+        $conf->{template} ? 'is a template' : 'is not a template');
 
     my ($snaps, $snaps_err) = $class->_pvesh_opt(get => "$vmpath/snapshot");
     if ($snaps_err) {
-        _check(\@checks, 'sem-snapshots', 0, 'erro consultando snapshots: ' . _chomp($snaps_err));
+        _check(\@checks, 'sem-snapshots', 0, 'error querying snapshots: ' . _chomp($snaps_err));
     } else {
         my @extra_snaps = grep { ($_->{name} // '') ne 'current' } @{$snaps || []};
         _check(\@checks, 'sem-snapshots', (@extra_snaps ? 0 : 1),
-            @extra_snaps ? 'snapshots: ' . join(', ', map { $_->{name} } @extra_snaps) : 'só current');
+            @extra_snaps ? 'snapshots: ' . join(', ', map { $_->{name} } @extra_snaps) : 'current only');
     }
 
     # /pending devolve TODAS as chaves da config ({key,value,...}); só tem
@@ -361,39 +361,39 @@ sub precheck {
     # presente (o normal) já acusava "pendente" — RODADA2 #2.
     my ($pending, $pending_err) = $class->_pvesh_opt(get => "$vmpath/pending");
     if ($pending_err) {
-        _check(\@checks, 'sem-pending', 0, 'erro consultando pending: ' . _chomp($pending_err));
+        _check(\@checks, 'sem-pending', 0, 'error querying pending changes: ' . _chomp($pending_err));
     } else {
         my @active = grep { defined $_->{pending} || defined $_->{delete} } @{$pending || []};
         _check(\@checks, 'sem-pending', (@active ? 0 : 1),
             @active
-                ? scalar(@active) . ' mudança(ões) pendente(s): '
+                ? scalar(@active) . ' pending change(s): '
                     . join(', ', map { $_->{key} // '?' } @active)
-                : 'sem alterações pendentes');
+                : 'no pending changes');
     }
 
     # 5. HA e replicação.
     my ($ha, $ha_err) = $class->_pvesh_opt(get => '/cluster/ha/resources');
     my $ha_entry;
     if ($ha_err) {
-        _check(\@checks, 'ha', 0, 'erro consultando HA: ' . _chomp($ha_err));
+        _check(\@checks, 'ha', 0, 'error querying HA: ' . _chomp($ha_err));
     } else {
         ($ha_entry) = grep { ($_->{sid} // '') eq "vm:$from" } @{$ha || []};
         if ($ha_entry) {
             if ($o{handle_ha}) {
-                push @warnings, 'VM está no HA: será removida e recriada com o novo ID (--handle-ha)';
-                _check(\@checks, 'ha', 1, 'no HA — tratado com --handle-ha', 1);
+                push @warnings, 'VM is in HA: it will be removed and recreated with the new ID (--handle-ha)';
+                _check(\@checks, 'ha', 1, 'in HA - handled with --handle-ha', 1);
             } else {
-                _check(\@checks, 'ha', 0, 'VM está no HA (use --handle-ha)');
+                _check(\@checks, 'ha', 0, 'VM is in HA (use --handle-ha)');
             }
         } else {
-            _check(\@checks, 'ha', 1, 'fora do HA');
+            _check(\@checks, 'ha', 1, 'not in HA');
         }
     }
 
     my ($ha_rules, $ha_rules_err) = $class->_pvesh_opt(get => '/cluster/ha/rules');
     my @ha_rules_for_vm;
     if ($ha_rules_err) {
-        _check(\@checks, 'ha-regras', 0, 'erro consultando regras HA: ' . _chomp($ha_rules_err));
+        _check(\@checks, 'ha-regras', 0, 'error querying HA rules: ' . _chomp($ha_rules_err));
     } else {
         @ha_rules_for_vm = grep {
             my @resources = split /\s*,\s*/, ($_->{resources} // '');
@@ -401,17 +401,17 @@ sub precheck {
         } @{$ha_rules || []};
         if (@ha_rules_for_vm && !$o{handle_ha}) {
             _check(\@checks, 'ha-regras', 0,
-                'VM aparece em regra HA (use --handle-ha)');
+                'VM appears in an HA rule (use --handle-ha)');
         } else {
             _check(\@checks, 'ha-regras', 1,
-                @ha_rules_for_vm ? scalar(@ha_rules_for_vm) . ' regra(s) HA serão migradas' : 'sem regra HA');
+                @ha_rules_for_vm ? scalar(@ha_rules_for_vm) . ' HA rule(s) will be migrated' : 'no HA rule');
         }
     }
 
     my ($repl, $repl_err) = $class->_pvesh_opt(get => '/cluster/replication');
     my @repl_jobs;
     if ($repl_err) {
-        _check(\@checks, 'replicacao', 0, 'erro consultando replicação: ' . _chomp($repl_err));
+        _check(\@checks, 'replicacao', 0, 'error querying replication: ' . _chomp($repl_err));
     } else {
         @repl_jobs = grep { ($_->{guest} // '') eq $from } @{$repl || []};
         my @invalid_repl;
@@ -425,21 +425,21 @@ sub precheck {
         }
         if (@invalid_repl) {
             _check(\@checks, 'replicacao-preservavel', 0,
-                'job(s) sem schema preservável: ' . join(', ', @invalid_repl));
+                'job(s) without a preservable schema: ' . join(', ', @invalid_repl));
         } else {
             _check(\@checks, 'replicacao-preservavel', 1,
-                @repl_jobs ? 'todos os campos da replicação são preserváveis' : 'sem replicação');
+                @repl_jobs ? 'all replication fields are preservable' : 'no replication');
         }
         if (@repl_jobs) {
             if ($o{handle_replication}) {
-                push @warnings, 'VM tem replicação (' . join(', ', map { $_->{id} } @repl_jobs)
-                    . '): será removida e recriada; a recriação faz sync COMPLETO';
-                _check(\@checks, 'replicacao', 1, 'replicação tratada com --handle-replication', 1);
+                push @warnings, 'VM has replication (' . join(', ', map { $_->{id} } @repl_jobs)
+                    . '): it will be removed and recreated; recreation performs a FULL sync';
+                _check(\@checks, 'replicacao', 1, 'replication handled with --handle-replication', 1);
             } else {
-                _check(\@checks, 'replicacao', 0, 'VM tem replicação (use --handle-replication)');
+                _check(\@checks, 'replicacao', 0, 'VM has replication (use --handle-replication)');
             }
         } else {
-            _check(\@checks, 'replicacao', 1, 'sem replicação');
+            _check(\@checks, 'replicacao', 1, 'no replication');
         }
     }
 
@@ -456,15 +456,15 @@ sub precheck {
     my @drives = $class->_classify_drives($conf, \%storage_types);
     my $bad_storage = '';
     if ($storages_err) {
-        $bad_storage = 'erro consultando /storage: ' . _chomp($storages_err);
+        $bad_storage = 'error querying /storage: ' . _chomp($storages_err);
     } elsif ($storage_cfg_err) {
-        $bad_storage = 'não consegui ler storage.cfg: ' . _chomp($storage_cfg_err);
+        $bad_storage = 'could not read storage.cfg: ' . _chomp($storage_cfg_err);
     } else {
         for my $d (@drives) {
             next unless $d->{kind} eq 'volume';
             my $t = $d->{storage_type};
             if (!defined $t || $t eq '') {
-                $bad_storage = "storage '$d->{storage}' do drive $d->{key} não encontrado no cluster";
+                $bad_storage = "storage '$d->{storage}' for drive $d->{key} was not found in the cluster";
                 last;
             }
             (my $volid = $d->{value}) =~ s/,.*$//;
@@ -495,7 +495,7 @@ sub precheck {
 sub wait_task {
     my ($class, $upid, %o) = @_;
     my ($node) = $upid =~ /^UPID:([^:]+):/;
-    die "UPID inválido (sem node): $upid\n" unless $node;
+    die "invalid UPID (missing node): $upid\n" unless $node;
     my $timeout = $o{timeout} // $TASK_TIMEOUT;
     my $start = time;
     my $deadline = $start + $timeout;
@@ -505,11 +505,11 @@ sub wait_task {
         my ($t) = $class->_pvesh_opt(get => "/nodes/$node/tasks/$upid/status");
         if ($t && (($t->{status} // '') eq 'stopped')) {
             my $es = $t->{exitstatus} // '';
-            die "tarefa falhou: $upid → $es\n" unless $es eq 'OK';
+            die "task failed: $upid -> $es\n" unless $es eq 'OK';
             return 1;
         }
         if (time >= $deadline) {
-            die sprintf("timeout esperando a tarefa %s (%ds decorridos)\n", $upid, time - $start);
+            die sprintf("timeout waiting for task %s (%ds elapsed)\n", $upid, time - $start);
         }
         sleep($TASK_POLL);
     }
@@ -546,14 +546,14 @@ sub _step_reserve {
     my ($existing, $err) = $class->_pvesh_opt(
         get => "/nodes/$meta->{node}/qemu/$meta->{to}/config");
     if (!$err && $existing) {
-        die "VM $meta->{to} existe, mas não pertence a este renumber\n"
+        die "VM $meta->{to} exists but does not belong to this renumber\n"
             unless ($existing->{name} // '') eq $tmpname
                 && ($existing->{description} // '') eq $marker;
-        return "ID $meta->{to} já estava reservado por este journal";
+        return "ID $meta->{to} was already reserved by this journal";
     }
     MMPve::Core::Runner->pvesh(create => "/nodes/$meta->{node}/qemu",
         vmid => $meta->{to}, name => $tmpname, description => $marker);
-    return "ID $meta->{to} reservado (nome temporário $tmpname)";
+    return "ID $meta->{to} reserved (temporary name $tmpname)";
 }
 
 sub _step_move_disks {
@@ -565,7 +565,7 @@ sub _step_move_disks {
     # deste passo, drives que já saíram daqui não podem ser mexidos de novo
     # — RODADA2 #6.
     my ($old_conf) = $class->_pvesh_opt(get => "$path/config");
-    die "não consegui ler a configuração atual da VM $meta->{from}\n" unless $old_conf;
+    die "could not read the current configuration of VM $meta->{from}\n" unless $old_conf;
 
     # protection bloqueia destroy_vm e remoção de drive
     # (PVE::QemuConfig::check_protection, chamado em destroy_vm e no delete
@@ -575,7 +575,7 @@ sub _step_move_disks {
     if ($meta->{original_config}{protection} && $old_conf->{protection}) {
         $class->_guard_source($j, $meta, step => 'move_disks/protection');
         $class->_config_edit($meta->{node}, $meta->{from}, protection => 0);
-        $class->_refresh_source_digest($j, $meta, 'limpeza de protection');
+        $class->_refresh_source_digest($j, $meta, 'protection cleanup');
     }
 
     my $moved = 0;
@@ -587,7 +587,7 @@ sub _step_move_disks {
             $j->record('move_disks', cloudinit => $ci);
             $class->_guard_source($j, $meta, step => 'move_disks/cloudinit');
             $class->_config_edit($meta->{node}, $meta->{from}, delete => $d->{key});
-            $class->_refresh_source_digest($j, $meta, 'remoção do cloud-init');
+            $class->_refresh_source_digest($j, $meta, 'removal of cloud-init');
             next;
         }
         next unless $d->{kind} eq 'volume';
@@ -599,7 +599,7 @@ sub _step_move_disks {
         $class->_refresh_source_digest($j, $meta, 'move de ' . $d->{key});
         $moved++;
     }
-    return $moved ? "$moved disco(s) movido(s) (tarefa esperada por drive)" : 'nenhum disco de volume';
+    return $moved ? "$moved disk(s) moved (one expected task per drive)" : 'no volume disks';
 }
 
 sub _step_config {
@@ -631,7 +631,7 @@ sub _step_config {
     if ($conf->{protection}) {
         $class->_config_edit($meta->{node}, $meta->{to}, protection => 1);
     }
-    return 'configuração copiada (MACs, smbios1 uuid e vmgenid preservados; protection por último)';
+    return 'configuration copied (MACs, smbios1 UUID, and vmgenid preserved; protection last)';
 }
 
 sub _fw_path {
@@ -647,15 +647,15 @@ sub _step_firewall {
         my $content = read_file($old);
         $j->record('firewall', fw_content => $content);   # ANTES (rollback)
         if (-f $new) {
-            die "firewall novo já existe com conteúdo diferente\n"
+            die "new firewall already exists with different content\n"
                 unless read_file($new) eq $content;
-            return 'firewall já estava copiado';
+            return 'firewall was already copied';
         }
         $class->_guard_source($j, $meta, step => 'firewall');
         write_file_atomic($new, $content, 0644);
-        return 'firewall copiado';
+        return 'firewall copied';
     }
-    return 'sem arquivo de firewall';
+    return 'no firewall file';
 }
 
 sub _replace_vmid_list {
@@ -736,7 +736,7 @@ sub _step_refs {
         }
     }
     $j->record('refs', backups => \@backup_changes) if @backup_changes;
-    push @done, scalar(@backup_changes) . ' campo(s) de backup' if @backup_changes;
+    push @done, scalar(@backup_changes) . ' backup field(s)' if @backup_changes;
 
     if ($meta->{ha} && $meta->{handle_ha}) {
         my $h = $meta->{ha};
@@ -759,7 +759,7 @@ sub _step_refs {
             $class->_guard_source($j, $meta, step => 'refs/ha-set');
             MMPve::Core::Runner->pvesh(set => "/cluster/ha/resources/vm:$to", %extra);
         }
-        push @done, "recurso HA vm:$from → vm:$to";
+        push @done, "HA resource vm:$from -> vm:$to";
     }
 
     my @rule_changes;
@@ -773,7 +773,7 @@ sub _step_refs {
         MMPve::Core::Runner->pvesh(set => "/cluster/ha/rules/$r->{rule}", resources => $new_resources);
     }
     $j->record('refs', ha_rules => \@rule_changes) if @rule_changes;
-    push @done, scalar(@rule_changes) . ' regra(s) HA' if @rule_changes;
+    push @done, scalar(@rule_changes) . ' HA rule(s)' if @rule_changes;
 
     if ($meta->{handle_replication} && @{$meta->{replication} || []}) {
         my @new_jobs;
@@ -795,10 +795,10 @@ sub _step_refs {
             MMPve::Core::Runner->pvesh(create => '/cluster/replication', %args);
         }
         $j->record('refs', replication => \@new_jobs);
-        push @done, scalar(@new_jobs) . ' job(s) de replicação preservado(s)';
+        push @done, scalar(@new_jobs) . ' replication job(s) preserved';
     }
 
-    return @done ? join('; ', @done) : 'nenhuma referência externa';
+    return @done ? join('; ', @done) : 'no external references';
 }
 
 sub _config_volumes {
@@ -817,26 +817,26 @@ sub _step_verify {
     my ($class, $j, $meta) = @_;
     my ($conf) = $class->_pvesh_opt(get => "/nodes/$meta->{node}/qemu/$meta->{from}/config");
     my @left = $class->_config_volumes($conf);
-    die "VM antiga ainda tem volumes: " . join(', ', @left) . "\n" if @left;
-    return 'VM antiga sem volumes';
+    die "old VM still has volumes: " . join(', ', @left) . "\n" if @left;
+    return 'old VM has no volumes';
 }
 
 sub _step_destroy {
     my ($class, $j, $meta) = @_;
     my ($destroy_status, $destroy_conf, $exists) = $class->_source_snapshot($meta);
-    return "VM $meta->{from} já estava apagada" unless $exists;
+    return "VM $meta->{from} was already deleted" unless $exists;
     my (undef, $conf) = $class->_guard_source($j, $meta, step => 'destroy');
     # --purge apaga todo volume que ainda estiver na config: confere de novo,
     # logo antes, que os discos saíram da VM antiga e que a nova existe.
     my @left = $class->_config_volumes($conf);
-    die "destroy recusado: VM antiga ainda tem volumes: " . join(', ', @left) . "\n"
+    die "destroy refused: old VM still has volumes: " . join(', ', @left) . "\n"
         if @left;
     my ($new_conf) = $class->_pvesh_opt(get => "/nodes/$meta->{node}/qemu/$meta->{to}/config");
-    die "destroy recusado: VM nova $meta->{to} não existe no node $meta->{node}\n"
+    die "destroy refused: new VM $meta->{to} does not exist on node $meta->{node}\n"
         unless $new_conf;
     MMPve::Core::Runner->pvesh(delete => "/nodes/$meta->{node}/qemu/$meta->{from}",
         purge => 1, 'destroy-unreferenced-disks' => 0);
-    return "VM $meta->{from} apagada (purge; discos já movidos)";
+    return "VM $meta->{from} deleted (purge; disks already moved)";
 }
 
 my %STEP_IMPL = (
@@ -850,13 +850,13 @@ my %STEP_IMPL = (
 );
 
 my %STEP_DESC = (
-    reserve     => 'reservar o ID novo (qemu create)',
-    move_disks  => 'mover os discos (move_disk por drive, esperando a tarefa)',
-    config      => 'copiar o resto da configuração (MACs/smbios1/vmgenid; protection por último)',
-    firewall    => 'copiar /etc/pve/firewall/<antigo>.fw para <novo>.fw',
-    refs        => 'pool, ACLs /vms/<id>, jobs de backup, HA e replicação',
-    verify      => 'conferir que a VM antiga ficou sem volumes',
-    destroy     => 'apagar a VM antiga (--purge 1 --destroy-unreferenced-disks 0)',
+    reserve     => 'reserve the new ID (qemu create)',
+    move_disks  => 'move disks (move_disk per drive, waiting for the task)',
+    config      => 'copy the remaining configuration (MACs/smbios1/vmgenid; protection last)',
+    firewall    => 'copy /etc/pve/firewall/<old>.fw to <new>.fw',
+    refs        => 'pool, ACLs /vms/<id>, backup jobs, HA, and replication',
+    verify      => 'verify that the old VM has no volumes',
+    destroy     => 'delete the old VM (--purge 1 --destroy-unreferenced-disks 0)',
 );
 
 sub plan {
@@ -926,26 +926,26 @@ sub _exec_steps {
         if (my $err = $@) {
             chomp $err;
             $j->mark_failed($s, $err);
-            log_line("renumber $from>$to FALHOU no passo $s: $err");
-            die "$err\nPasso '$s' falhou.\nContinue com: mm-pve renumber --resume --from $from --to $to\n";
+            log_line("renumber $from>$to FAILED at step $s: $err");
+            die "$err\nStep '$s' failed.\nContinue with: mm-pve renumber --resume --from $from --to $to\n";
         }
         $class->_refresh_source_digest($j, $meta, "passo $s")
             if $s ne 'destroy';
         $j->set_meta(config_digest => $meta->{config_digest});
         $j->mark_done($s);                             # DEPOIS
-        print "renumber: passo $s ok — $detail\n";
+        print "renumber: step $s ok - $detail\n";
         $class->_maybe_fail_after($s);
     }
     $j->finish({
         from => $from, to => $to, node => $meta->{node},
-        note => 'Histórico de backup PBS continua no grupo vm/' . $from
-            . ' (só sai com prune job do PBS); não mexa nos backups antigos.',
+        note => 'PBS backup history remains in group vm/' . $from
+            . ' (it is removed only by a PBS prune job); do not modify old backups.',
     });
     return {
         ok => 1, from => $from, to => $to, node => $meta->{node}, steps => [@STEPS],
-        summary => "VM $from > $to concluída. Lembrete: o histórico de backup PBS "
-            . "continua no grupo vm/$from (só sai com prune job do PBS); "
-            . "os backups antigos não devem ser mexidos.",
+        summary => "VM $from > $to completed. Reminder: PBS backup history "
+            . "remains in group vm/$from (it is removed only by a PBS prune job); "
+            . "old backups must not be modified.",
     };
 }
 
@@ -953,22 +953,22 @@ sub resume {
     my ($class, %o) = @_;
     my $id = $o{id} // $class->journal_id($o{from}, $o{to});
     my $j = eval { MMPve::Journal->open($id) };
-    die "journal $id não encontrado.\nUse: mm-pve renumber --from <antigo> --to <novo>\n" if $@ || !$j;
+    die "journal $id not found.\nUse: mm-pve renumber --from <old> --to <new>\n" if $@ || !$j;
     my %meta = (%{$j->meta},
         (defined $o{handle_ha} ? (handle_ha => $o{handle_ha}) : ()),
         (defined $o{handle_replication} ? (handle_replication => $o{handle_replication}) : ()));
-    die "journal sem from/to.\n" unless $meta{from} && $meta{to};
+    die "journal has no from/to.\n" unless $meta{from} && $meta{to};
     my $next = $j->first_pending;
-    die "nada pendente no journal $id (estado: " . $j->state . ").\n"
+    die "nothing pending in journal $id (state: " . $j->state . ").\n"
         if !$next && ($j->state // '') eq 'finished';
-    print "renumber: retomando do passo '$next'\n" if $next;
+    print "renumber: resuming at step '$next'\n" if $next;
     $j->set_state('running');
     return $class->_with_run_marker($j, sub { $class->_exec_steps($j, \%meta) });
 }
 
 # ------------------------------------------------------------- rollback
 
-sub _undo_verify { return 'nada a desfazer (verificação)' }
+sub _undo_verify { return 'nothing to undo (verification)' }
 
 sub _undo_refs {
     my ($class, $j, $meta) = @_;
@@ -1046,7 +1046,7 @@ sub _undo_refs {
         $class->_guard_source($j, $meta, step => 'rollback/replication-create');
         MMPve::Core::Runner->pvesh(create => '/cluster/replication', %args);
     }
-    return 'referências revertidas';
+    return 'references reverted';
 }
 
 sub _undo_firewall {
@@ -1058,10 +1058,10 @@ sub _undo_firewall {
     }
     my $new = $class->_fw_path($meta->{to});
     unlink $new if -f $new;
-    return 'firewall restaurado';
+    return 'firewall restored';
 }
 
-sub _undo_config { return 'config da VM nova morre com ela no desfazer do reserve' }
+sub _undo_config { return 'new VM configuration is removed with it when undoing reserve' }
 
 # Desfaz move_disks com base no estado REAL das VMs, não no journal: o
 # processo pode ter morrido no meio deste passo (sem marcar nem 'done' nem
@@ -1085,7 +1085,7 @@ sub _undo_move_disks {
         my $upid = MMPve::Core::Runner->pvesh_task(create => "$new_path/move_disk",
             disk => $d->{key}, 'target-vmid' => $from, 'target-disk' => $d->{key});
         $class->wait_task($upid);
-        $class->_refresh_source_digest($j, $meta, 'devolução de ' . $d->{key});
+        $class->_refresh_source_digest($j, $meta, 'return of ' . $d->{key});
     }
 
     # devolve o resto da configuração original (MACs/smbios1/vmgenid) e a
@@ -1093,11 +1093,11 @@ sub _undo_move_disks {
     $class->_guard_source($j, $meta, step => 'rollback/move-disks');
     $class->_vm_set_config($node, $from, $meta->{original_config},
         skip_drives => 1);
-    $class->_refresh_source_digest($j, $meta, 'restauração da configuração sem volumes');
+    $class->_refresh_source_digest($j, $meta, 'restore of configuration without volumes');
     if ($meta->{original_config}{protection}) {
         $class->_guard_source($j, $meta, step => 'rollback/protection');
         $class->_config_edit($node, $from, protection => 1);
-        $class->_refresh_source_digest($j, $meta, 'restauração de protection');
+        $class->_refresh_source_digest($j, $meta, 'restore of protection');
     }
 
     # cloudinit: se já tinha sido removido da antiga, recria a linha
@@ -1111,12 +1111,12 @@ sub _undo_move_disks {
         }
         $class->_guard_source($j, $meta, step => 'rollback/cloudinit');
         $class->_config_edit($node, $from, %restore_ci);
-        $class->_refresh_source_digest($j, $meta, 'recriação do cloud-init');
+        $class->_refresh_source_digest($j, $meta, 'recreation of cloud-init');
     }
 
     return @on_new
-        ? scalar(@on_new) . ' disco(s) devolvido(s) à VM antiga (conferido na config real da VM nova)'
-        : 'nenhum disco estava na VM nova (nada pra devolver)';
+        ? scalar(@on_new) . ' disk(s) returned to the old VM (verified in the new VM configuration)'
+        : 'no disk was on the new VM (nothing to return)';
 }
 
 # Só apaga a VM nova depois de confirmar (na config real) que não sobrou
@@ -1128,20 +1128,20 @@ sub _undo_reserve {
     my $path = "/nodes/$meta->{node}/qemu/$meta->{to}";
 
     my ($conf) = $class->_pvesh_opt(get => "$path/config");
-    return "VM nova $meta->{to} já não existe" unless $conf;
+    return "new VM $meta->{to} no longer exists" unless $conf;
     if ($conf) {
         my ($storages) = $class->_pvesh_opt(get => '/storage');
         my %storage_types = map { ($_->{storage} // '') => ($_->{type} // '') } @{$storages || []};
         my @left = grep { $_->{kind} eq 'volume' } $class->_classify_drives($conf, \%storage_types);
         if (@left) {
-            die "VM nova $meta->{to} ainda tem " . scalar(@left) . " disco(s) ("
-                . join(', ', map { $_->{key} } @left) . "); não apaguei"
-                . " (risco de perda de dados) — resolva manualmente e rode --rollback de novo.\n";
+            die "new VM $meta->{to} still has " . scalar(@left) . " disk(s) ("
+                . join(', ', map { $_->{key} } @left) . "); not deleted"
+                . " (risk of data loss) - resolve manually and run --rollback again.\n";
         }
     }
     $class->_guard_source($j, $meta, step => 'rollback/reserve');
     MMPve::Core::Runner->pvesh(delete => $path, 'destroy-unreferenced-disks' => 0);
-    return "VM nova $meta->{to} apagada (sem discos; sem purge nem destroy-unreferenced-disks)";
+    return "new VM $meta->{to} deleted (no disks; no purge or destroy-unreferenced-disks)";
 }
 
 my %UNDO_IMPL = (
@@ -1151,24 +1151,24 @@ my %UNDO_IMPL = (
     firewall   => \&_undo_firewall,
     refs       => \&_undo_refs,
     verify     => \&_undo_verify,
-    destroy    => sub { die "rollback recusado: o passo destroy já foi concluído\n" },
+    destroy    => sub { die "rollback refused: destroy step is already complete\n" },
 );
 
 sub rollback {
     my ($class, %o) = @_;
     my $id = $o{id} // $class->journal_id($o{from}, $o{to});
     my $j = eval { MMPve::Journal->open($id) };
-    die "journal $id não encontrado.\n" if $@ || !$j;
+    die "journal $id not found.\n" if $@ || !$j;
     my %meta = %{$j->meta};
-    die "journal sem from/to.\n" unless $meta{from} && $meta{to};
+    die "journal has no from/to.\n" unless $meta{from} && $meta{to};
 
     my $destroy_state = $j->step_info('destroy')->{status} // '';
     if ($destroy_state eq 'done') {
-        die "rollback recusado: o passo destroy já foi concluído; o run está finalizado\n";
+        die "rollback refused: destroy step is complete; the run is finished\n";
     }
     if ($destroy_state =~ /^(?:running|failed)$/) {
         my ($destroy_status, $destroy_conf, $exists) = $class->_source_snapshot(\%meta);
-        die "rollback recusado: destroy já completou; o run precisa ser retomado\n"
+        die "rollback refused: destroy completed; the run must be resumed\n"
             unless $exists;
     }
 
@@ -1187,19 +1187,19 @@ sub rollback {
         $_ ne 'reserve' && $_ ne 'move_disks' && $_ ne 'destroy'
     } @touched;
 
-    die "nenhum passo concluído para desfazer (estado: " . $j->state . ").\n"
+    die "no completed step to undo (state: " . $j->state . ").\n"
         unless $reserve_touched || $move_touched || @other_undo;
 
     my @undone;
     my $run_undo = sub {
         my ($step, $code) = @_;
-        print "renumber: desfazendo '$step'\n";
+        print "renumber: undoing '$step'\n";
         my $detail = eval { $code->() };
         if (my $err = $@) {
             chomp $err;
             $j->set_state('rollback-failed');
-            die "$err\nDesfazer de '$step' falhou.\n"
-                . "Continue com: mm-pve renumber --rollback --from $meta{from} --to $meta{to}\n";
+            die "$err\nUndoing '$step' failed.\n"
+                . "Continue with: mm-pve renumber --rollback --from $meta{from} --to $meta{to}\n";
         }
         $j->record($step, undone => 1);
         push @undone, $step;
@@ -1226,14 +1226,14 @@ sub rollback {
 
 sub validate_section { return () }    # vmid_scheme já validado pelo núcleo
 
-sub apply  { return { ok => 1, changed => 0, message => 'renumber não tem estado por node; use mm-pve renumber --from X --to Y' } }
-sub revert { return { ok => 1, changed => 0, message => 'renumber: nada a reverter' } }
+sub apply  { return { ok => 1, changed => 0, message => 'renumber has no per-node state; use mm-pve renumber --from X --to Y' } }
+sub revert { return { ok => 1, changed => 0, message => 'renumber: nothing to revert' } }
 sub check  {
     my ($c, $cfg) = @_;
     return {
         ok => 1,
         vmid_scheme => $cfg->{vmid_scheme} // [],
-        note => 'renumber é operação sob demanda (precheck + journal)',
+        note => 'renumber is an on-demand operation (precheck + journal)',
     };
 }
 
@@ -1255,25 +1255,25 @@ sub cli {
         'id=s'               => \$id,
         'json'               => \$json,
         'help|h'             => \$help,
-    ) or do { print STDERR "uso inválido (mm-pve renumber --help)\n"; return 2 };
+    ) or do { print STDERR "invalid usage (mm-pve renumber --help)\n"; return 2 };
 
     if ($help) {
         print <<'EOF';
-mm-pve renumber — troca de VMID via move_disk
+mm-pve renumber - change a VMID using move_disk
 
-uso:
-  mm-pve renumber --from <antigo> --to <novo> [opções]
-  mm-pve renumber --resume   --from <antigo> --to <novo>   (ou --id <journal>)
-  mm-pve renumber --rollback --from <antigo> --to <novo>   (ou --id <journal>)
+usage:
+  mm-pve renumber --from <old> --to <new> [options]
+  mm-pve renumber --resume   --from <old> --to <new>   (or --id <journal>)
+  mm-pve renumber --rollback --from <old> --to <new>   (or --id <journal>)
 
-opções:
-  --node <n>               node da VM (padrão: localiza no cluster)
-  --dry-run                mostra o plano (precheck + passos), não executa nada
-  --force-scheme            continua mesmo com ID novo fora do vmid_scheme
-  --handle-ha              remove e recria o recurso de HA com o novo ID
-  --handle-replication     remove e recria replicação (sync completo) com o novo ID
-  MM_RENUMBER_FAIL_AFTER=passo  (somente testes/lab; interrompe após o passo)
-  --json                   saída em JSON
+options:
+  --node <n>               VM node (default: locate in the cluster)
+  --dry-run                show the plan (precheck + steps), execute nothing
+  --force-scheme           continue when the new ID is outside vmid_scheme
+  --handle-ha              remove and recreate the HA resource with the new ID
+  --handle-replication     remove and recreate replication (full sync) with the new ID
+  MM_RENUMBER_FAIL_AFTER=step  (tests/lab only; stop after the step)
+  --json                   JSON output
 EOF
         return 0;
     }
@@ -1288,21 +1288,21 @@ EOF
         my ($res) = @_;
         return if $json;
         if ($res->{checks}) {
-            printf "%s %-22s %s\n", ($_->{ok} ? '✔' : '✘'), $_->{check}, $_->{detail}
+            printf "%s %-22s %s\n", ($_->{ok} ? 'OK' : 'FAIL'), $_->{check}, $_->{detail}
                 for @{$res->{checks}};
         }
-        print "AVISO: $_\n" for @{$res->{warnings} || []};
+        print "WARNING: $_\n" for @{$res->{warnings} || []};
     };
 
     if ($rollback) {
         my $res = eval { $class->rollback(id => $id, from => $from, to => $to) };
         if (my $err = $@) {
-            chomp $err; print STDERR "ERRO: $err\n";
-            print STDERR "Continue com: mm-pve renumber --rollback --from $from --to $to\n" if $from && $to;
+            chomp $err; print STDERR "ERROR: $err\n";
+            print STDERR "Continue with: mm-pve renumber --rollback --from $from --to $to\n" if $from && $to;
             return 1;
         }
-        print JSON::PP->new->canonical->pretty->utf8->encode($res), "\n" if $json;
-        print "rollback concluído (passos: @{$res->{undone}})\n" unless $json;
+        print json_encode($res, pretty => 1), "\n" if $json;
+        print "rollback completed (steps: @{$res->{undone}})\n" unless $json;
         return 0;
     }
 
@@ -1312,25 +1312,25 @@ EOF
                 handle_ha => $hha, handle_replication => $hrep);
         };
         if (my $err = $@) {
-            chomp $err; print STDERR "ERRO: $err\n";
-            print STDERR "Continue com: mm-pve renumber --resume --from $from --to $to\n" if $from && $to;
+            chomp $err; print STDERR "ERROR: $err\n";
+            print STDERR "Continue with: mm-pve renumber --resume --from $from --to $to\n" if $from && $to;
             return 1;
         }
-        print JSON::PP->new->canonical->pretty->utf8->encode($res), "\n" if $json;
+        print json_encode($res, pretty => 1), "\n" if $json;
         print $res->{summary}, "\n" unless $json;
         return 0;
     }
 
     unless (defined $from && defined $to) {
-        print STDERR "uso: mm-pve renumber --from <antigo> --to <novo> [--dry-run|--resume|--rollback] [opções]\n";
+        print STDERR "usage: mm-pve renumber --from <old> --to <new> [--dry-run|--resume|--rollback] [options]\n";
         return 2;
     }
 
     my $pre = $class->precheck(%o);
     $dump->($pre);
     if (!$pre->{ok}) {
-        print STDERR "ERRO: pré-checagem falhou; nada foi alterado.\n";
-        print JSON::PP->new->canonical->pretty->utf8->encode({ ok => 0, phase => 'precheck', %$pre }), "\n" if $json;
+        print STDERR "ERROR: precheck failed; nothing was changed.\n";
+        print json_encode({ ok => 0, phase => 'precheck', %$pre }, pretty => 1), "\n" if $json;
         return 1;
     }
 
@@ -1342,22 +1342,22 @@ EOF
             steps => \@steps,
             drives => [ map { "$_->{key}=$_->{kind}" } @{$pre->{info}{drives}} ],
         };
-        print JSON::PP->new->canonical->pretty->utf8->encode($res), "\n" if $json;
-        print "PLANO (dry-run, nada executado):\n  $_\n" for @steps;
+        print json_encode($res, pretty => 1), "\n" if $json;
+        print "PLAN (dry-run, nothing executed):\n  $_\n" for @steps;
         return 0;
     }
 
     my $res = eval { $class->run(%o) };
     if (my $err = $@) {
-        chomp $err; print STDERR "ERRO: $err\n";
+        chomp $err; print STDERR "ERROR: $err\n";
         return 1;
     }
     if (!$res->{ok}) {
-        print STDERR "ERRO: pré-checagem falhou; nada foi alterado.\n";
-        print JSON::PP->new->canonical->pretty->utf8->encode({ ok => 0, %$res }), "\n" if $json;
+        print STDERR "ERROR: precheck failed; nothing was changed.\n";
+        print json_encode({ ok => 0, %$res }, pretty => 1), "\n" if $json;
         return 1;
     }
-    print JSON::PP->new->canonical->pretty->utf8->encode($res), "\n" if $json;
+    print json_encode($res, pretty => 1), "\n" if $json;
     print $res->{summary}, "\n" unless $json;
     return 0;
 }
