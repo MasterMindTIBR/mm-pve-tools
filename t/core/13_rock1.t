@@ -98,13 +98,27 @@ subtest 'positional hooks fail closed when required arguments are missing' => su
         [add_vm_to_pool => sub { PVE::MMTools::PoolLimits->check_pool_entry(101) }],
         [vdisk_alloc => sub { PVE::MMTools::PoolLimits->check_storage_alloc({}, 'local', 101, 'raw', 'vm-101-disk') }],
         [vdisk_clone => sub { PVE::MMTools::PoolLimits->check_storage_clone({}, 'local:vm-101-disk') }],
-        [volume_resize => sub { PVE::MMTools::PoolLimits->check_storage_resize({}, 'local:vm-101-disk', 1) }],
+        [volume_resize => sub { PVE::MMTools::PoolLimits->check_storage_resize({}, 'local:vm-101-disk') }],
         [volume_import => sub { PVE::MMTools::PoolLimits->check_storage_import({}, {}, 'local:vm-101-disk') }],
     );
     for my $case (@calls) {
         my ($name, $call) = @{$case};
         ok(!eval { $call->(); 1 }, "$name missing required argument fails closed");
         like($@, qr/arguments are missing or malformed/, "$name failure identifies malformed hook arguments");
+    }
+};
+
+subtest 'upstream calls with optional arguments empty are not malformed' => sub {
+    # Seen in the lab: qemu-server resizes a stopped guest with
+    # running = check_running() = undef, and vdisk_alloc may get no format.
+    my @calls = (
+        [volume_resize => sub { PVE::MMTools::PoolLimits->check_storage_resize({}, 'local:vm-101-disk-0', 1073741824, undef) }],
+        [vdisk_alloc => sub { PVE::MMTools::PoolLimits->check_storage_alloc({}, 'local', 101, undef, undef, 1024) }],
+    );
+    for my $case (@calls) {
+        my ($name, $call) = @{$case};
+        eval { $call->() };
+        unlike($@ // '', qr/arguments are missing or malformed/, "$name with empty optional arguments is accepted");
     }
 };
 

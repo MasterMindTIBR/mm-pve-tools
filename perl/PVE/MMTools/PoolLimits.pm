@@ -960,7 +960,8 @@ sub check_storage_alloc {
         unless ref($storecfg) eq 'HASH'
         && defined($storeid) && !ref($storeid) && length($storeid)
         && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
-        && defined($fmt) && !ref($fmt)
+        # upstream picks the storage default when $fmt is empty
+        && (!defined($fmt) || !ref($fmt))
         && (!defined($name) || !ref($name))
         && defined($size_kib) && !ref($size_kib) && $size_kib =~ /^\d+(?:\.\d+)?$/;
     return if _is_exempt_volid(defined($name) ? $name : '');
@@ -1018,7 +1019,8 @@ sub check_storage_resize {
         unless ref($storecfg) eq 'HASH'
         && defined($volid) && !ref($volid) && length($volid)
         && defined($size) && !ref($size) && $size =~ /^\d+(?:\.\d+)?$/
-        && defined($running) && !ref($running)
+        # qemu-server passes check_running(), undef for a stopped guest
+        && (!defined($running) || !ref($running))
         && (!defined($snapname) || !ref($snapname));
     return if defined($snapname) || _is_exempt_volid($volid);
     my $owner = _owner_from_volid($storecfg, $volid);
