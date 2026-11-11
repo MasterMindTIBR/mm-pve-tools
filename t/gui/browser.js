@@ -310,6 +310,13 @@ async function main() {
         }
         console.log('GUI OK: abas desligadas mostram faixa, link seleciona General e branding não pede JSON ausente');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const begin = Date.now();
+                while (!ok()) {
+                    if (Date.now() - begin > assertionTimeout) { throw new Error(`Updates: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();
             while (panel.getStore().getCount() < 2) {
@@ -328,6 +335,7 @@ async function main() {
             Ext.Msg.confirm = (title, text, callback) => callback('yes');
             panel.getSelectionModel().select(local);
             panel.runRow(local);
+            let busyOnClick = local.get('starting') === true;
             panel.refreshRow(local);
             panel.refreshSelected();
             panel.down('button[text=Atualizar selecionados]').handler();
@@ -344,18 +352,37 @@ async function main() {
             field.setValue('localhost');
             let exactNameEnabled = !rebootButton.isDisabled();
             rebootButton.handler();
+            await wait('painel do bulk não apareceu', () => panel.activeBulk
+                && panel.progressPanel.isVisible()
+                && panel.progressPanel.down('#mm-updates-progress-text').getEl().dom.innerHTML.includes('apt-update'));
+            let progressVisible = panel.progressPanel.isVisible();
+            let progressText = panel.progressPanel.down('#mm-updates-progress-text').getEl().dom.innerHTML;
+            let bulkStartDisabled = panel.down('#mm-updates-start-selected').isDisabled();
+            panel.progressPanel.down('#mm-updates-cancel').handler();
+            await wait('cancelamento não terminou', () => !panel.activeBulk);
+            await new Promise((resolve) => MM.Api.request({ method: 'POST',
+                url: MM.Updates.path('localhost', 'transient-failure'), success: resolve, failure: resolve }));
+            local.set({ job: { state: 'running' }, online: true });
+            panel.reloadRow(local);
+            await wait('erro transitório não virou updating', () => local.get('update_state') === 'updating');
             return { rows: panel.getStore().getCount(), blocked, wrongNameBlocked, exactNameEnabled,
-                rebootDone, contextVisible };
+                rebootDone, contextVisible, busyOnClick, progressVisible, progressText, bulkStartDisabled,
+                transientUpdating: local.get('update_state') === 'updating' };
         }, TIMEOUT);
         if (updatesAssertions.rows !== 2 || !updatesAssertions.blocked
             || !updatesAssertions.wrongNameBlocked || !updatesAssertions.exactNameEnabled
-            || !updatesAssertions.rebootDone || !updatesAssertions.contextVisible) {
+            || !updatesAssertions.rebootDone || !updatesAssertions.contextVisible
+            || !updatesAssertions.busyOnClick || !updatesAssertions.progressVisible
+            || !updatesAssertions.progressText.includes('17s')
+            || !updatesAssertions.progressText.includes('localhost')
+            || !updatesAssertions.bulkStartDisabled || !updatesAssertions.transientUpdating) {
             throw new Error(`updates assertions failed: ${JSON.stringify(updatesAssertions)}`);
         }
         await page.waitForTimeout(100);
         const updateRuns = updateRequests.filter((request) => request.path.endsWith('/updates/run'));
         const updateRefreshes = updateRequests.filter((request) => request.path.endsWith('/updates/refresh'));
         const bulkRequests = updateRequests.filter((request) => request.path.endsWith('/updates/bulk'));
+        const cancelRequests = updateRequests.filter((request) => request.path.endsWith('/updates/bulk/cancel'));
         if (updateRuns.length < 1 || updateRefreshes.length < 2 || bulkRequests.length < 2
             || !bulkRequests.some((request) => request.url.includes('override_preflight=1')
                 || request.postData.includes('override_preflight=1'))
@@ -366,7 +393,10 @@ async function main() {
                 || /(?:^|&)mode=parallel(?:&|$)/.test(request.postData)))) {
             throw new Error(`bulk paralelo não foi enviado: ${JSON.stringify(updateRequests)}`);
         }
-        console.log('GUI OK: grade Updates, ações de linha/seleção, override de preflight, contexto e confirmação tripla');
+        if (cancelRequests.length < 1) {
+            throw new Error(`cancelamento de bulk não foi enviado: ${JSON.stringify(updateRequests)}`);
+        }
+        console.log('GUI OK: busy, painel de fase/tempo, estados por node, cancelamento e erro transitório como updating');
         await page.locator('.x-btn-inner', { hasText: 'Publicar pasta…' }).first()
             .waitFor({ state: 'visible', timeout: TIMEOUT });
         console.log('GUI: button found');

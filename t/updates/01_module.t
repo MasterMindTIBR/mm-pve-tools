@@ -9,6 +9,7 @@ use FindBin qw($Bin);
 use lib "$Bin/../../lib", "$Bin/../../perl";
 use MMPve::Core::Config;
 use MMPve::Core::Runner;
+use MMPve::Core::Apply;
 use MMPve::Core::Util qw(write_file_atomic read_file);
 use MMPve::Module::Updates;
 
@@ -73,6 +74,7 @@ subtest 'a CLI aceita exatamente os argumentos que a unit recebe' => sub {
     is($args->[0], 'bulk-worker', 'unit do bulk chama bulk-worker');
     is(MMPve::Module::Updates->cli($args), 0, 'CLI aceita os argumentos do bulk');
     is($seen_bulk, $bulk->{bulk_id}, 'bulk-worker recebe o id do bulk');
+    MMPve::Module::Updates::_bulk_finish($bulk->{bulk_id}, 'succeeded');
 
     @systemd_runs = ();
     my $job = MMPve::Module::Updates->request_run('node-cli', actor => 'root@pam');
@@ -101,7 +103,7 @@ subtest 'reserva única, unit transitória, log e sucesso' => sub {
     is($state->{state}, 'queued', 'estado inicial queued');
     is($state->{unit}, "mm-pve-update-$job", 'unit usa o id completo');
     ok(!eval { MMPve::Module::Updates->request_run('node-a', actor => 'admin@pam'); 1 }, 'segundo job recusado');
-    like($@, qr/job ativo/, 'mensagem de reserva');
+    like($@, qr/update job is already active/, 'mensagem de reserva');
     ok(MMPve::Module::Updates->run_job('node-a', $job)->{ok}, 'worker conclui');
     my $status = MMPve::Module::Updates->status('node-a', pending_cb => sub { [] });
     is($status->{job}{state}, 'succeeded', 'estado final succeeded');
@@ -140,7 +142,7 @@ subtest 'worker rodando em unit oneshot (activating) segura o node' => sub {
         $unit_state = $st;
         is(MMPve::Module::Updates->status('node-act', pending_cb => sub { [] })->{job}{state}, 'running', "$st mantém o job rodando");
         ok(!eval { MMPve::Module::Updates->request_run('node-act', actor => 'root@pam'); 1 }, "$st recusa segundo job");
-        like($@, qr/já existe job ativo/, "$st: mensagem do job ativo");
+        like($@, qr/update job is already active/, "$st: mensagem do job ativo");
     }
     $unit_state = 'activating';
     $systemctl_broken = 1;
@@ -191,6 +193,7 @@ subtest 'bulk grava apenas lista autorizada e preflight bloqueia sem override' =
     is($ok->{mode}, 'parallel', 'modo paralelo persistido');
     my $bulk = MMPve::Module::Updates->status('node-e', pending_cb => sub { [] })->{bulk};
     ok($bulk && !$bulk->{orchestrator_lost}, 'heartbeat do orquestrador aparece no status');
+    MMPve::Module::Updates::_bulk_finish($ok->{bulk_id}, 'succeeded');
 };
 
 subtest 'preflight pvesh recusa desconhecido e Ceph ruim' => sub {
@@ -211,6 +214,7 @@ subtest 'preflight pvesh recusa desconhecido e Ceph ruim' => sub {
     is($forced->{preflight}{ok}, 0, 'override mantém o resultado do preflight');
     my $forced_state = decode_json(read_file(MMPve::Module::Updates->state_dir . '/bulk-' . $forced->{bulk_id} . '.json'));
     is($forced_state->{override}, 1, 'override fica registrado no bulk');
+    MMPve::Module::Updates::_bulk_finish($forced->{bulk_id}, 'succeeded');
 };
 
 subtest 'heartbeat durante espera e retenção de jobs/bulks' => sub {
@@ -230,6 +234,7 @@ subtest 'heartbeat durante espera e retenção de jobs/bulks' => sub {
     ok($touched->{heartbeat_epoch} > $bulk_state->{heartbeat_epoch}, 'heartbeat atualizado durante espera');
     my @bulk_files = glob(MMPve::Module::Updates->state_dir . '/bulk-*.json');
     is(scalar @bulk_files, 1, 'bulk antigos são podados');
+    MMPve::Module::Updates::_bulk_finish($bulk->{bulk_id}, 'succeeded');
     my $old_log;
     for my $i (1 .. 2) {
         my $job = MMPve::Module::Updates->request_run('node-ret', actor => 'root@pam');
@@ -242,6 +247,89 @@ subtest 'heartbeat durante espera e retenção de jobs/bulks' => sub {
     my $current = decode_json(read_file(MMPve::Module::Updates->state_dir . '/node-ret.json'));
     ok(-f $current->{log}, 'log do job mantido mais recente existe');
     ok(!-e $old_log, 'log do job podado também é removido');
+};
+
+subtest 'bulk único recusa o segundo pedido com o id ativo' => sub {
+    my $first = MMPve::Module::Updates->run_bulk(['bulk-lock-a'], mode => 'sequential', actor => 'root@pam',
+        override => 1, preflight_cb => sub { { ok => 1 } });
+    my $second_ok = eval {
+        MMPve::Module::Updates->run_bulk(['bulk-lock-b'], mode => 'sequential', actor => 'root@pam',
+            override => 1, preflight_cb => sub { { ok => 1 } });
+        1;
+    };
+    ok(!$second_ok, 'segundo bulk recusado');
+    like($@, qr/active: \Q$first->{bulk_id}\E/, 'erro devolve o id do bulk ativo');
+    my $single_ok = eval { MMPve::Module::Updates->request_run('bulk-lock-a', actor => 'root@pam'); 1 };
+    ok(!$single_ok, 'job avulso do node do bulk recusado');
+    like($@, qr/belongs to active update bulk \Q$first->{bulk_id}\E/, 'job avulso cita o bulk ativo');
+    MMPve::Module::Updates::_bulk_finish($first->{bulk_id}, 'succeeded');
+};
+
+subtest 'heartbeat stale marca bulk como lost' => sub {
+    my $bulk = MMPve::Module::Updates->run_bulk(['bulk-stale'], mode => 'parallel', actor => 'root@pam',
+        override => 1, preflight_cb => sub { { ok => 1 } });
+    my $path = MMPve::Module::Updates->state_dir . '/bulk-' . $bulk->{bulk_id} . '.json';
+    my $state = decode_json(read_file($path));
+    $state->{heartbeat_epoch} = time - 1000;
+    write_file_atomic($path, encode_json($state));
+    my $active = MMPve::Module::Updates->active_bulk;
+    ok(!$active, 'bulk stale não permanece ativo');
+    is(decode_json(read_file($path))->{state}, 'lost', 'bulk stale fica lost');
+};
+
+subtest 'apply depois do upgrade vira warning e a fila segue' => sub {
+    my $apply_calls = 0;
+    no warnings 'redefine';
+    local *MMPve::Core::Apply::apply_all = sub {
+        $apply_calls++;
+        die "real apply error" if $apply_calls == 1;
+        return 'invalid apply result' if $apply_calls == 2;
+        return { ok => 1 };
+    };
+    use warnings 'redefine';
+    my $warning_job = MMPve::Module::Updates->request_run('node-warning', actor => 'root@pam');
+    my $warning_result = MMPve::Module::Updates->run_job('node-warning', $warning_job);
+    ok($warning_result->{ok}, 'upgrade continua bem sucedido');
+    is($warning_result->{state}, 'warning', 'apply falho vira warning');
+    like($warning_result->{warning}, qr/real apply error/, 'warning preserva o erro real do apply');
+    my $warning_state = decode_json(read_file(MMPve::Module::Updates->state_dir . '/node-warning.json'));
+    is($warning_state->{state}, 'warning', 'estado do job e warning');
+    is_deeply([map { $_->{phase} } @{$warning_state->{phase_history}}],
+        [qw(queued apt-update upgrade triggers apply done)], 'fases gravadas em ordem');
+    my $invalid_job = MMPve::Module::Updates->request_run('node-invalid-apply', actor => 'root@pam');
+    my $invalid_result = MMPve::Module::Updates->run_job('node-invalid-apply', $invalid_job);
+    is($invalid_result->{state}, 'warning', 'apply com retorno inválido também vira warning');
+    like($invalid_result->{warning}, qr/apply returned no result/, 'retorno inválido tem motivo explícito');
+
+    my $bulk = MMPve::Module::Updates->run_bulk([qw(bulk-warning-a bulk-warning-b)], mode => 'sequential',
+        actor => 'root@pam', override => 1, preflight_cb => sub { { ok => 1 } });
+    no warnings 'redefine';
+    local *MMPve::Core::Runner::pvesh_task = sub { return 'UPID:bulk:test'; };
+    local *MMPve::Module::Updates::_wait_for_node = sub {
+        my ($class, $node) = @_;
+        return $node eq 'bulk-warning-a'
+            ? { ok => 1, state => 'warning', warning => $warning_result->{warning} }
+            : { ok => 1, state => 'succeeded' };
+    };
+    use warnings 'redefine';
+    my $finished = MMPve::Module::Updates->bulk_worker($bulk->{bulk_id});
+    is($finished->{state}, 'succeeded', 'bulk sequencial não para no warning');
+    is($finished->{node_states}{'bulk-warning-a'}{state}, 'warning', 'primeiro node e warning');
+    is($finished->{node_states}{'bulk-warning-b'}{state}, 'succeeded', 'segundo node continua');
+};
+
+subtest 'cancelar bulk preserva o job em execucao e cancela a fila' => sub {
+    my $bulk = MMPve::Module::Updates->run_bulk([qw(bulk-cancel-a bulk-cancel-b)], mode => 'sequential',
+        actor => 'root@pam', override => 1, preflight_cb => sub { { ok => 1 } });
+    MMPve::Module::Updates::_bulk_set_node($bulk->{bulk_id}, 'bulk-cancel-a', 'running');
+    my $cancelled = MMPve::Module::Updates->cancel_bulk($bulk->{bulk_id});
+    is($cancelled->{state}, 'running', 'bulk continua ativo enquanto node atual termina');
+    is($cancelled->{node_states}{'bulk-cancel-a'}{state}, 'running', 'node atual não e cancelado');
+    is($cancelled->{node_states}{'bulk-cancel-b'}{state}, 'cancelled', 'node na fila e cancelado');
+    MMPve::Module::Updates::_bulk_set_node($bulk->{bulk_id}, 'bulk-cancel-a', 'succeeded');
+    my $done = MMPve::Module::Updates::_bulk_finish($bulk->{bulk_id}, 'cancelled');
+    is($done->{state}, 'cancelled', 'bulk termina como cancelled');
+    is($done->{node_states}{'bulk-cancel-a'}{state}, 'succeeded', 'node em execucao termina');
 };
 
 done_testing();

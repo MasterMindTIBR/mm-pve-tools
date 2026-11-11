@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Prova do módulo updates no cluster do lab: status e refresh pela API, job
 # avulso que traz de volta um pacote alvo rebaixado (triggers, patches e
-# daemons), segundo job recusado com o worker rodando, log, bulk sequencial e
-# paralelo com nodes remotos, lost simulado, recusas de reboot e o reboot real
-# pelo endpoint num node com kernel mais novo instalado.
+# daemons), segundo job recusado com o worker rodando, log, um segundo bulk
+# recusado, cancelamento de bulk, bulk sequencial e paralelo com nodes remotos,
+# lost simulado, recusas de reboot e o reboot real pelo endpoint num node com
+# kernel mais novo instalado.
 # shellcheck disable=SC2016  # ${Version} vai literal para o dpkg-query remoto
 set -euo pipefail
 # Falha dentro de $(...) também interrompe (o bash não herda -e sem isto).
@@ -99,7 +100,7 @@ wait_bulk() {
     local id=$1 state
     for _ in $(seq 1 360); do
         state=$(lab_ssh "$LAB_NODE1" python3 -c "import json; print(json.load(open('$state_dir/bulk-$id.json')).get('state'))")
-        case $state in succeeded|failed) break ;; esac
+        case $state in succeeded|failed|cancelled|lost) break ;; esac
         sleep 10
     done
     lab_ssh "$LAB_NODE1" python3 -c "
@@ -107,8 +108,8 @@ import json
 d = json.load(open('$state_dir/bulk-$id.json'))
 print('estado', d['state'], 'modo', d.get('mode'), 'pedido_por', d.get('requested_by'))
 for n, r in sorted((d.get('results') or {}).items()):
-    print(' ', n, 'iniciado' if r.get('ok') else 'erro=' + str(r.get('error')).strip(),
-          'upid' if r.get('upid') else 'local', (r.get('result') or {}).get('state'))
+    print(' ', n, 'upid' if r.get('upid') else 'local',
+          (d.get('node_states') or {}).get(n, {}).get('state', 'unknown'))
 "
 }
 
@@ -213,6 +214,44 @@ log_body=$(api_ok GET "nodes/${job_node}/mm-tools/updates/log?job=${job_id}&star
 jget "$log_body" "any('$target_pkg' in l for l in d['data']['lines'])" | grep -qx True \
     || lab_fail "log do job não cita $target_pkg"
 lab_pass "job $final; $target_pkg $older -> $back; patches aplicados; pvedaemon recarregado; log pela API"
+
+lab_step 'updates: segundo bulk recusado com o id do primeiro'
+first_bulk=$(api POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk" \
+    --data-urlencode "nodes=${LAB_NODE1},${job_node}" --data-urlencode mode=sequential)
+first_code=$(sed -n '1s/^HTTP //p' <<<"$first_bulk")
+[[ $first_code == 200 ]] || lab_fail "primeiro bulk não iniciou: HTTP $first_code"
+first_id=$(jget "$(sed -n '2p' <<<"$first_bulk")" "d['data']['bulk_id']")
+second_bulk=$(api POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk" \
+    --data-urlencode "nodes=${LAB_NODE1},${job_node}" --data-urlencode mode=sequential)
+second_code=$(sed -n '1s/^HTTP //p' <<<"$second_bulk")
+[[ $second_code != 200 ]] || lab_fail 'segundo bulk foi aceito enquanto o primeiro estava ativo'
+grep -q "$first_id" <<<"$second_bulk" || lab_fail 'recusa do segundo bulk não devolveu o id ativo'
+printf 'primeiro bulk: %s; segunda resposta: HTTP %s\n' "$first_id" "$second_code"
+summary=$(wait_bulk "$first_id")
+printf '%s\n' "$summary"
+lab_pass 'segundo bulk recusado e primeiro identificado pelo id'
+
+lab_step 'updates: cancelar bulk deixa fila cancelled e node atual terminar'
+cancel_body=$(api_ok POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk" \
+    --data-urlencode "nodes=${LAB_NODE1},${LAB_NODE2},${LAB_NODE3}" --data-urlencode mode=sequential \
+    --data-urlencode override_preflight=1)
+cancel_id=$(jget "$cancel_body" "d['data']['bulk_id']")
+running_seen=0
+for _ in $(seq 1 60); do
+    running_seen=$(lab_ssh "$LAB_NODE1" python3 -c "import json; d=json.load(open('$state_dir/bulk-$cancel_id.json')); print(1 if any(v.get('state') == 'running' for v in (d.get('node_states') or {}).values()) else 0)")
+    [[ $running_seen == 1 ]] && break
+    sleep 1
+done
+[[ $running_seen == 1 ]] || lab_fail 'cancel case não observou node atual em running'
+cancel_result=$(api_ok POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk/cancel" --data-urlencode "bulk=$cancel_id")
+jget "$cancel_result" "d['data'].get('cancel_requested')" | grep -qx True \
+    || lab_fail 'endpoint de cancelamento não confirmou cancel_requested'
+summary=$(wait_bulk "$cancel_id")
+printf '%s\n' "$summary"
+grep -q '^estado cancelled' <<<"$summary" || lab_fail 'bulk cancelado não terminou em cancelled'
+lab_ssh "$LAB_NODE1" python3 -c "import json; d=json.load(open('$state_dir/bulk-$cancel_id.json')); assert any(v.get('state') == 'cancelled' for v in (d.get('node_states') or {}).values()); assert not any(v.get('state') == 'running' for v in (d.get('node_states') or {}).values())" \
+    || lab_fail 'nodes queued não ficaram cancelled ou o node atual não terminou'
+lab_pass 'cancelamento: fila cancelled e node atual terminou'
 
 lab_step "updates: bulk sequencial $LAB_NODE1,$job_node (remoto) pela API"
 body=$(api_ok POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk" \

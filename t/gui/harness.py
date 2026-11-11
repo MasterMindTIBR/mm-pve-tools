@@ -87,6 +87,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     mm_js = pathlib.Path()
     requests = []
     bulk_refused = False
+    bulk_active = False
+    bulk_id = '11111111-1111-4111-8111-111111111111'
+    bulk_cancel_calls = 0
+    transient_update_failure = False
     config_modules = {'ui': 1}
     pool_limits = {}
 
@@ -272,10 +276,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             'modules': {'ui': {'check': {'ok': True, 'note': 'símbolos compatíveis'}}}})
         elif path.endswith('/mm-tools/updates/status'):
             node = path.split('/nodes/', 1)[-1].split('/', 1)[0]
+            if Handler.transient_update_failure:
+                Handler.transient_update_failure = False
+                self.send_raw_json({'data': None, 'success': 0, 'message': 'temporary status failure'}, status=500)
+                return
+            bulk = None
+            job = None
+            if Handler.bulk_active:
+                job = {'id': '22222222-2222-4222-8222-222222222222', 'state': 'running',
+                       'phase': 'apt-update', 'elapsed_seconds': 17}
+                bulk = {'id': Handler.bulk_id, 'state': 'running', 'mode': 'parallel',
+                        'nodes': ['localhost'], 'current_node': 'localhost',
+                        'current_phase': 'apt-update', 'elapsed_seconds': 17,
+                        'node_states': {'localhost': {'state': 'running', 'phase': 'apt-update'}}}
             self.send_json({'node': node, 'online': 1, 'pending': [
                             {'Package': 'pve-manager', 'Version': '9.2.25'}],
                             'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': True},
-                            'reboot_suggested': True, 'job': None, 'results': [],
+                            'reboot_suggested': True, 'job': job, 'bulk': bulk, 'results': [],
                             'reboot_context': {'running_guests': [{'type': 'qemu', 'vmid': 100,
                                                                     'name': 'harness'}],
                                                'ha': {'state': 'started'}}})
@@ -283,15 +300,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json('UPID:harness:updates-run')
         elif path.endswith('/mm-tools/updates/refresh'):
             self.send_json('apt-get update concluído')
+        elif path.endswith('/mm-tools/updates/transient-failure'):
+            Handler.transient_update_failure = True
+            self.send_json({'ok': True})
+        elif path.endswith('/mm-tools/updates/bulk/cancel'):
+            Handler.bulk_cancel_calls += 1
+            Handler.bulk_active = False
+            self.send_json({'id': Handler.bulk_id, 'state': 'cancelled', 'cancel_requested': True})
         elif path.endswith('/mm-tools/updates/bulk'):
             override = post.get('override_preflight', query.get('override_preflight', ['0'])[-1]) in ('1', 'true')
             if not override and not Handler.bulk_refused:
                 Handler.bulk_refused = True
                 self.send_raw_json({'data': None, 'success': 0, 'message': 'preflight: HA migrando'})
             else:
-                self.send_json({'bulk_id': '11111111-1111-4111-8111-111111111111',
+                Handler.bulk_active = True
+                self.send_json({'bulk_id': Handler.bulk_id,
                                 'mode': 'parallel', 'nodes': ['localhost'],
-                                'override': override})
+                                'override': override, 'state': 'launching',
+                                'node_states': {'localhost': {'state': 'queued'}}})
         elif path.endswith('/mm-tools/updates/log'):
             self.send_json({'lines': ['job de teste'], 'total': 1})
         elif path.endswith('/mm-tools/updates/reboot'):

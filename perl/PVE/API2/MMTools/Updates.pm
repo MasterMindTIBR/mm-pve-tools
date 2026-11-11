@@ -74,7 +74,7 @@ __PACKAGE__->register_method({
         my $rpcenv = PVE::RPCEnvironment->get(); my $user = _user(); my $node = _node($param);
         return $rpcenv->fork_worker('mmrefresh', "updates-$node", $user, sub {
             MMPve::Module::Updates->refresh($node);
-            print "apt-get update concluído\n";
+            print "apt-get update completed\n";
         });
     },
 });
@@ -90,6 +90,8 @@ __PACKAGE__->register_method({
             # Metadado interno não sensível; continua sem qualquer efeito de
             # autorização e aceita somente um principal PVE sem token.
             requested_by => { type => 'string', optional => 1, pattern => qr/^[A-Za-z0-9._-]{1,64}\@[A-Za-z0-9._-]{1,64}$/ },
+            bulk_id => { type => 'string', optional => 1,
+                pattern => qr/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/ },
         },
     },
     returns => { type => 'string' },
@@ -98,9 +100,28 @@ __PACKAGE__->register_method({
         my $rpcenv = PVE::RPCEnvironment->get(); my $user = _user(); my $node = _node($param);
         my $actor = _requested_actor($user, $param->{requested_by});
         return $rpcenv->fork_worker('mmupdates', "updates-$node", $user, sub {
-            my $job = MMPve::Module::Updates->request_run($node, actor => $actor);
-            print "job $job agendado\n";
+            my $job = MMPve::Module::Updates->request_run($node, actor => $actor,
+                bulk_id => $param->{bulk_id});
+            print "job $job scheduled\n";
         });
+    },
+});
+
+__PACKAGE__->register_method({
+    name => 'cancel', path => 'bulk/cancel', method => 'POST', proxyto => 'node',
+    permissions => $node_perm,
+    description => 'Cancels queued nodes in an update bulk.', protected => 1,
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            %{$node_param},
+            bulk => { type => 'string', pattern => qr/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/ },
+        },
+    },
+    returns => { type => 'object' },
+    code => sub {
+        my ($param) = @_;
+        return MMPve::Module::Updates->cancel_bulk($param->{bulk});
     },
 });
 
