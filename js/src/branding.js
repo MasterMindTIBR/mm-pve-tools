@@ -28,6 +28,16 @@ Ext.define('MM.Branding', {
 	    .catch(() => me.clear());
     },
 
+    ensureLogoStyle: function () {
+	if (document.getElementById('mm-branding-logo-style')) { return; }
+	let style = document.createElement('style');
+	style.id = 'mm-branding-logo-style';
+	style.textContent = '.mm-branding-logo img, img.mm-branding-logo {'
+	    + ' width: 100% !important; height: 100% !important;'
+	    + ' object-fit: contain; object-position: left center; filter: none !important; }';
+	document.head.appendChild(style);
+    },
+
     apply: function (cfg) {
 	let me = this;
 	if (!cfg || typeof cfg !== 'object' || cfg.enabled === 0) { me.clear(); return; }
@@ -37,6 +47,12 @@ Ext.define('MM.Branding', {
 	// o initComponent prefixa '/pve2' no src; sobrescrevemos depois de
 	// criado via override que roda depois do callParent.
 	if (cfg.logo_url) {
+	    // O PVE desenha o logo num espaço de 200x35, mas a <img> interna fica
+	    // no tamanho natural (o SVG da Proxmox já vem desse tamanho). Um logo
+	    // grande (ex.: 2000x1000) mostraria só o canto superior esquerdo. E o
+	    // tema escuro aplica invert/hue-rotate na <img>, pensado para o SVG da
+	    // Proxmox, o que trocaria as cores do logo do cliente.
+	    me.ensureLogoStyle();
 	    Ext.define('MM.override.LogoSVG', {
 		override: 'PMX.image.LogoSVG',
 		initComponent: function () {
@@ -44,6 +60,7 @@ Ext.define('MM.Branding', {
 		    me2.callParent(arguments);
 		    if (MM.Branding.cfg?.logo_url) {
 			me2.setSrc(MM.Branding.cfg.logo_url);
+			me2.addCls('mm-branding-logo');
 			me2.autoEl = Ext.apply({}, me2.autoEl, { tag: 'div' }); // sem link externo
 		    }
 		},
@@ -51,6 +68,7 @@ Ext.define('MM.Branding', {
 	    // componentes já renderizados
 	    Ext.ComponentQuery.query('proxmoxLogoSvg').forEach((c) => {
 		c.setSrc(cfg.logo_url);
+		c.addCls('mm-branding-logo');
 	    });
 	}
 
@@ -100,6 +118,11 @@ Ext.define('MM.Branding', {
 	Ext.ComponentQuery.query('#mm-login-powered').forEach((c) => c.setHidden(true));
 	document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]').forEach((l) => {
 	    l.href = '/pve2/images/logo-128.png';
+	});
+	// volta o logo da Proxmox e o estilo original do tema
+	Ext.ComponentQuery.query('proxmoxLogoSvg').forEach((c) => {
+	    c.removeCls('mm-branding-logo');
+	    c.setSrc('/pve2/images/proxmox_logo.svg');
 	});
     },
 });
