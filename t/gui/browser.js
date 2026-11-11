@@ -180,6 +180,51 @@ async function main() {
             throw new Error(`aba Sobre incompleta: ${JSON.stringify(about)}`);
         }
         console.log('GUI: MM Tools com a aba Sobre por último (versão, repositório, créditos, licença)');
+        const general = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const started = Date.now();
+                while (!ok()) {
+                    if (Date.now() - started > assertionTimeout) { throw new Error(`General: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
+            let applied = 0;
+            const confirms = [];
+            const realApply = MM.applyAll;
+            const realConfirm = Ext.Msg.confirm;
+            MM.applyAll = () => { applied += 1; };
+            Ext.Msg.confirm = (title, text, callback) => { confirms.push(String(text)); callback('yes'); };
+            try {
+                const panel = Ext.create('MM.panel.General', { renderTo: Ext.getBody(), width: 900, height: 400 });
+                const grid = panel.down('#modules');
+                const store = grid.getStore();
+                await wait('módulos não carregaram', () => store.getCount() === 6);
+                const order = store.getRange().map((r) => r.get('name'));
+                const on = panel.down('#module-on');
+                const off = panel.down('#module-off');
+                const pl = () => store.findRecord('name', 'poollimits', 0, false, true, true);
+                grid.setSelection(pl());
+                const beforeOn = !on.isDisabled() && off.isDisabled() && !pl().get('enabled');
+                on.handler();
+                await wait('poollimits não ligou', () => pl() && pl().get('enabled'));
+                const afterOn = on.isDisabled() && !off.isDisabled();
+                off.handler();
+                await wait('poollimits não desligou', () => pl() && !pl().get('enabled'));
+                panel.destroy();
+                return { order, beforeOn, afterOn, applied, confirms,
+                         info: !!MM.Modules.info.poollimits };
+            } finally {
+                MM.applyAll = realApply;
+                Ext.Msg.confirm = realConfirm;
+            }
+        }, TIMEOUT);
+        if (general.order.join(',') !== 'ui,updates,poollimits,renumber,restore,branding'
+            || !general.beforeOn || !general.afterOn || general.applied !== 2
+            || general.confirms.length !== 2 || !/daemons/.test(general.confirms[0])
+            || !/revertidos/.test(general.confirms[1]) || !general.info) {
+            throw new Error(`General liga/desliga incompleto: ${JSON.stringify(general)}`);
+        }
+        console.log('GUI OK: General liga e desliga módulo (confirmação, gravação com digest, apply em todos)');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();

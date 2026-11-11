@@ -87,6 +87,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     mm_js = pathlib.Path()
     requests = []
     bulk_refused = False
+    config_modules = {'ui': 1}
     pool_limits = {}
 
     def log_message(self, fmt, *args):
@@ -232,9 +233,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path.endswith('/qemu/100/resize') and self.command == 'PUT':
             self.send_raw_json({'data': None, 'success': 0,
                                 'message': "pool 'labpool': limite de disco total excedido (uso atual 3, pedido 5, limite 4)"})
+        elif path.endswith('/mm-tools/config/modules') and self.command == 'PUT':
+            if post.get('digest') != 'sha256:' + '0' * 64:
+                self.send_raw_json({'data': None, 'success': 0, 'message': 'DIGEST_MISMATCH'})
+                return
+            Handler.config_modules = json.loads(post['value'])
+            self.send_json({'revision': 2, 'digest': 'sha256:' + '0' * 64,
+                            'section': 'modules', 'value': Handler.config_modules})
         elif path.endswith('/config'):
             self.send_json({'digest': 'sha256:' + '0' * 64, 'config': {
-                'modules': {'ui': 1},
+                'modules': dict(Handler.config_modules),
                 'ui': {'console': {'qemu': 'vv', 'lxc': 'xtermjs'},
                         'hide_subscription_popup': True},
             }})
