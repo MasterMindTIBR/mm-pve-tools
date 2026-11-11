@@ -5,6 +5,7 @@ use Test::More;
 use FindBin qw($Bin);
 use File::Temp qw(tempdir);
 use JSON::PP qw(decode_json);
+use MMPve::Core::Util qw(read_file);
 
 my $repo = "$Bin/../..";
 my $tmp  = tempdir('mm-pve-branding-cli-XXXXXX', TMPDIR => 1, CLEANUP => 1);
@@ -46,8 +47,10 @@ subtest 'set com arquivos em tmp' => sub {
     $ASSET = $cfg->{branding}{logo};
     like($ASSET, qr/^[0-9a-f]{64}\.png$/, 'config referencia hash');
     ok(-f "$tmp/etc/pve/mm-tools/branding/$ASSET", 'asset no branding_dir');
-    ok(-f "$tmp/usr/share/pve-manager/images/mm-branding/$ASSET", 'asset aplicado');
-    ok(-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json aplicado');
+    ok(!-f "$tmp/usr/share/pve-manager/images/mm-branding/$ASSET", 'asset não aplicado com módulo desligado');
+    ok(-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json estático aplicado');
+    is(decode_json(read_file("$tmp/usr/share/pve-manager/js/mm-branding.json"))->{enabled},
+        0, 'json estático marca branding desligado');
 
     ($rc, $out) = mm('--json', 'config', 'get');
     my $j = decode_json($out);
@@ -69,7 +72,9 @@ subtest 'set idempotente / clear' => sub {
 
     my ($rc2, $out2) = mm('branding', 'clear');
     is($rc2, 0, 'clear ok') or diag $out2;
-    ok(!-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json removido');
+    ok(-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json estático preservado');
+    is(decode_json(read_file("$tmp/usr/share/pve-manager/js/mm-branding.json"))->{enabled},
+        0, 'json estático marca branding desligado');
     ok(!-d "$tmp/usr/share/pve-manager/images/mm-branding", 'imagens removidas');
     ok(-f "$tmp/etc/pve/mm-tools/branding/$ASSET", 'blob jovem preservado pelo grace period');
 

@@ -133,6 +133,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/pve2/js/mm-tools.js':
             self.serve(self.mm_js, 'application/javascript')
             return
+        if path == '/pve2/js/mm-branding.json':
+            enabled = int(Handler.config_modules.get('branding', 0))
+            self.send_raw_json({'enabled': enabled, 'title': '', 'header_text': '',
+                                'login_text': '', 'logo': '', 'favicon': '',
+                                'assets_hash': ''})
+            return
         if path == '/pve2/js/mm-ui.json':
             if STALL_UI:
                 time.sleep(5)
@@ -247,11 +253,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         'hide_subscription_popup': True},
             }})
         elif path.endswith('/mm-tools/status'):
-            self.send_json({'node': 'localhost', 'package_version': VERSION,
-                            'pve_version': '9.2.24', 'applied': {'state': 'applied'},
+            node = path.split('/nodes/', 1)[-1].split('/', 1)[0]
+            applied_modules = {
+                name: {'enabled': int(Handler.config_modules.get(name, 0)), 'ok': True}
+                for name in ('ui', 'updates', 'poollimits', 'renumber', 'restore', 'branding')
+            }
+            state = 'applied'
+            if node == 'failing-node' and Handler.config_modules.get('poollimits'):
+                applied_modules['poollimits'] = {'enabled': 1, 'ok': False, 'error': 'target fixture failed'}
+                state = 'partial'
+            if node == 'failing-node':
+                # Simulates a module-specific status omission: the node answered,
+                # but Branding remains unknown and must not count as applied.
+                del applied_modules['branding']
+            self.send_json({'node': node, 'package_version': VERSION,
+                            'pve_version': '9.2.24',
+                            'applied': {'state': state, 'modules': applied_modules},
                             'modules': {'ui': {'check': {'ok': True, 'note': 'símbolos compatíveis'}}}})
         elif path.endswith('/mm-tools/updates/status'):
-            self.send_json({'node': 'localhost', 'online': 1, 'pending': [
+            node = path.split('/nodes/', 1)[-1].split('/', 1)[0]
+            self.send_json({'node': node, 'online': 1, 'pending': [
                             {'Package': 'pve-manager', 'Version': '9.2.25'}],
                             'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': True},
                             'reboot_suggested': True, 'job': None, 'results': [],

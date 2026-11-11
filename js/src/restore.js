@@ -479,6 +479,7 @@ Ext.define('MM.panel.Restore', {
 	    ],
 	});
 	me.callParent();
+	MM.ModuleState.bind(me, 'restore');
 	me.on('activate', reload);
     },
 });

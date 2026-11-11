@@ -139,6 +139,7 @@ Ext.define('MM.panel.Vmid', {
 	});
 
 	me.callParent();
+	MM.ModuleState.bind(me, 'renumber');
 	me.reload();
     },
 });

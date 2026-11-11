@@ -24,13 +24,13 @@ Ext.define('MM.Branding', {
 	let me = this;
 	fetch('/pve2/js/mm-branding.json?v=' + Date.now())
 	    .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-	    .then((cfg) => me.apply(cfg))
-	    .catch(() => me.clear());    // sem branding: volta ao padrão do PVE
+	    .then((cfg) => cfg?.enabled ? me.apply(cfg) : me.clear())
+	    .catch(() => me.clear());
     },
 
     apply: function (cfg) {
 	let me = this;
-	if (!cfg || typeof cfg !== 'object') { me.clear(); return; }
+	if (!cfg || typeof cfg !== 'object' || cfg.enabled === 0) { me.clear(); return; }
 	me.cfg = cfg;
 
 	// Logo do topo (PMX.image.LogoSVG, refs/upstream/pwt-Logo.js):
@@ -91,7 +91,7 @@ Ext.define('MM.Branding', {
 
     },
 
-    /* Sem branding.json (revert): devolve favicon/título ao padrão. */
+    /* Branding desligado (JSON estático enabled=0): devolve favicon/título ao padrão. */
     clear: function () {
 	let me = this;
 	if (!me.cfg) { return; }
@@ -320,6 +320,7 @@ Ext.define('MM.panel.Branding', {
 
 	Ext.apply(me, { items: [form] });
 	me.callParent();
+	MM.ModuleState.bind(me, 'branding');
 	me.reload();
     },
 });

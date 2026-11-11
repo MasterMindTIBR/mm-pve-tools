@@ -360,6 +360,7 @@ Ext.define('MM.panel.Ui', {
 	    listeners: { activate: () => me.reload() },
 	});
 	me.callParent();
+	MM.ModuleState.bind(me, 'ui');
 	me.reload();
     },
 });

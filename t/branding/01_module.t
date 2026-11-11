@@ -81,6 +81,7 @@ subtest 'apply/revert/check' => sub {
     my $asset = $ASSET;
     $M->store_asset(kind => 'favicon', filename => 'fav.png', data => \$PNG);
     my $cfg = MMPve::Core::Config->default;
+    $cfg->{modules}{branding} = 1;
     $cfg->{branding} = {
         title => 'MasterMind', header_text => 'MM Cloud', login_text => 'Bem-vindo',
         logo => $asset, favicon => $asset,
@@ -109,7 +110,9 @@ subtest 'apply/revert/check' => sub {
     ok($rv->{changed}, 'revert mudou');
     ok(!-f "$tmp/usr/share/pve-manager/images/mm-branding/$asset", 'logo removido');
     ok(!-d "$tmp/usr/share/pve-manager/images/mm-branding", 'dir removido');
-    ok(!-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json removido');
+    ok(-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json estático preservado');
+    is(decode_json(MMPve::Core::Util::read_file("$tmp/usr/share/pve-manager/js/mm-branding.json"))->{enabled},
+        0, 'json estático marca branding desligado');
     my $rv2 = $M->revert;
     is($rv2->{changed}, 0, 'revert idempotente');
     is($M->check($cfg)->{applied}, 0, 'check: não aplicado');
@@ -118,6 +121,7 @@ subtest 'apply/revert/check' => sub {
 
 subtest 'apply morre com asset sumido' => sub {
     my $bad = MMPve::Core::Config->default;
+    $bad->{modules}{branding} = 1;
     $bad->{branding}{logo} = ('0' x 64) . '.png';
     $bad->{branding}{assets_hash} = $M->assets_hash($bad);
     eval { $M->apply($bad) };

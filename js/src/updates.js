@@ -159,6 +159,7 @@ Ext.define('MM.panel.Updates', {
 		listeners: { activate: () => me.reload() },
 	});
 	me.callParent();
+	MM.ModuleState.bind(me, 'updates');
 	me.reload();
 	me.refreshTimer = setInterval(() => {
 		if (me.isDestroyed) { clearInterval(me.refreshTimer); return; }

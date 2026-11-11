@@ -39,10 +39,15 @@ async function main() {
     let mmRequests = 0;
     let updateRequests = [];
     let poolRequests = [];
+    let moduleConfigPuts = [];
+    let applyRequests = [];
+    let brandingRequests = [];
+    let brandingResponses = [];
     page.on('console', (message) => browserConsole.push(`${message.type()}: ${message.text()}`));
     page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)));
     page.on('response', (response) => {
         const url = new URL(response.url());
+        if (url.pathname === '/pve2/js/mm-branding.json') { brandingResponses.push(response.status()); }
         if (url.pathname.endsWith('.js') && response.status() >= 400) {
             assetFailures.push(`${response.status()} ${response.url()}`);
         }
@@ -54,14 +59,22 @@ async function main() {
         }
     });
     page.on('request', (request) => {
-        if (new URL(request.url()).pathname === '/pve2/js/mm-tools.js') { mmRequests++; }
-        if (new URL(request.url()).pathname.includes('/mm-tools/updates/')) {
-            updateRequests.push({ url: request.url(), path: new URL(request.url()).pathname,
+        const url = new URL(request.url());
+        if (url.pathname === '/pve2/js/mm-tools.js') { mmRequests++; }
+        if (url.pathname === '/pve2/js/mm-branding.json') { brandingRequests.push(request.url()); }
+        if (url.pathname.endsWith('/mm-tools/config/modules') && request.method() === 'PUT') {
+            moduleConfigPuts.push({ url: request.url(), postData: request.postData() || '' });
+        }
+        if (url.pathname.endsWith('/mm-tools/apply') && request.method() === 'POST') {
+            applyRequests.push(request.url());
+        }
+        if (url.pathname.includes('/mm-tools/updates/')) {
+            updateRequests.push({ url: request.url(), path: url.pathname,
                 postData: request.postData() || '' });
         }
-        if (new URL(request.url()).pathname.includes('/mm-tools/poollimits/')) {
+        if (url.pathname.includes('/mm-tools/poollimits/')) {
             poolRequests.push({ method: request.method(), url: request.url(),
-                path: new URL(request.url()).pathname, postData: request.postData() || '' });
+                path: url.pathname, postData: request.postData() || '' });
         }
     });
     try {
@@ -87,6 +100,9 @@ async function main() {
             undefined,
             { timeout: TIMEOUT },
         );
+        if (brandingRequests.length !== 1 || brandingResponses.some((status) => status >= 400)) {
+            throw new Error(`branding JSON estático inválido: ${JSON.stringify({ brandingRequests, brandingResponses })}`);
+        }
         await withTimeout(page.evaluate(() => {
             // pvemanagerlib reads every cap group (caps.storage, caps.access,
             // caps.sdn, caps.mapping, …) while building these panels, so a
@@ -192,7 +208,12 @@ async function main() {
             const confirms = [];
             const realApply = MM.applyAll;
             const realConfirm = Ext.Msg.confirm;
-            MM.applyAll = () => { applied += 1; };
+            const realClusterNodesAll = MM.Api.clusterNodesAll;
+            MM.applyAll = (done) => { applied += 1; if (done) { done(); } };
+            MM.Api.clusterNodesAll = (callback) => callback([
+                { type: 'node', node: 'localhost', name: 'localhost', online: 1 },
+                { type: 'node', node: 'failing-node', name: 'failing-node', online: 1 },
+            ]);
             Ext.Msg.confirm = (title, text, callback) => { confirms.push(String(text)); callback('yes'); };
             try {
                 const panel = Ext.create('MM.panel.General', { renderTo: Ext.getBody(), width: 900, height: 400 });
@@ -200,31 +221,94 @@ async function main() {
                 const store = grid.getStore();
                 await wait('módulos não carregaram', () => store.getCount() === 6);
                 const order = store.getRange().map((r) => r.get('name'));
-                const on = panel.down('#module-on');
-                const off = panel.down('#module-off');
-                const pl = () => store.findRecord('name', 'poollimits', 0, false, true, true);
-                grid.setSelection(pl());
-                const beforeOn = !on.isDisabled() && off.isDisabled() && !pl().get('enabled');
-                on.handler();
-                await wait('poollimits não ligou', () => pl() && pl().get('enabled'));
-                const afterOn = on.isDisabled() && !off.isDisabled();
-                off.handler();
-                await wait('poollimits não desligou', () => pl() && !pl().get('enabled'));
+                const onAll = panel.down('#module-on-all');
+                const offAll = panel.down('#module-off-all');
+                const record = (name) => store.findRecord('name', name, 0, false, true, true);
+                await wait('status inicial dos nodes não carregou', () =>
+                    record('ui').get('nodesApplied') === 2
+                    && record('ui').get('nodesTotal') === 2
+                    && record('poollimits').get('nodesApplied') === 2
+                    && record('branding').get('nodesUnknown')?.includes('failing-node'));
+                const initialNodes = {
+                    ui: `${record('ui').get('nodesApplied')}/${record('ui').get('nodesTotal')}`,
+                    brandingUnknown: record('branding').get('nodesUnknown'),
+                };
+                const noApplyAll = !panel.down('button[text=Apply on all nodes]');
+                onAll.handler();
+                await wait('Ligar todos não ligou todos', () =>
+                    store.getRange().every((r) => r.get('enabled'))
+                    && record('poollimits').get('nodesApplied') === 1
+                    && record('poollimits').get('nodesIssues')?.includes('failing-node'));
+                const onNodes = `${record('poollimits').get('nodesApplied')}/${record('poollimits').get('nodesTotal')}`;
+                offAll.handler();
+                await wait('Desligar todos não desligou todos', () =>
+                    store.getRange().every((r) => !r.get('enabled')));
                 panel.destroy();
-                return { order, beforeOn, afterOn, applied, confirms,
+                return { order, noApplyAll, initialNodes, onNodes, applied, confirms,
                          info: !!MM.Modules.info.poollimits };
             } finally {
                 MM.applyAll = realApply;
+                MM.Api.clusterNodesAll = realClusterNodesAll;
                 Ext.Msg.confirm = realConfirm;
             }
         }, TIMEOUT);
         if (general.order.join(',') !== 'ui,updates,poollimits,renumber,restore,branding'
-            || !general.beforeOn || !general.afterOn || general.applied !== 2
-            || general.confirms.length !== 2 || !/daemons/.test(general.confirms[0])
+            || !general.noApplyAll || general.initialNodes.ui !== '2/2'
+            || !general.initialNodes.brandingUnknown.includes('failing-node')
+            || general.onNodes !== '1/2' || general.applied !== 2
+            || general.confirms.length !== 2 || !/Limites de pool/.test(general.confirms[0])
+            || !/gateway/.test(general.confirms[0]) || !/logo/.test(general.confirms[0])
             || !/revertidos/.test(general.confirms[1]) || !general.info) {
             throw new Error(`General liga/desliga incompleto: ${JSON.stringify(general)}`);
         }
-        console.log('GUI OK: General liga e desliga módulo (confirmação, gravação com digest, apply em todos)');
+        const modulePutData = moduleConfigPuts.map((request) => {
+            const params = new URL(request.url).searchParams;
+            for (const [key, value] of new URLSearchParams(request.postData)) {
+                params.set(key, value);
+            }
+            return { modules: JSON.parse(params.get('value')), digest: params.get('digest') };
+        });
+        if (modulePutData.length !== 2 || modulePutData.some((item) => item.digest !== `sha256=${'0'.repeat(64)}`
+            && item.digest !== `sha256:${'0'.repeat(64)}`)) {
+            throw new Error(`PUT de módulos não usou um digest por ação: ${JSON.stringify(modulePutData)}`);
+        }
+        if (applyRequests.length !== 0) {
+            throw new Error(`o teste mockado deveria chamar MM.applyAll sem POST de apply: ${applyRequests.length}`);
+        }
+        console.log('GUI OK: General sem Apply-all, todos em um PUT + um apply e Nodes 2/2, 1/2, unknown');
+
+        const moduleTabs = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const started = Date.now();
+                while (!ok()) {
+                    if (Date.now() - started > assertionTimeout) { throw new Error(`abas: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
+            const tools = Ext.create('MM.panel.Tools', { renderTo: Ext.getBody(), width: 1100, height: 600 });
+            const panels = [
+                ['ui', 'mmPanelUi'], ['updates', 'mmPanelUpdates'], ['restore', 'mmPanelRestore'],
+                ['renumber', 'mmPanelVmid'], ['branding', 'mmPanelBranding'],
+            ].map(([name, xtype]) => [name, tools.down(xtype)]);
+            await wait('faixas não carregaram', () => panels.every(([, panel]) => panel.moduleBanner));
+            await wait('estado das faixas não carregou', () => panels.every(([, panel]) =>
+                panel.moduleEnabled === false));
+            const visible = Object.fromEntries(panels.map(([name, panel]) =>
+                [name, !panel.moduleBanner.isHidden()]));
+            const branding = tools.down('mmPanelBranding');
+            const general = tools.down('mmPanelGeneral');
+            await wait('General não carregou para o link', () => general.down('#modules').getStore().getCount() === 6);
+            branding.moduleBanner.down('button').handler();
+            await wait('link não abriu General', () => tools.getActiveTab() === general
+                && general.down('#modules').getSelection()[0]?.get('name') === 'branding');
+            tools.destroy();
+            return visible;
+        }, TIMEOUT);
+        if (!moduleTabs.ui || !moduleTabs.updates || !moduleTabs.restore
+            || !moduleTabs.renumber || !moduleTabs.branding) {
+            throw new Error(`faixas incorretas: ${JSON.stringify(moduleTabs)}`);
+        }
+        console.log('GUI OK: abas desligadas mostram faixa, link seleciona General e branding não pede JSON ausente');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();

@@ -98,7 +98,8 @@ sub apply_all {
     }
     $res{reload_required} = ($version_changed
         || ($res{patches} && $res{patches}{changed} && $opts{no_reload})
-        || ($res{modules}{branding} && $res{modules}{branding}{changed})
+        || ($res{modules}{branding} && $res{modules}{branding}{enabled}
+            && $res{modules}{branding}{changed})
         || ($res{modules}{ui} && $res{modules}{ui}{changed})) ? 1 : 0;
     if ($res{reload_required} && !$opts{no_reload} && $res{ok}) {
         $res{reload} = MMPve::Core::Patch->reload_services;

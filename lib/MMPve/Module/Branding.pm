@@ -225,6 +225,7 @@ sub _desired_json {
     my $hash = $class->assets_hash($cfg);
     my $short = _short($hash);
     my %json = (
+        enabled => (($cfg->{modules} || {})->{branding} ? 1 : 0),
         title => $b->{title} // '', header_text => $b->{header_text} // '',
         login_text => $b->{login_text} // '', logo => $b->{logo} // '',
         favicon => $b->{favicon} // '', assets_hash => $hash,
@@ -266,11 +267,11 @@ sub gc {
 sub apply {
     my ($class, $cfg) = @_;
     my $b = $cfg->{branding} || {};
+    my $enabled = (($cfg->{modules} || {})->{branding} ? 1 : 0);
     my @wanted = grep { defined $b->{$_} && length $b->{$_} } qw(logo favicon);
-    if (!@wanted && !length($b->{title} // '') && !length($b->{header_text} // '')
-        && !length($b->{login_text} // '')) {
+    if (!$enabled) {
         my $r = $class->revert;
-        return { ok => 1, changed => $r->{changed}, message => 'branding vazio: nada a aplicar' };
+        return { ok => 1, changed => $r->{changed}, message => 'branding desligado neste node' };
     }
 
     my $changed = 0;
@@ -323,10 +324,16 @@ sub revert {
         closedir($dh);
         rmdir(images_dir());
     }
-    if (-f json_path()) { unlink(json_path()); $changed = 1 }
-    log_line('branding: revertido') if $changed;
+    my $raw = JSON::PP->new->canonical->pretty->utf8->encode({ enabled => 0 }) . "\n";
+    my $cur = eval { read_file(json_path()) };
+    if (!defined $cur || $cur ne $raw) {
+        ensure_dir(root_path('/usr/share/pve-manager/js'));
+        write_file_atomic(json_path(), $raw, 0644);
+        $changed = 1;
+    }
+    log_line('branding: desligado') if $changed;
     return { ok => 1, changed => $changed,
-        message => $changed ? 'branding removido deste node' : 'branding já estava ausente' };
+        message => $changed ? 'branding desligado neste node' : 'branding já estava desligado' };
 }
 
 sub check {
@@ -336,18 +343,23 @@ sub check {
     my $cur = eval { read_file(json_path()) };
     my ($want) = $class->_desired_json($cfg);
     my $curj = defined $cur ? eval { JSON::PP::decode_json($cur) } : undef;
+    my $enabled = ($modules->{branding} ? 1 : 0);
     my $applied = 0;
-    if ($curj) {
-        $applied = 1;
+    if (!$enabled) {
+	# O estado desligado é aplicado pelo JSON estático com enabled=0.
+	$applied = $curj && (($curj->{enabled} // 1) == 0) ? 1 : 0;
+    } elsif ($curj) {
+	$applied = (($curj->{enabled} // 0) == 1) ? 1 : 0;
         for my $field (qw(logo favicon)) {
             my $name = $b->{$field} // '';
             $applied = 0 if length($name) && !-f images_dir() . '/' . $name;
         }
         $applied = 0 unless ($curj->{assets_hash} // '') eq ($want->{assets_hash} // '');
     }
-    my $serves_asset = $applied && grep { defined $b->{$_} && length $b->{$_} } qw(logo favicon);
+    my $serves_asset = $enabled && $applied
+        && grep { defined $b->{$_} && length $b->{$_} } qw(logo favicon);
     return {
-        ok => 1, module => 'branding', enabled => ($modules->{branding} ? 1 : 0),
+        ok => 1, module => 'branding', enabled => $enabled,
         applied => $applied ? 1 : 0, serves_asset => $serves_asset ? 1 : 0,
         config_hash => $want->{assets_hash}, current_hash => ($curj ? $curj->{assets_hash} : undef),
         json_path => json_path(), images_dir => images_dir(),
