@@ -244,7 +244,7 @@ for _ in $(seq 1 60); do
 done
 [[ $running_seen == 1 ]] || lab_fail 'cancel case não observou node atual em running'
 cancel_result=$(api_ok POST "nodes/${LAB_NODE1}/mm-tools/updates/bulk/cancel" --data-urlencode "bulk=$cancel_id")
-jget "$cancel_result" "d['data'].get('cancel_requested')" | grep -qx True \
+jget "$cancel_result" "bool(d['data'].get('cancel_requested'))" | grep -qx True \
     || lab_fail 'endpoint de cancelamento não confirmou cancel_requested'
 summary=$(wait_bulk "$cancel_id")
 printf '%s\n' "$summary"
