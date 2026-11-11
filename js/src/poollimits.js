@@ -9,22 +9,22 @@ Ext.define('MM.PoolLimits', {
 
     number: function (value, digits) {
 	let number = Number(value);
-	if (!Number.isFinite(number)) { return 'indisponível'; }
+	if (!Number.isFinite(number)) { return MM.t('pool.unavailable'); }
 	return number.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
     },
 
     memory: function (mib) {
 	let value = Number(mib);
-	if (!Number.isFinite(value)) { return 'indisponível'; }
-	return value >= 1024 && value % 1024 === 0
-	    ? `${MM.PoolLimits.number(value / 1024, 2)} GiB`
-	    : `${MM.PoolLimits.number(value, 0)} MiB`;
+	if (!Number.isFinite(value)) { return MM.t('pool.unavailable'); }
+	    return value >= 1024 && value % 1024 === 0
+		? `${MM.PoolLimits.number(value / 1024, 2)} ${MM.t('pool.gib')}`
+		: `${MM.PoolLimits.number(value, 0)} ${MM.t('pool.mib')}`;
     },
 
     disk: function (bytes) {
 	let value = Number(bytes);
-	if (!Number.isFinite(value)) { return 'indisponível'; }
-	return `${MM.PoolLimits.number(value / (1024 ** 3), 2)} GiB`;
+	if (!Number.isFinite(value)) { return MM.t('pool.unavailable'); }
+	return `${MM.PoolLimits.number(value / (1024 ** 3), 2)} ${MM.t('pool.gib')}`;
     },
 
     limits: function (data) {
@@ -38,7 +38,7 @@ Ext.define('MM.PoolLimits', {
     },
 
     modeLabel: function (mode) {
-	return mode === 'running' ? 'Ligado' : 'Alocado';
+	return mode === 'running' ? MM.t('pool.running') : MM.t('pool.allocated');
     },
 
     install: function () {
@@ -75,7 +75,7 @@ Ext.define('MM.panel.PoolLimits', {
     extend: 'Ext.panel.Panel',
     alias: 'widget.mmPoolLimits',
     config: { pool: null, poolData: null },
-    title: 'Limites',
+	title: MM.t('tabs.poollimits'),
     iconCls: 'fa fa-fw fa-tachometer',
     layout: { type: 'vbox', align: 'stretch' },
     scrollable: true,
@@ -87,30 +87,30 @@ Ext.define('MM.panel.PoolLimits', {
 	me.storageEditors = {};
 	let warning = Ext.create('Ext.form.field.Display', {
 	    itemId: 'accounting-warning', hidden: true, cls: 'mm-poollimits-warning',
-	    fieldLabel: 'Aviso',
+	    fieldLabel: MM.t('pool.warning'),
 	});
 	let modeDisplay = Ext.create('Ext.form.field.Display', {
-	    itemId: 'mode-display', fieldLabel: 'Modo', value: 'Alocado',
+	    itemId: 'mode-display', fieldLabel: MM.t('pool.mode'), value: MM.t('pool.allocated'),
 	});
 	let grid = Ext.create('Ext.grid.Panel', {
 	    itemId: 'usage-grid', flex: 0, minHeight: 190,
 	    store: { fields: ['resource', 'value'], data: [] },
 	    columns: [
-		{ text: 'Recurso', dataIndex: 'resource', flex: 1 },
-		{ text: 'Uso × limite', dataIndex: 'value', flex: 1 },
+		{ text: MM.t('pool.resource'), dataIndex: 'resource', flex: 1 },
+		{ text: MM.t('pool.usage_limit'), dataIndex: 'value', flex: 1 },
 	    ],
 	});
 	let limits = MM.PoolLimits.limits(me.poolData);
 	let mode = Ext.create('Proxmox.form.KVComboBox', {
-	    itemId: 'mode', fieldLabel: 'Modo',
-	    comboItems: [['allocated', 'Alocado'], ['running', 'Ligado']],
+	    itemId: 'mode', fieldLabel: MM.t('pool.mode'),
+	    comboItems: [['allocated', MM.t('pool.allocated')], ['running', MM.t('pool.running')]],
 	    value: me.poolData.mode || 'allocated',
 	});
 	let storageContainer = Ext.create('Ext.container.Container', {
 	    itemId: 'storage-editors', layout: { type: 'vbox', align: 'stretch' },
 	});
 	let storageSelector = Ext.create('Ext.form.field.ComboBox', {
-	    itemId: 'storage-selector', fieldLabel: 'Storage', width: 300,
+	    itemId: 'storage-selector', fieldLabel: MM.t('pool.storage'), width: 300,
 	    store: { fields: ['storage'], data: [] }, displayField: 'storage',
 	    valueField: 'storage', queryMode: 'local', editable: false,
 	});
@@ -124,11 +124,11 @@ Ext.define('MM.panel.PoolLimits', {
 	let addStorage = function (storage, max) {
 	    if (!storage || me.storageEditors[storage]) { return; }
 	    let maxField = Ext.create('Ext.form.field.Number', {
-		itemId: `storage-${storage}-max`, fieldLabel: `${storage} máximo (GiB)`,
+		itemId: `storage-${storage}-max`, fieldLabel: MM.t('pool.storage_max', { storage }),
 		minValue: 1, allowDecimals: false, value: max, width: 260,
 	    });
 	    let removeButton = Ext.create('Ext.button.Button', {
-		itemId: `storage-${storage}-remove`, text: 'Remover',
+		itemId: `storage-${storage}-remove`, text: MM.t('pool.remove'),
 		handler: () => removeStorage(storage),
 	    });
 	    let row = Ext.create('Ext.container.Container', {
@@ -164,38 +164,38 @@ Ext.define('MM.panel.PoolLimits', {
 	let editor;
 	if (me.poolData.can_edit) {
 	    let cpuEnabled = Ext.create('Ext.form.field.Checkbox', {
-		itemId: 'cpu-enabled', boxLabel: 'Limite de vCPU ligado',
+		itemId: 'cpu-enabled', boxLabel: MM.t('pool.cpu_limit'),
 		checked: !!limits.cpu.enabled,
 	    });
 	    let cpuMax = Ext.create('Ext.form.field.Number', {
-		itemId: 'cpu-max', fieldLabel: 'vCPU máximo', minValue: 1,
+		itemId: 'cpu-max', fieldLabel: MM.t('pool.cpu_max'), minValue: 1,
 		allowDecimals: false, value: limits.cpu.max,
 	    });
 	    let memoryEnabled = Ext.create('Ext.form.field.Checkbox', {
-		itemId: 'memory-enabled', boxLabel: 'Limite de RAM ligado',
+		itemId: 'memory-enabled', boxLabel: MM.t('pool.ram_limit'),
 		checked: !!limits.memory_mib.enabled,
 	    });
 	    let memoryMax = Ext.create('Ext.form.field.Number', {
-		itemId: 'memory-max', fieldLabel: 'RAM máxima (MiB)', minValue: 1,
+		itemId: 'memory-max', fieldLabel: MM.t('pool.ram_max'), minValue: 1,
 		allowDecimals: false, value: limits.memory_mib.max,
 	    });
 	    let diskTotalEnabled = Ext.create('Ext.form.field.Checkbox', {
-		itemId: 'disk-total-enabled', boxLabel: 'Limite de disco total ligado',
+		itemId: 'disk-total-enabled', boxLabel: MM.t('pool.disk_limit'),
 		checked: !!limits.disk_total_gib.enabled,
 	    });
 	    let diskTotalMax = Ext.create('Ext.form.field.Number', {
-		itemId: 'disk-total-max', fieldLabel: 'Disco total máximo (GiB)', minValue: 1,
+		itemId: 'disk-total-max', fieldLabel: MM.t('pool.disk_max'), minValue: 1,
 		allowDecimals: false, value: limits.disk_total_gib.max,
 	    });
 	    let addButton = Ext.create('Ext.button.Button', {
-		itemId: 'add-storage', text: 'Adicionar storage',
+		itemId: 'add-storage', text: MM.t('pool.add_storage'),
 		handler: () => {
 		    addStorage(storageSelector.getValue());
 		    storageSelector.reset();
 		},
 	    });
 	    let diskStorageEnabled = Ext.create('Ext.form.field.Checkbox', {
-		itemId: 'disk-storage-enabled', boxLabel: 'Limites por storage ligados',
+		itemId: 'disk-storage-enabled', boxLabel: MM.t('pool.storage_limits'),
 		checked: !!limits.disk_storage.enabled,
 	    });
 	    let storageAdd = Ext.create('Ext.container.Container', {
@@ -203,7 +203,7 @@ Ext.define('MM.panel.PoolLimits', {
 		items: [storageSelector, addButton],
 	    });
 	    editor = Ext.create('Ext.form.FieldSet', {
-		title: 'Editar limites', itemId: 'editor', flex: 0,
+		title: MM.t('pool.edit_limits'), itemId: 'editor', flex: 0,
 		items: [mode, cpuEnabled, cpuMax, memoryEnabled, memoryMax,
 		    diskTotalEnabled, diskTotalMax, diskStorageEnabled, storageAdd, storageContainer],
 	    });
@@ -218,33 +218,33 @@ Ext.define('MM.panel.PoolLimits', {
 	    let errors = current.errors || [];
 	    let diskErrors = current.disk_errors || [];
 	    let pair = (used, limit, usedText, limitText, unavailable) =>
-		`${unavailable ? 'indisponível' : usedText(used)} × ${limit.enabled ? limitText(limit.max) : 'desligado'}`;
+		`${unavailable ? MM.t('pool.unavailable') : usedText(used)} × ${limit.enabled ? limitText(limit.max) : MM.t('pool.disabled')}`;
 	    let rows = [
-		{ resource: 'vCPU', value: pair(usage.cpu, currentLimits.cpu, MM.PoolLimits.number,
-		    (value) => `${MM.PoolLimits.number(value, 0)} vCPU`, errors.length > 0) },
-		{ resource: 'RAM', value: pair(usage.memory_mib, currentLimits.memory_mib,
+		{ resource: MM.t('pool.cpu'), value: pair(usage.cpu, currentLimits.cpu, MM.PoolLimits.number,
+		    (value) => `${MM.PoolLimits.number(value, 0)} ${MM.t('pool.vcpu')}`, errors.length > 0) },
+		{ resource: MM.t('pool.ram'), value: pair(usage.memory_mib, currentLimits.memory_mib,
 		    MM.PoolLimits.memory, MM.PoolLimits.memory, errors.length > 0) },
-		{ resource: 'Disco total', value: pair(usage.disk_total_bytes, currentLimits.disk_total_gib,
-		    MM.PoolLimits.disk, (value) => `${MM.PoolLimits.number(value, 2)} GiB`, diskErrors.length > 0) },
+		{ resource: MM.t('pool.total_disk'), value: pair(usage.disk_total_bytes, currentLimits.disk_total_gib,
+		    MM.PoolLimits.disk, (value) => `${MM.PoolLimits.number(value, 2)} ${MM.t('pool.gib')}`, diskErrors.length > 0) },
 	    ];
 	    storageNames(current).forEach((storage) => {
 		let hasLimit = Object.prototype.hasOwnProperty.call(
 		    currentLimits.disk_storage.limits || {}, storage,
 		);
 		let storeUsage = usage.disk_storage_bytes?.[storage];
-		rows.push({ resource: `Disco — ${storage}`,
+		rows.push({ resource: MM.t('pool.disk_storage', { storage }),
 		    value: pair(storeUsage, { enabled: !!currentLimits.disk_storage.enabled && hasLimit,
 			max: currentLimits.disk_storage.limits?.[storage] }, MM.PoolLimits.disk,
-			(value) => `${MM.PoolLimits.number(value, 2)} GiB`, diskErrors.length > 0) });
+			(value) => `${MM.PoolLimits.number(value, 2)} ${MM.t('pool.gib')}`, diskErrors.length > 0) });
 	    });
 	    grid.getStore().setData(rows);
 	    modeDisplay.setValue(MM.PoolLimits.modeLabel(current.mode));
 	    let warningLines = [
-		...errors.map((error) => `Recursos: ${error}`),
-		...diskErrors.map((error) => `Disco: ${error}`),
+		...errors.map((error) => `${MM.t('pool.resources_prefix')}: ${error}`),
+		...diskErrors.map((error) => `${MM.t('pool.disk_prefix')}: ${error}`),
 	    ];
 	    warning.setVisible(warningLines.length > 0);
-	    warning.setValue(warningLines.length ? `⚠ Contabilidade indisponível: ${warningLines.join('; ')}` : '');
+		warning.setValue(warningLines.length ? `⚠ ${MM.t('pool.accounting_unavailable')}: ${warningLines.join('; ')}` : '');
 	    if (me.poolData.can_edit && editor) {
 		mode.setValue(current.mode || 'allocated');
 		let cpu = me.down('#cpu-enabled');
@@ -304,12 +304,12 @@ Ext.define('MM.panel.PoolLimits', {
 	    MM.Api.request({
 		method: 'PUT', url: MM.PoolLimits.path(me.pool), jsonData: body,
 		success: () => me.reload(),
-		failure: (msg) => Ext.Msg.alert('Erro', msg),
+		failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg),
 	    });
 	};
 
 	let toolbar = me.poolData.can_edit ? [{
-	    text: 'Salvar', itemId: 'save', iconCls: 'fa fa-fw fa-check', handler: () => me.save(),
+	    text: MM.t('pool.save'), itemId: 'save', iconCls: 'fa fa-fw fa-check', handler: () => me.save(),
 	}] : [];
 	Ext.apply(me, {
 	    tbar: toolbar,

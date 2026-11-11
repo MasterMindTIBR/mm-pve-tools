@@ -3,7 +3,7 @@ SHELL := /bin/bash
 PERL_INC   = -Ilib -Iperl
 PROVE      = prove $(PERL_INC)
 
-JS_SRC     = js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/poollimits.js js/src/updates.js
+JS_SRC     = js/src/i18n/en.js js/src/i18n/pt_BR.js js/src/i18n/es.js js/src/core.js js/src/renumber.js js/src/restore.js js/src/branding.js js/src/ui.js js/src/poollimits.js js/src/updates.js
 JS_OUT     = build/mm-tools.js
 PVE_PACKAGE_VERSIONS = ci/pve-package-versions
 
@@ -39,6 +39,7 @@ test-gui:
 
 lint:
 	@rc=0; \
+	if ! scripts/check-ui-i18n.sh; then rc=1; fi; \
 	while IFS= read -r f; do \
 	    extra=''; case "$$f" in perl/PVE/MMTools/*) extra='-It/lib-autostub -MMMAutoStub';; esac; \
 	    perl -Ilib -Iperl -It/lib-stubs $$extra -c "$$f" >/dev/null 2>&1 \

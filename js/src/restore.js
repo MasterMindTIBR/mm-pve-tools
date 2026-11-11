@@ -71,19 +71,19 @@ Ext.define('MM.Restore.utils', {
 		    {
 			xtype: 'button',
 			iconCls: 'fa fa-clipboard',
-			tooltip: gettext('Copy command'),
+			tooltip: MM.t('restore.copy_command'),
 			handler: (b) => MM.Restore.utils.copyToClipboard(cmd, b),
 		    },
 		],
 	    });
 	}
 	Ext.create('Ext.window.Window', {
-	    title: gettext('Publish folder failed'),
+	    title: MM.t('restore.publish_failed'),
 	    modal: true,
 	    width: 620,
 	    layout: { type: 'vbox', align: 'stretch' },
 	    items,
-	    buttons: [{ text: 'OK', handler: (b) => b.up('window').close() }],
+	    buttons: [{ text: MM.t('common.ok'), handler: (b) => b.up('window').close() }],
 	}).show();
     },
 });
@@ -94,7 +94,7 @@ Ext.define('MM.window.RestoreResult', {
     extend: 'Ext.window.Window',
     alias: 'widget.mmRestoreResult',
 
-    title: gettext('Folder published'),
+    title: MM.t('restore.folder_published'),
     modal: true,
     width: 560,
     layout: { type: 'vbox', align: 'stretch' },
@@ -116,7 +116,7 @@ Ext.define('MM.window.RestoreResult', {
 		{
 		    xtype: 'button',
 		    iconCls: 'fa fa-clipboard',
-		    tooltip: gettext('Copy'),
+		    tooltip: MM.t('common.copy'),
 		    handler: (b) => MM.Restore.utils.copyToClipboard(value ?? '', b),
 		},
 	    ],
@@ -124,18 +124,17 @@ Ext.define('MM.window.RestoreResult', {
 
 	Ext.apply(me, {
 	    items: [
-		row('UNC', d.unc),
-		row(gettext('User'), d.user),
-		row(gettext('Password'), d.password),
-		row(gettext('Expires'), d.expires_at),
+	row(MM.t('restore.unc'), d.unc),
+		row(MM.t('restore.user'), d.user),
+		row(MM.t('restore.password'), d.password),
+		row(MM.t('restore.expires'), d.expires_at),
 		{
 		    xtype: 'component',
 		    margin: '10 0 0 0',
-		    html: `<i class="fa fa-warning"></i> ${gettext(
-			'This password is shown only once.')}`,
+			    html: `<i class="fa fa-warning"></i> ${MM.t('restore.password_once')}`,
 		},
 	    ],
-	    buttons: [{ text: 'OK', handler: () => me.close() }],
+	    buttons: [{ text: MM.t('common.ok'), handler: () => me.close() }],
 	});
 	me.callParent();
     },
@@ -175,13 +174,13 @@ Ext.define('MM.window.FilePathPicker', {
 		},
 	    },
 	    columns: [
-		{ text: gettext('Name'), xtype: 'treecolumn', flex: 1, dataIndex: 'text',
+		{ text: MM.t('restore.name'), xtype: 'treecolumn', flex: 1, dataIndex: 'text',
 		    renderer: Ext.String.htmlEncode },
-		{ text: gettext('Type'), dataIndex: 'type', width: 100 },
+		{ text: MM.t('restore.type'), dataIndex: 'type', width: 100 },
 	    ],
 	});
 	let selectBtn = Ext.create('Ext.Button', {
-	    text: gettext('Select'),
+	    text: MM.t('common.select'),
 	    disabled: true,
 	    handler: () => {
 		let rec = tree.getSelection()[0];
@@ -201,7 +200,7 @@ Ext.define('MM.window.FilePathPicker', {
 	    items: [tree],
 	    buttons: [
 		selectBtn,
-		{ text: gettext('Cancel'), handler: () => me.close() },
+		{ text: MM.t('common.cancel'), handler: () => me.close() },
 	    ],
 	});
 	me.callParent();
@@ -215,7 +214,7 @@ Ext.define('MM.window.RestorePublish', {
     extend: 'Ext.window.Window',
     alias: 'widget.mmRestorePublish',
 
-    title: gettext('Publish backup folder'),
+    title: MM.t('restore.publish_backup'),
     modal: true,
     width: 620,
 
@@ -227,11 +226,11 @@ Ext.define('MM.window.RestorePublish', {
 	let storage = m ? m[1] : '';
 
 	let pathField = Ext.create('Ext.form.field.Text', {
-	    fieldLabel: gettext('Folder path'),
+	    fieldLabel: MM.t('restore.folder_path'),
 	    labelWidth: 140,
 	    width: 520,
 	    allowBlank: false,
-	    emptyText: '/drive-scsi1.img.fidx/part/2/Dados',
+	    emptyText: MM.t('restore.example_path'),
 	    listeners: {
 		// edição manual invalida o filepath (já em base64) vindo do Browse
 		change: () => { me.selectedPathB64 = null; },
@@ -239,7 +238,7 @@ Ext.define('MM.window.RestorePublish', {
 	});
 
 	let vmidField = Ext.create('Ext.form.field.Number', {
-	    fieldLabel: gettext('Target VM'),
+	    fieldLabel: MM.t('restore.target_vm'),
 	    labelWidth: 140,
 	    allowBlank: true,	    // padrão: a dona do backup
 	    minValue: 100,
@@ -248,7 +247,7 @@ Ext.define('MM.window.RestorePublish', {
 	});
 
 	let hoursField = Ext.create('Ext.form.field.Number', {
-	    fieldLabel: gettext('Duration (hours)'),
+	    fieldLabel: MM.t('restore.duration'),
 	    labelWidth: 140,
 	    allowBlank: false,
 	    minValue: 1,
@@ -256,14 +255,14 @@ Ext.define('MM.window.RestorePublish', {
 	});
 
 	let ticketField = Ext.create('Ext.form.field.Text', {
-	    fieldLabel: gettext('GLPI ticket'),
+	    fieldLabel: MM.t('restore.ticket'),
 	    labelWidth: 140,
 	    regex: /^GLPI-\d+$/,
-	    regexText: 'GLPI-<número>',
+	    regexText: MM.t('restore.ticket_format'),
 	});
 
 	let vmIpField = Ext.create('Ext.form.field.Text', {
-	    fieldLabel: gettext('VM IP (if no guest agent)'),
+	    fieldLabel: MM.t('restore.vm_ip'),
 	    labelWidth: 140,
 	    vtype: 'IPAddress',
 	    allowBlank: true,
@@ -318,12 +317,12 @@ Ext.define('MM.window.RestorePublish', {
 			{
 			    xtype: 'button',
 			    margin: '0 0 0 8',
-			    text: gettext('Browse'),
+			    text: MM.t('restore.browse'),
 			    iconCls: 'fa fa-folder-o',
 			    disabled: !storage,
 			    handler: () => {
 				Ext.create('MM.window.FilePathPicker', {
-				    title: gettext('Browse backup') + ' - ' + volid,
+				    title: `${MM.t('restore.browse_backup')} - ${volid}`,
 				    listURL:
 					`/api2/json/nodes/localhost/storage/${storage}/file-restore/list`,
 				    extraParams: { volume: volid },
@@ -347,11 +346,11 @@ Ext.define('MM.window.RestorePublish', {
 	    ],
 	    buttons: [
 		{
-		    text: gettext('Publish'),
+		    text: MM.t('restore.publish'),
 		    iconCls: 'fa fa-fw fa-share-square-o',
 		    handler: submit,
 		},
-		{ text: gettext('Cancel'), handler: () => me.close() },
+		{ text: MM.t('common.cancel'), handler: () => me.close() },
 	    ],
 	});
 	me.callParent();
@@ -387,7 +386,7 @@ Ext.define('MM.panel.Restore', {
     extend: 'Ext.grid.Panel',
     alias: 'widget.mmPanelRestore',
 
-    title: gettext('Restore'),
+    title: MM.t('tabs.restore'),
     layout: 'fit',
 
     initComponent: function () {
@@ -433,17 +432,17 @@ Ext.define('MM.panel.Restore', {
 		fields: ['id', 'target_vmid', 'vlan', 'expires_at', 'subpath', 'ticket'],
 	    },
 	    columns: [
-		{ text: 'ID', dataIndex: 'id', width: 130 },
-		{ text: gettext('VM'), dataIndex: 'target_vmid', width: 80 },
-		{ text: 'VLAN', dataIndex: 'vlan', width: 80 },
-		{ text: gettext('Expires'), dataIndex: 'expires_at', width: 180 },
-		{ text: gettext('Folder'), dataIndex: 'subpath', flex: 1 },
-		{ text: 'GLPI', dataIndex: 'ticket', width: 110 },
+		{ text: MM.t('restore.id'), dataIndex: 'id', width: 130 },
+		{ text: MM.t('restore.vm'), dataIndex: 'target_vmid', width: 80 },
+		{ text: MM.t('restore.vlan'), dataIndex: 'vlan', width: 80 },
+		{ text: MM.t('restore.expires'), dataIndex: 'expires_at', width: 180 },
+		{ text: MM.t('restore.folder'), dataIndex: 'subpath', flex: 1 },
+		{ text: MM.t('restore.glpi'), dataIndex: 'ticket', width: 110 },
 	    ],
 	    tbar: [
 		{
 		    xtype: 'proxmoxButton',
-		    text: gettext('Revoke'),
+		    text: MM.t('restore.revoke'),
 		    disabled: true,
 		    selModel: sm,
 		    handler: revoke,
@@ -451,14 +450,14 @@ Ext.define('MM.panel.Restore', {
 		{ xtype: 'tbspacer', width: 10 },
 		{
 		    xtype: 'button',
-		    text: gettext('Reload'),
+		    text: MM.t('common.reload'),
 		    iconCls: 'fa fa-fw fa-refresh',
 		    handler: reload,
 		},
 		'->',
 		{
 		    xtype: 'button',
-		    text: gettext('Test gateway'),
+		    text: MM.t('restore.test_gateway'),
 		    iconCls: 'fa fa-fw fa-heartbeat',
 		    handler: () => {
 			MM.Api.request({
@@ -469,8 +468,8 @@ Ext.define('MM.panel.Restore', {
 				    .map((it) => (it.ok ? '✔ ' : '✘ ') + it.line)
 				    .join('\n');
 				Ext.Msg.alert(
-				    gettext('Gateway selfcheck'),
-				    lines || gettext('no output'),
+				    MM.t('restore.gateway_selfcheck'),
+				    lines || MM.t('restore.no_output'),
 				);
 			    },
 			});
@@ -484,7 +483,7 @@ Ext.define('MM.panel.Restore', {
     },
 });
 
-MM.registerTab({ xtype: 'mmPanelRestore', title: gettext('Restore') });
+MM.registerTab({ xtype: 'mmPanelRestore', title: MM.t('tabs.restore') });
 
 /* -------- Botão "Publicar pasta…" na janela de Backups (PBS) --------- */
 
@@ -498,7 +497,7 @@ Ext.define('PVE.grid.BackupView', {
 	let toolbar = me.getDockedItems('toolbar[dock="top"]')[0] || me.down('toolbar');
 	if (!toolbar) { return; }
 	let button = Ext.create('Proxmox.button.Button', {
-	    text: 'Publicar pasta…',
+	    text: MM.t('restore.publish_toolbar'),
 	    disabled: true,
 	    selModel: me.getSelectionModel(),
 	    enableFn: (rec) => !!rec && /:backup\/vm\//.test(rec.data?.volid || ''),

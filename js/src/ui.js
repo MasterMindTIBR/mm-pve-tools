@@ -113,7 +113,7 @@ Ext.define('MM.Ui', {
 	    },
 	    failure: function (msg) {
 		if (field) { field.setValue(me.preferredValue(type)); }
-		Ext.Msg.alert('Erro', msg);
+		Ext.Msg.alert(MM.t('common.error'), msg);
 	    },
 	});
     },
@@ -264,16 +264,16 @@ Ext.define('MM.Ui', {
 		    return;
 		}
 		let qemu = Ext.create('Proxmox.form.KVComboBox', {
-		    fieldLabel: 'Console QEMU', reference: 'mmUiQemu',
-		    comboItems: [['cluster', 'Padrão do cluster'], ['default', 'Padrão do PVE'],
-			['html5', 'HTML5 (noVNC)'], ['xtermjs', 'xterm.js'], ['vv', 'SPICE (remote-viewer)']],
+		    fieldLabel: MM.t('ui.console_qemu'), reference: 'mmUiQemu',
+		    comboItems: [['cluster', MM.t('ui.cluster_default')], ['default', MM.t('ui.pve_default')],
+			['html5', MM.t('ui.html5')], ['xtermjs', MM.t('ui.xtermjs')], ['vv', MM.t('ui.spice')]],
 		});
 		let lxc = Ext.create('Proxmox.form.KVComboBox', {
-		    fieldLabel: 'Console LXC', reference: 'mmUiLxc',
-		    comboItems: [['cluster', 'Padrão do cluster'], ['default', 'Padrão do PVE'],
-			['html5', 'HTML5 (noVNC)'], ['xtermjs', 'xterm.js'], ['vv', 'SPICE (remote-viewer)']],
+		    fieldLabel: MM.t('ui.console_lxc'), reference: 'mmUiLxc',
+		    comboItems: [['cluster', MM.t('ui.cluster_default')], ['default', MM.t('ui.pve_default')],
+			['html5', MM.t('ui.html5')], ['xtermjs', MM.t('ui.xtermjs')], ['vv', MM.t('ui.spice')]],
 		});
-		column.add({ xtype: 'fieldset', title: 'Console padrão (MM Tools)', items: [qemu, lxc] });
+		column.add({ xtype: 'fieldset', title: MM.t('ui.default_console'), items: [qemu, lxc] });
 		let sync = function () {
 		    qemu.suspendEvents(); qemu.setValue(MM.Ui.preferredValue('qemu')); qemu.resumeEvents();
 		    lxc.suspendEvents(); lxc.setValue(MM.Ui.preferredValue('lxc')); lxc.resumeEvents();
@@ -303,21 +303,22 @@ MM.Ui.loadStatic();
 Ext.define('MM.panel.Ui', {
     extend: 'Ext.panel.Panel',
     alias: 'widget.mmPanelUi',
-    title: 'Interface',
+	    title: MM.t('tabs.interface'),
     layout: 'fit',
 
     initComponent: function () {
 	let me = this;
 	let qemu = Ext.create('Proxmox.form.KVComboBox', {
-	    fieldLabel: 'Console QEMU', comboItems: [['default', 'Padrão do PVE'],
-		['html5', 'HTML5 (noVNC)'], ['xtermjs', 'xterm.js'], ['vv', 'SPICE (remote-viewer)']],
+	    itemId: 'mm-ui-qemu',
+	    fieldLabel: MM.t('ui.console_qemu'), comboItems: [['default', MM.t('ui.pve_default')],
+		['html5', MM.t('ui.html5')], ['xtermjs', MM.t('ui.xtermjs')], ['vv', MM.t('ui.spice')]],
 	});
 	let lxc = Ext.create('Proxmox.form.KVComboBox', {
-	    fieldLabel: 'Console LXC', comboItems: [['default', 'Padrão do PVE'],
-		['html5', 'HTML5 (noVNC)'], ['xtermjs', 'xterm.js'], ['vv', 'SPICE (remote-viewer)']],
+	    fieldLabel: MM.t('ui.console_lxc'), comboItems: [['default', MM.t('ui.pve_default')],
+		['html5', MM.t('ui.html5')], ['xtermjs', MM.t('ui.xtermjs')], ['vv', MM.t('ui.spice')]],
 	});
 	let hide = Ext.create('Ext.form.field.Checkbox', {
-	    fieldLabel: 'Assinatura', boxLabel: 'Remover somente o popup “No valid subscription”',
+	    fieldLabel: MM.t('ui.subscription'), boxLabel: MM.t('ui.remove_popup'),
 	});
 	let status = Ext.create('Ext.form.field.Display', { itemId: 'ui-status', value: '—' });
 	me.reload = function () {
@@ -335,7 +336,7 @@ Ext.define('MM.panel.Ui', {
 		url: '/nodes/localhost/mm-tools/status',
 		success: (res) => {
 		    let c = res.data?.modules?.ui?.check;
-		    status.setValue(c?.ok ? 'OK: símbolos compatíveis' : (c?.note || 'Incompatibilidade detectada'));
+		    status.setValue(c?.ok ? MM.t('ui.status_ok') : (c?.note || MM.t('ui.status_bad')));
 		},
 	    });
 	};
@@ -348,15 +349,15 @@ Ext.define('MM.panel.Ui', {
 		method: 'PUT', url: '/nodes/localhost/mm-tools/config/ui',
 		params: { value, digest: me.digest },
 		success: () => { me.reload(); MM.applyAll(); },
-		failure: (msg) => Ext.Msg.alert('Erro', msg),
+		failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg),
 	    });
 	};
 	Ext.apply(me, {
 	    items: [{ xtype: 'form', bodyPadding: 10, border: false, items: [
-		{ xtype: 'displayfield', value: 'Padrões do cluster; a preferência do usuário é definida em “My Settings”.' },
+		{ xtype: 'displayfield', value: MM.t('ui.defaults_help') },
 		qemu, lxc, hide, status,
-	    ], buttons: [{ text: 'Salvar', iconCls: 'fa fa-fw fa-check', handler: save },
-		{ text: 'Recarregar', iconCls: 'fa fa-fw fa-refresh', handler: () => me.reload() }]}],
+	    ], buttons: [{ text: MM.t('ui.save'), iconCls: 'fa fa-fw fa-check', handler: save },
+		{ text: MM.t('ui.reload'), iconCls: 'fa fa-fw fa-refresh', handler: () => me.reload() }]}],
 	    listeners: { activate: () => me.reload() },
 	});
 	me.callParent();
@@ -365,4 +366,4 @@ Ext.define('MM.panel.Ui', {
     },
 });
 
-MM.registerTab({ xtype: 'mmPanelUi', title: 'Interface' });
+MM.registerTab({ xtype: 'mmPanelUi', title: MM.t('tabs.interface') });

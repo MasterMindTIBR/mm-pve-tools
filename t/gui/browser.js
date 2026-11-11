@@ -19,6 +19,7 @@ async function withTimeout(operation, label) {
 
 async function main() {
     const stallUi = process.env.MM_GUI_STALL_UI === '1';
+    const languages = (process.env.MM_GUI_LANGS || 'en,pt_BR,es').split(',').filter(Boolean);
     const flags = process.getuid && process.getuid() === 0
         ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];
     console.log(`GUI: launching Chromium (flags=${flags.join(',') || 'sandbox'})`);
@@ -32,6 +33,86 @@ async function main() {
         domain: '127.0.0.1',
         path: '/',
     }]);
+    const expected = {
+        en: {
+            tabs: ['General', 'Diagnostics', 'VMID', 'Restore', 'Branding', 'Interface', 'Updates', 'About'],
+            general: ['General', 'Module', 'Enable'], updates: ['Updates', 'Update list', 'Update selected'],
+            restore: ['Restore', 'Publish', 'Revoke'], branding: ['Branding', 'Preview', 'Save'],
+            ui: ['Interface', 'QEMU console', 'Save'], vmid: ['VMID', 'From', 'Add'], about: ['About', 'Links'],
+            diagnostics: ['Diagnostics', 'Node', 'Reload'], pool: ['Pool limits', 'Resource', 'Save'],
+        },
+        pt_BR: {
+            tabs: ['Geral', 'Diagnóstico', 'VMID', 'Restore', 'Branding', 'Interface', 'Updates', 'Sobre'],
+            general: ['Geral', 'Módulo', 'Ligar'], updates: ['Updates', 'Atualizar lista', 'Atualizar selecionados'],
+            restore: ['Restore', 'Publicar', 'Revogar'], branding: ['Branding', 'Pré-visualização', 'Salvar'],
+            ui: ['Interface', 'Console QEMU', 'Salvar'], vmid: ['VMID', 'De', 'Adicionar'], about: ['Sobre', 'Links'],
+            diagnostics: ['Diagnóstico', 'Node', 'Recarregar'], pool: ['Limites de pool', 'Recurso', 'Salvar'],
+        },
+        es: {
+            tabs: ['General', 'Diagnóstico', 'VMID', 'Restauración', 'Marca', 'Interfaz', 'Actualizaciones', 'Acerca de'],
+            general: ['General', 'Módulo', 'Activar'], updates: ['Actualizaciones', 'Actualizar lista', 'Actualizar seleccionados'],
+            restore: ['Restauración', 'Publicar', 'Revocar'], branding: ['Marca', 'Vista previa', 'Guardar'],
+            ui: ['Interfaz', 'Consola QEMU', 'Guardar'], vmid: ['VMID', 'Desde', 'Añadir'], about: ['Acerca de', 'Enlaces'],
+            diagnostics: ['Diagnóstico', 'Nodo', 'Recargar'], pool: ['Límites del pool', 'Recurso', 'Guardar'],
+        },
+    };
+    const i18nErrors = [];
+    for (const language of languages) {
+        if (!expected[language]) { throw new Error(`unsupported GUI language: ${language}`); }
+        await context.addCookies([{ name: 'PVELangCookie', value: language,
+            domain: '127.0.0.1', path: '/' }]);
+        const smoke = await context.newPage();
+        await smoke.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: TIMEOUT });
+        await smoke.waitForFunction(() => window.__MM_HARNESS_READY__ && window.Ext,
+            undefined, { timeout: TIMEOUT });
+        const result = await smoke.evaluate((want) => {
+            const tools = Ext.create('MM.panel.Tools', { renderTo: Ext.getBody(), width: 1100, height: 700 });
+            const panels = {
+                mmPanelGeneral: tools.down('mmPanelGeneral'), mmPanelUpdates: tools.down('mmPanelUpdates'),
+                mmPanelRestore: tools.down('mmPanelRestore'), mmPanelBranding: tools.down('mmPanelBranding'),
+                mmPanelUi: tools.down('mmPanelUi'), mmPanelVmid: tools.down('mmPanelVmid'),
+                mmPanelDiag: tools.down('mmPanelDiag'), about: tools.down('#about'),
+            };
+            const buttonText = (panel, itemId) => panel?.down(`#${itemId}`)?.getText?.() || '';
+            const buttonTexts = (panel) => (panel?.query?.('button') || []).map((button) => button.getText?.() || '');
+            const pool = Ext.create('MM.panel.PoolLimits', { renderTo: Ext.getBody(), pool: 'harness',
+                poolData: { can_edit: true, limits: {}, usage: {} } });
+            const actual = {
+                tabs: tools.items.getRange().map((panel) => panel.title),
+                general: [panels.mmPanelGeneral?.title, panels.mmPanelGeneral?.down('#modules')?.columnManager?.getHeaderAtIndex(0)?.text,
+                    buttonText(panels.mmPanelGeneral, 'module-on')],
+                updates: [panels.mmPanelUpdates?.title, ...buttonTexts(panels.mmPanelUpdates)],
+                restore: [panels.mmPanelRestore?.title, MM.t('restore.publish'),
+                    panels.mmPanelRestore?.down('proxmoxButton')?.getText?.()],
+                branding: [panels.mmPanelBranding?.title, panels.mmPanelBranding?.down('fieldset')?.title,
+                    ...buttonTexts(panels.mmPanelBranding)],
+                ui: [panels.mmPanelUi?.title, panels.mmPanelUi?.down('#mm-ui-qemu')?.fieldLabel,
+                    ...buttonTexts(panels.mmPanelUi)],
+                vmid: [panels.mmPanelVmid?.title, panels.mmPanelVmid?.down('grid')?.columnManager?.getHeaderAtIndex(1)?.text,
+                    ...buttonTexts(panels.mmPanelVmid)],
+                about: [panels.about?.title, MM.t('about.links')],
+                diagnostics: [panels.mmPanelDiag?.title, panels.mmPanelDiag?.columnManager?.getHeaderAtIndex(0)?.text,
+                    panels.mmPanelDiag?.down('button')?.getText?.()],
+                pool: [pool.title, pool.down('grid')?.columnManager?.getHeaderAtIndex(0)?.text,
+                    pool.down('#save')?.getText?.()],
+            };
+            pool.destroy(); tools.destroy(); return actual;
+        }, expected[language]);
+        const mismatches = [];
+        for (const [screen, wanted] of Object.entries(expected[language])) {
+            const got = result[screen];
+            if (!got || !wanted.every((value) => got.includes(value))) {
+                mismatches.push(`i18n ${language}/${screen}: expected ${JSON.stringify(wanted)}, got ${JSON.stringify(got)}`);
+            }
+        }
+        if (mismatches.length) { i18nErrors.push(...mismatches); await smoke.close(); continue; }
+        console.log(`GUI i18n OK: ${language} (${Object.keys(expected[language]).length} screens)`);
+        await smoke.close();
+    }
+    if (i18nErrors.length) { throw new Error(`\n${i18nErrors.join('\n')}`); }
+    const mainLanguage = languages.includes('pt_BR') ? 'pt_BR' : languages[0];
+    await context.addCookies([{ name: 'PVELangCookie', value: mainLanguage,
+        domain: '127.0.0.1', path: '/' }]);
     const page = await context.newPage();
     const browserConsole = [];
     const pageErrors = [];
@@ -683,6 +764,8 @@ async function main() {
 }
 
 main().catch((error) => {
-    if (!error) { console.error('GUI FAIL: unknown error'); }
-    process.exitCode = 1;
+    // Errors outside the try/finally (e.g. the i18n loop) leave Chromium open
+    // and would hang until the harness timeout: report and exit right away.
+    console.error(`GUI FAIL: ${(error && (error.stack || error)) || 'unknown error'}`);
+    process.exit(1);
 });

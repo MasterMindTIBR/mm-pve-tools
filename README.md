@@ -77,6 +77,27 @@ make build         # .deb dos dois pacotes (debhelper)
 make check-anchors # valida as âncoras de patch contra fixtures upstream
 ```
 
+### GUI e idiomas
+
+A GUI lê o mesmo idioma usado pelo PVE: `PVE.Utils.getUiLanguage()`, que usa o
+cookie `PVELangCookie` e o fallback `Proxmox.defaultLang`. Os códigos aceitos
+pelo MM Tools são `en`, `pt_BR` e `es`; os demais caem em `en`. O guard
+`scripts/check-ui-i18n.sh` exige as mesmas chaves nos três catálogos e que toda
+string visível seja chamada por `MM.t()`. A allowlist é deliberadamente curta:
+strings PVE próprias via `gettext()`, o rótulo PVE `File Restore`, marcadores de
+toolbar/pontuação e `-` como valor vazio; URLs, CSS, IDs, caminhos de API,
+enumerações e mensagens vindas do backend não são texto da GUI.
+
+O harness completo precisa da imagem Playwright do `t/gui/Dockerfile`; sem
+Docker/rede, execute os comandos abaixo quando o ambiente estiver disponível:
+
+```sh
+t/gui/run.sh --assets refs/upstream/pve-9.2.24
+t/gui/run.sh --assets refs/upstream/pve-9.2.24 --lang en
+t/gui/run.sh --assets refs/upstream/pve-9.2.24 --lang pt_BR
+t/gui/run.sh --assets refs/upstream/pve-9.2.24 --lang es
+```
+
 Requisitos: Debian 13 (trixie), perl, python3, make, debhelper (build).
 
 ## Licença

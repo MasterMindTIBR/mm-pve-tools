@@ -126,7 +126,7 @@ Ext.define('MM.override.LoginWindow', {
 		xtype: 'box',
 		itemId: 'mm-login-powered',
 		hidden: !cfg.login_text,
-		html: 'Powered by Proxmox VE',
+	    html: MM.t('branding.powered_by'),
 		padding: '2 0 5 0',
 		style: { 'text-align': 'center', 'font-size': '11px', color: '#888' },
 	    });
@@ -141,7 +141,7 @@ MM.Branding.init();
 Ext.define('MM.panel.Branding', {
     extend: 'Ext.panel.Panel',
     alias: 'widget.mmPanelBranding',
-    title: gettext('Branding'),
+	    title: MM.t('tabs.branding'),
     layout: 'fit',
 
     initComponent: function () {
@@ -149,7 +149,7 @@ Ext.define('MM.panel.Branding', {
 
 	let readFile = (file, cb) => {
 	    if (!file || file.size > MM.Branding.RAW_ASSET_MAX_BYTES) {
-		Ext.Msg.alert(gettext('Error'), gettext('O PNG excede 256 KiB.'));
+		Ext.Msg.alert(MM.t('common.error'), MM.t('branding.png_too_large'));
 		return;
 	    }
 	    let fr = new FileReader();
@@ -158,7 +158,7 @@ Ext.define('MM.panel.Branding', {
 	};
 
 	let logoField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Logo') + ' (PNG, 256 KiB)',
+	    fieldLabel: MM.t('branding.logo') + MM.t('branding.file_limit'),
 	    name: 'logo',
 	    accept: '.png',
 	    listeners: {
@@ -170,7 +170,7 @@ Ext.define('MM.panel.Branding', {
 	    },
 	});
 	let faviconField = Ext.create('Ext.form.field.File', {
-	    fieldLabel: gettext('Favicon') + ' (PNG, 256 KiB)',
+	    fieldLabel: MM.t('branding.favicon') + MM.t('branding.file_limit'),
 	    name: 'favicon',
 	    accept: '.png',
 	    listeners: {
@@ -181,19 +181,19 @@ Ext.define('MM.panel.Branding', {
 	    },
 	});
 	let titleField = Ext.create('Ext.form.field.Text', {
-	    fieldLabel: gettext('Title'), name: 'title', maxLength: 100,
+	    fieldLabel: MM.t('branding.title'), name: 'title', maxLength: 100,
 	});
 	let headerField = Ext.create('Ext.form.field.Text', {
-	    fieldLabel: gettext('Header text'), name: 'header_text', maxLength: 60,
+	    fieldLabel: MM.t('branding.header_text'), name: 'header_text', maxLength: 60,
 	});
 	let loginField = Ext.create('Ext.form.field.TextArea', {
-	    fieldLabel: gettext('Login text'), name: 'login_text', maxLength: 200,
+	    fieldLabel: MM.t('branding.login_text'), name: 'login_text', maxLength: 200,
 	});
 
 	let previewBox = Ext.create('Ext.Component', {
 	    autoEl: 'div',
 	    padding: 10,
-	    html: '-',
+	    html: MM.t('common.empty'),
 	});
 
 	me.preview = function () {
@@ -205,7 +205,7 @@ Ext.define('MM.panel.Branding', {
 	    }
 	    previewBox.setHtml(src
 		? `<img src="${src}" style="max-height:60px;max-width:260px" alt="logo"/>`
-		: gettext('No logo uploaded'));
+		: MM.t('branding.no_logo'));
 	};
 
 	me.reload = function () {
@@ -238,7 +238,7 @@ Ext.define('MM.panel.Branding', {
 	    }
 	    let requestBytes = MM.Branding.requestBytes(data);
 	    if (requestBytes > MM.Branding.REQUEST_MAX_BYTES) {
-		Ext.Msg.alert(gettext('Error'), gettext('A requisição JSON excede o limite seguro do pveproxy.'));
+		Ext.Msg.alert(MM.t('common.error'), MM.t('branding.request_too_large'));
 		return;
 	    }
 	    MM.Api.request({
@@ -249,7 +249,7 @@ Ext.define('MM.panel.Branding', {
 		    me.digest = res?.data?.digest || me.digest;
 		    cb();
 		},
-		failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
+		failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg),
 	    });
 	};
 
@@ -267,13 +267,13 @@ Ext.define('MM.panel.Branding', {
 		{ xtype: 'tbspacer', height: 10 },
 		{
 		    xtype: 'fieldset',
-		    title: gettext('Preview'),
+		    title: MM.t('branding.preview'),
 		    items: [previewBox],
 		},
 	    ],
 	    buttons: [
 		{
-		    text: gettext('Save'),
+		    text: MM.t('common.save'),
 		    iconCls: 'fa fa-fw fa-check',
 		    handler: () => {
 			if (!form.isValid()) { return; }
@@ -292,13 +292,13 @@ Ext.define('MM.panel.Branding', {
 				    me.reload();
 				    MM.applyAll();
 				},
-				failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
+				failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg),
 			    });
 			});
 		    },
 		},
 		{
-		    text: gettext('Restore Default'),
+		    text: MM.t('branding.restore_default'),
 		    iconCls: 'fa fa-fw fa-undo',
 		    handler: () => {
 			MM.Api.request({
@@ -311,7 +311,7 @@ Ext.define('MM.panel.Branding', {
 				me.reload();
 				MM.applyAll();
 			    },
-			    failure: (msg) => Ext.Msg.alert(gettext('Error'), msg),
+			    failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg),
 			});
 		    },
 		},
@@ -325,4 +325,4 @@ Ext.define('MM.panel.Branding', {
     },
 });
 
-MM.registerTab({ xtype: 'mmPanelBranding', title: gettext('Branding') });
+MM.registerTab({ xtype: 'mmPanelBranding', title: MM.t('tabs.branding') });

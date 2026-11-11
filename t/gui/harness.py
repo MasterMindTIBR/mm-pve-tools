@@ -49,7 +49,7 @@ def build_js():
         shutil.copy2(OLD_JS, output)
         return output
     chunks = ['/* mm-tools.js — harness build */\n']
-    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
+    for name in ('i18n/en.js', 'i18n/pt_BR.js', 'i18n/es.js', 'core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
         source = (REPO / 'js/src' / name).read_text(encoding='utf-8')
         chunks.append(f'\n/* ===== js/src/{name} ===== */\n')
         chunks.append(source.replace('@MM_PVE_VERSION@', VERSION))
