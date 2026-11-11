@@ -6,6 +6,14 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+### Adicionado
+
+- Aba General do MM Tools com **Ligar** e **Desligar** por módulo: confirma
+  o que vai acontecer (no poollimits, o recarregamento dos daemons em todos
+  os nodes), grava a lista de módulos conferindo o digest e já aplica em
+  todos os nodes. Todos os módulos aparecem sempre, com o que cada um faz.
+  Só quem tem `Sys.Modify` em `/` vê os botões habilitados.
+
 ## [0.3.1] - 2026-11-10
 
 ### Alterado

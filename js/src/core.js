@@ -103,6 +103,56 @@ MM.applyAll = function () {
 
 /* ------------------------- Geral ------------------------- */
 
+/* Módulos na ordem da tela, o que cada um faz e o aviso mostrado ao ligar. */
+Ext.define('MM.Modules', {
+    singleton: true,
+    order: ['ui', 'updates', 'poollimits', 'renumber', 'restore', 'branding'],
+    info: {
+	ui: 'Console padrão por tipo (VM/CT) e pop-up de assinatura.',
+	updates: 'Atualização dos nodes pela GUI, com reboot sugerido só quando o kernel muda.',
+	poollimits: 'Limites de vCPU, RAM e disco por pool.',
+	renumber: 'Troca o ID de VMs e CTs (menu "Trocar ID…").',
+	restore: 'Publica uma pasta de backup do PBS para a VM do cliente.',
+	branding: 'Logo e título em todos os nodes.',
+    },
+    warnOn: {
+	poollimits: 'Os patches de limite entram no qemu-server, no pve-container, no storage e no '
+	    + 'próprio PVE, e os daemons (pvedaemon, pveproxy, pvescheduler e os do HA) são '
+	    + 'recarregados em todos os nodes. Sem limite configurado num pool, nada é recusado.',
+	restore: 'O restore só funciona com a VM gateway configurada.',
+	branding: 'Sem logo e título definidos na aba Branding, nada muda na tela.',
+    },
+});
+
+/* Liga/desliga um módulo: grava a seção "modules" (CAS pelo digest lido) e
+ * aplica em todos os nodes, para não depender do timer de cada node. */
+MM.setModule = function (name, enabled, digest, done) {
+    MM.Api.request({
+	url: '/nodes/localhost/mm-tools/config',
+	success: (res) => {
+	    let data = res.data || {};
+	    if (digest && data.digest && digest !== data.digest) {
+		Ext.Msg.alert(gettext('Error'), 'A configuração mudou desde que a tela foi carregada. '
+		    + 'Clique em Reload e tente de novo.');
+		return;
+	    }
+	    let mods = Ext.apply({}, (data.config || {}).modules || {});
+	    mods[name] = enabled ? 1 : 0;
+	    let params = { value: JSON.stringify(mods) };
+	    if (data.digest) { params.digest = data.digest; }
+	    MM.Api.request({
+		method: 'PUT',
+		url: '/nodes/localhost/mm-tools/config/modules',
+		params,
+		success: () => {
+		    MM.applyAll();
+		    if (done) { done(); }
+		},
+	    });
+	},
+    });
+};
+
 Ext.define('MM.panel.General', {
     extend: 'Ext.panel.Panel',
     alias: 'widget.mmPanelGeneral',
@@ -111,12 +161,16 @@ Ext.define('MM.panel.General', {
 
     initComponent: function () {
 	let me = this;
+	let caps = Ext.state.Manager.get('GuiCap') || {};
+	me.canEdit = !!caps.dc?.['Sys.Modify'];
 
 	let moduleGrid = Ext.create('Ext.grid.Panel', {
+	    itemId: 'modules',
 	    flex: 1,
-	    store: { fields: ['name', 'enabled'], data: [] },
+	    store: { fields: ['name', 'enabled', 'info'], data: [] },
 	    columns: [
-		{ text: gettext('Module'), dataIndex: 'name', flex: 1 },
+		{ text: gettext('Module'), dataIndex: 'name', width: 140 },
+		{ text: 'Função', dataIndex: 'info', flex: 1, renderer: (v) => MM.Utils.html(v) },
 		{
 		    text: gettext('Enabled'),
 		    dataIndex: 'enabled',
@@ -126,44 +180,82 @@ Ext.define('MM.panel.General', {
 	    ],
 	});
 
+	let toggle = function (enable) {
+	    let rec = moduleGrid.getSelection()[0];
+	    if (!rec) { return; }
+	    let name = rec.get('name');
+	    let warn = enable ? MM.Modules.warnOn[name] : '';
+	    let text = `${enable ? 'Ligar' : 'Desligar'} o módulo <b>${MM.Utils.html(name)}</b> e aplicar `
+		+ 'em todos os nodes agora?'
+		+ (warn ? `<br><br>${MM.Utils.html(warn)}` : '')
+		+ (enable ? '' : '<br><br>Os patches do módulo são revertidos nos nodes.');
+	    Ext.Msg.confirm(enable ? 'Ligar módulo' : 'Desligar módulo', text, (answer) => {
+		if (answer !== 'yes') { return; }
+		MM.setModule(name, enable, me.digest, () => me.reload());
+	    });
+	};
+
+	let onButton = Ext.create('Ext.button.Button', {
+	    itemId: 'module-on',
+	    text: 'Ligar',
+	    iconCls: 'fa fa-fw fa-toggle-on',
+	    disabled: true,
+	    handler: () => toggle(true),
+	});
+	let offButton = Ext.create('Ext.button.Button', {
+	    itemId: 'module-off',
+	    text: 'Desligar',
+	    iconCls: 'fa fa-fw fa-toggle-off',
+	    disabled: true,
+	    handler: () => toggle(false),
+	});
+	let syncButtons = function () {
+	    let rec = moduleGrid.getSelection()[0];
+	    onButton.setDisabled(!me.canEdit || !rec || !!rec.get('enabled'));
+	    offButton.setDisabled(!me.canEdit || !rec || !rec.get('enabled'));
+	};
+	moduleGrid.on('selectionchange', syncButtons);
+
 	me.reload = function () {
 	    MM.Api.request({
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
 		    let data = res.data || {};
 		    let mods = (data.config || {}).modules || {};
-		    moduleGrid.getStore().setData(
-			Object.keys(mods).map((k) => ({ name: k, enabled: !!mods[k] })),
-		    );
+		    let names = MM.Modules.order.concat(
+			Object.keys(mods).filter((k) => !MM.Modules.order.includes(k)).sort());
+		    let selected = moduleGrid.getSelection()[0]?.get('name');
+		    let store = moduleGrid.getStore();
+		    store.setData(names.map((k) => ({
+			name: k, enabled: !!mods[k], info: MM.Modules.info[k] || '',
+		    })));
 		    me.digest = data.digest || '';
+		    let again = selected && store.findRecord('name', selected, 0, false, true, true);
+		    if (again) { moduleGrid.setSelection(again); }
+		    syncButtons();
 		},
 	    });
 	};
 
 	Ext.apply(me, {
-	    items: [
+	    tbar: [
+		onButton,
+		offButton,
+		'-',
 		{
-		    xtype: 'container',
-		    padding: 10,
-		    layout: { type: 'hbox' },
-		    items: [
-			{
-			    xtype: 'button',
-			    text: gettext('Apply on all nodes'),
-			    iconCls: 'fa fa-fw fa-play',
-			    handler: () => MM.applyAll(),
-			},
-			{ xtype: 'tbspacer', width: 10 },
-			{
-			    xtype: 'button',
-			    text: gettext('Reload'),
-			    iconCls: 'fa fa-fw fa-refresh',
-			    handler: () => me.reload(),
-			},
-		    ],
+		    xtype: 'button',
+		    text: gettext('Apply on all nodes'),
+		    iconCls: 'fa fa-fw fa-play',
+		    handler: () => MM.applyAll(),
 		},
-		moduleGrid,
+		{
+		    xtype: 'button',
+		    text: gettext('Reload'),
+		    iconCls: 'fa fa-fw fa-refresh',
+		    handler: () => me.reload(),
+		},
 	    ],
+	    items: [moduleGrid],
 	    listeners: { activate: () => me.reload() },
 	});
 
