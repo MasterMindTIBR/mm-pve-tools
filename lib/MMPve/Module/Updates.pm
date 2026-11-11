@@ -164,7 +164,7 @@ sub _bulk_files_locked {
     return @items unless opendir(my $dh, state_dir());
     while (my $entry = readdir($dh)) {
         next unless $entry =~ /\Abulk-([0-9a-f-]+)\.json\z/;
-        my $path = state_dir() . '/' . $entry;
+        my $path = state_dir() . "/bulk-$1.json";    # untainted: may be rewritten as lost
         my $item = eval { _read_json($path) };
         next unless $item && $item->{id};
         $item = _mark_bulk_lost_locked($item, $path);
@@ -484,7 +484,9 @@ sub _finish {
         my $keep = $cfg->{updates}{retention} // DEFAULT_RETENTION;
         my @files;
         if (opendir(my $dh, state_dir())) {
-            @files = grep { /^\Q$node\E-[0-9a-f-]+\.json\z/ } readdir($dh);
+            # Capture to untaint: pvedaemon runs with -T and unlink refuses
+            # names that came straight from readdir.
+            @files = map { /\A(\Q$node\E-[0-9a-f-]+\.json)\z/ ? $1 : () } readdir($dh);
             closedir($dh);
         }
         # Mais novo primeiro pelo epoch de alta resolução gravado no job (o
@@ -500,9 +502,8 @@ sub _finish {
             for my $file (@files[$keep .. $#files]) {
                 my $old = eval { _read_json(state_dir() . '/' . $file) } || {};
                 unlink(state_dir() . '/' . $file);
-                if ($old->{log} && eval { _safe_path($old->{log}); 1 }) {
-                    unlink($old->{log});
-                }
+                my $log = $old->{log} ? eval { _safe_path($old->{log}) } : undef;
+                unlink($log) if defined $log;
             }
         }
     });
@@ -513,7 +514,8 @@ sub _prune_bulk {
     $keep = DEFAULT_RETENTION unless defined($keep) && $keep =~ /^\d+$/ && $keep >= 1;
     my @files;
     return unless opendir(my $dh, state_dir());
-    @files = grep { /\Abulk-[0-9a-f-]+\.json\z/ } readdir($dh);
+    # Capture to untaint (pvedaemon runs with -T; see the job prune above).
+    @files = map { /\A(bulk-[0-9a-f-]+\.json)\z/ ? $1 : () } readdir($dh);
     closedir($dh);
     my %epoch = map {
         my $data = eval { _read_json(state_dir() . '/' . $_) } || {};
