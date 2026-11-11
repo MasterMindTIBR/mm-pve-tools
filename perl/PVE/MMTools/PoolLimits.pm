@@ -956,6 +956,13 @@ sub _reserve_storage_delta {
 
 sub check_storage_alloc {
     my ($class, $storecfg, $storeid, $vmid, $fmt, $name, $size_kib) = @_;
+    _fail_closed('unknown', 'hook', 'vdisk_alloc arguments are missing or malformed')
+        unless ref($storecfg) eq 'HASH'
+        && defined($storeid) && !ref($storeid) && length($storeid)
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && defined($fmt) && !ref($fmt)
+        && (!defined($name) || !ref($name))
+        && defined($size_kib) && !ref($size_kib) && $size_kib =~ /^\d+(?:\.\d+)?$/;
     return if _is_exempt_volid(defined($name) ? $name : '');
     my $ctx = $class->_storage_context($vmid, $storecfg, allow_disk_errors => 1, exempt_migrate => 1);
     return unless $ctx;
@@ -975,6 +982,11 @@ sub check_storage_alloc {
 
 sub check_storage_clone {
     my ($class, $storecfg, $volid, $vmid, $snap) = @_;
+    _fail_closed('unknown', 'hook', 'vdisk_clone arguments are missing or malformed')
+        unless ref($storecfg) eq 'HASH'
+        && defined($volid) && !ref($volid) && length($volid)
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && (!defined($snap) || !ref($snap));
     return if _is_exempt_volid($volid);
     my $ctx = $class->_storage_context($vmid, $storecfg, allow_disk_errors => 1, exempt_migrate => 1);
     return unless $ctx;
@@ -989,8 +1001,25 @@ sub check_storage_clone {
     return $class->_reserve_storage_delta($ctx, $storeid, $size);
 }
 
+sub _resize_requested_size {
+    my ($size) = @_;
+    return undef if !defined($size) || ref($size);
+    return undef unless $size =~ /^\d+(?:\.\d+)?$/;
+    # The Storage.pm hook runs immediately after argument unpacking. Any
+    # backend padding is an implementation detail of the storage plugin and
+    # must not become tenant quota; the logical requested size is the value
+    # supplied by the caller.
+    return int($size);
+}
+
 sub check_storage_resize {
     my ($class, $storecfg, $volid, $size, $running, $snapname) = @_;
+    _fail_closed('unknown', 'hook', 'volume_resize arguments are missing or malformed')
+        unless ref($storecfg) eq 'HASH'
+        && defined($volid) && !ref($volid) && length($volid)
+        && defined($size) && !ref($size) && $size =~ /^\d+(?:\.\d+)?$/
+        && defined($running) && !ref($running)
+        && (!defined($snapname) || !ref($snapname));
     return if defined($snapname) || _is_exempt_volid($volid);
     my $owner = _owner_from_volid($storecfg, $volid);
     return unless defined($owner);
@@ -1008,10 +1037,10 @@ sub check_storage_resize {
         }
     }
     return unless $old;
+    my $new_size = _resize_requested_size($size);
     _fail_closed($ctx->{pool}, 'disco', 'tamanho do volume indisponível')
-        unless defined($size) && !ref($size) && $size =~ /^\d+(?:\.\d+)?$/
+        unless defined($new_size)
         && defined($old->{size});
-    my $new_size = int($size);
     return if $new_size <= $old->{size};
     _disk_context_is_known($ctx);
     return $class->_reserve_storage_delta($ctx, $old->{storage}, $new_size - $old->{size});
@@ -1020,6 +1049,11 @@ sub check_storage_resize {
 sub check_storage_import {
     my ($class, $storecfg, $fh, $volid, $format, $snapshot, $base_snapshot,
         $with_snapshots, $allow_rename) = @_;
+    _fail_closed('unknown', 'hook', 'volume_import arguments are missing or malformed')
+        unless ref($storecfg) eq 'HASH'
+        && defined($fh)
+        && defined($volid) && !ref($volid) && length($volid)
+        && defined($format) && !ref($format);
     return if _is_exempt_volid($volid);
     my $owner = _owner_from_volid($storecfg, $volid);
     return unless defined($owner);
@@ -1039,6 +1073,10 @@ sub check_storage_import {
 
 sub check_write_config {
     my ($class, $guest_class, $vmid, $conf) = @_;
+    _fail_closed('unknown', 'hook', 'write_config arguments are missing or malformed')
+        unless defined($guest_class) && !ref($guest_class)
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && ref($conf) eq 'HASH';
     return unless defined($guest_class) && ($guest_class eq 'PVE::QemuConfig' || $guest_class eq 'PVE::LXC::Config');
     my $state = $class->_state;
     return unless $state->{active};
@@ -1083,7 +1121,11 @@ sub check_write_config {
 }
 
 sub check_start {
-    my ($class, $conf, $vmid, $phase) = @_;
+    my ($class, $conf, $vmid, $phase, @rest) = @_;
+    _fail_closed('unknown', 'hook', 'exec_hookscript arguments are missing or malformed')
+        unless ref($conf) eq 'HASH'
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && defined($phase) && !ref($phase);
     return unless defined($phase) && $phase eq 'pre-start';
     my $state = $class->_state;
     return unless $state->{active};
@@ -1103,7 +1145,9 @@ sub check_start {
 
 sub check_pool_entry {
     my ($class, $vmid, $pool) = @_;
-    return unless defined($pool) && length($pool);
+    _fail_closed('unknown', 'hook', 'add_vm_to_pool arguments are missing or malformed')
+        unless defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && defined($pool) && !ref($pool) && length($pool);
     my $state = $class->_state;
     return unless $state->{active} && _limits($state, $pool);
     my $ucfg = _usercfg();
@@ -1122,7 +1166,11 @@ sub check_pool_entry {
 
 sub check_pool_update {
     my ($class, $param, $usercfg) = @_;
-    return unless ref($param) eq 'HASH' && !($param->{delete});
+    _fail_closed('unknown', 'hook', 'update_pool arguments are missing or malformed')
+        unless ref($param) eq 'HASH' && defined($param->{poolid})
+        && !ref($param->{poolid}) && length($param->{poolid})
+        && (!defined($usercfg) || ref($usercfg) eq 'HASH');
+    return if $param->{delete};
     my $pool = $param->{poolid};
     return unless defined($pool) && _limits($class->_state, $pool);
     $usercfg ||= _usercfg();
@@ -1163,6 +1211,12 @@ sub _restore_qemu_conf {
 
 sub check_qemu_create {
     my ($class, $param, $archive, $storecfg, $vmid, $pool) = @_;
+    _fail_closed('unknown', 'hook', 'create_vm arguments are missing or malformed')
+        unless ref($param) eq 'HASH'
+        && (!defined($archive) || ref($archive) eq 'HASH')
+        && ref($storecfg) eq 'HASH'
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && (!defined($pool) || (!ref($pool) && length($pool)));
     my $state = $class->_state;
     my $ucfg = _usercfg();
     $pool //= _guest_pool($vmid, $ucfg);
@@ -1180,6 +1234,12 @@ sub check_qemu_create {
 
 sub check_lxc_create {
     my ($class, $param, $archive, $storage_cfg, $vmid, $pool) = @_;
+    _fail_closed('unknown', 'hook', 'create_vm arguments are missing or malformed')
+        unless ref($param) eq 'HASH'
+        && (!defined($archive) || !ref($archive))
+        && ref($storage_cfg) eq 'HASH'
+        && defined($vmid) && !ref($vmid) && $vmid =~ /^\d+$/ && $vmid >= 100
+        && (!defined($pool) || (!ref($pool) && length($pool)));
     my $state = $class->_state;
     my $ucfg = _usercfg();
     $pool //= _guest_pool($vmid, $ucfg);
@@ -1200,7 +1260,13 @@ sub check_lxc_create {
 
 sub check_clone {
     my ($class, $newid, $pool, $conf, $type, $snapname) = @_;
+    _fail_closed('unknown', 'hook', 'clone_vm arguments are missing or malformed')
+        unless defined($newid) && !ref($newid) && $newid =~ /^\d+$/ && $newid >= 100
+        && (!defined($pool) || (!ref($pool) && length($pool)))
+        && ref($conf) eq 'HASH' && defined($type) && !ref($type)
+        && ($type eq 'qemu' || $type eq 'lxc');
     return unless defined($pool);
+    my $ucfg = _usercfg();
     if ($type eq 'lxc' && $snapname && ref($conf->{snapshots}) eq 'HASH') {
         $conf = $conf->{snapshots}{$snapname} || $conf;
     }
@@ -1211,7 +1277,6 @@ sub check_clone {
     delete $conf->{template};
     my $state = $class->_state;
     return unless $state->{active} && _limits($state, $pool);
-    my $ucfg = _usercfg();
     return _with_pool_lock($pool, sub {
         $class->_check_guest_locked($pool, $newid, $type, $conf, $state,
             usercfg => $ucfg, vmlist => _vmlist(), running => 0,

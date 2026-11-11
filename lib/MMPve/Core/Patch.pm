@@ -194,12 +194,91 @@ sub _all_targets_with_state {
     return \%all;
 }
 
+sub _owner_versions {
+    my ($class, $ids, $all) = @_;
+    my %owners;
+    $owners{ $all->{$_}{owner} } = 1 for @{$ids};
+    my %versions;
+    for my $owner (sort keys %owners) {
+        my $res = MMPve::Core::Runner->run(
+            ['dpkg-query', '-W', '-f=${Version}', $owner], timeout => 30);
+        my $version = $res->{ok} ? ($res->{out} // '') : '';
+        $version =~ s/\s+//g;
+        $versions{$owner} = length($version) ? $version : 'unknown';
+    }
+    return \%versions;
+}
+
+sub _failure_record {
+    my ($class, $state, $ids, $all, $raw, $source_hashes, $owner_versions,
+        $failed_target, $error) = @_;
+    my %targets;
+    for my $id (@{$ids}) {
+        my $target = $all->{$id};
+        $targets{$id} = {
+            owner => $target->{owner},
+            owner_version => $owner_versions->{ $target->{owner} } // 'unknown',
+            source_hash => $source_hashes->{$id} // sha256_hex($raw->{$id} // ''),
+        };
+    }
+    my $failure = {
+        failed_target => $failed_target,
+        error => $error,
+        target_ids => [ @{$ids} ],
+        targets => \%targets,
+    };
+    for my $id (@{$ids}) {
+        my $target = $all->{$id};
+        $state->{$id} = {
+            source_hash => $targets{$id}{source_hash},
+            owner_version => $targets{$id}{owner_version},
+            previous_failure => 1,
+            failed_target => $failed_target,
+            error => $error,
+            failure => $failure,
+            target => _state_target($target),
+        };
+    }
+    return $failure;
+}
+
+sub _failure_changed {
+    my ($class, $entry, $ids, $all, $source_hashes, $owner_versions) = @_;
+    return 1 unless ref($entry) eq 'HASH' && $entry->{previous_failure};
+    my $failure = $entry->{failure};
+    return 0 unless ref($failure) eq 'HASH';
+    my $recorded = $failure->{targets};
+    return 0 unless ref($recorded) eq 'HASH';
+    for my $id (@{$ids}) {
+        my $target = $all->{$id};
+        my $old = $recorded->{$id};
+        return 1 unless ref($old) eq 'HASH';
+        return 1 if ($old->{source_hash} // '') ne ($source_hashes->{$id} // '');
+        return 1 if ($old->{owner_version} // 'unknown') ne
+            ($owner_versions->{ $target->{owner} } // 'unknown');
+    }
+    return 0;
+}
+
+sub _failure_for_target {
+    my ($entry) = @_;
+    return unless ref($entry) eq 'HASH' && $entry->{previous_failure};
+    return $entry->{failure} if ref($entry->{failure}) eq 'HASH';
+    return {
+        failed_target => $entry->{failed_target},
+        error => $entry->{error},
+        targets => {},
+    };
+}
+
 # ---------------------------------------------------------------- check
 
 sub check {
     my ($class, %opts) = @_;
     my $all = $class->_all_targets_with_state;
     my $state = _patch_state();
+    my %ids = map { $_ => 1 } keys %{$all};
+    my $owner_versions = $class->_owner_versions([ keys %ids ], $all);
     my %res;
     for my $id (sort keys %{$all}) {
         my $target = $all->{$id};
@@ -207,19 +286,32 @@ sub check {
         my $path = root_path($target->{path});
         my $lines = _read_lines($path);
         if (!$lines) {
-            $res{$id} = { status => 'file_missing', owner => $target->{owner} };
+            $res{$id} = { status => 'file_missing', owner => $target->{owner},
+                error => 'owner file is missing' };
             next;
         }
         my $marker = _marker($target);
         my $has_marker = grep { index($_, $marker) >= 0 } @{$lines};
+        my $source_hash = sha256_hex(join('', @{$lines}));
+        my $previous_failure = $state->{$id}{previous_failure}
+            && !$class->_failure_changed($state->{$id}, [ $id ], $all,
+                { $id => $source_hash }, $owner_versions);
+        my $failure = _failure_for_target($state->{$id});
+        my %extra = (
+            owner => $target->{owner},
+            owner_version => $owner_versions->{ $target->{owner} } // 'unknown',
+            source_hash => $source_hash,
+        );
+        $extra{error} = $failure->{error} if $failure && defined($failure->{error});
+        $extra{failed_target} = $failure->{failed_target} if $failure && defined($failure->{failed_target});
+        $extra{failure} = $failure if $failure;
         if (($target->{kind} // '') eq 'index_tpl') {
-            my $has_anchor = grep { $_ =~ $target->{anchor} } @{$lines};
-            my $previous_failure = $state->{$id}{previous_failure}
-                && ($state->{$id}{source_hash} // '') eq sha256_hex(join('', @{$lines}));
+            my $has_anchor = ref($target->{anchor}) eq 'Regexp'
+                && grep { $_ =~ $target->{anchor} } @{$lines};
             $res{$id} = {
                 status => $has_marker ? 'applied' : (!$has_anchor ? 'anchor_missing'
                     : ($previous_failure ? 'previous_failure' : 'not_applied')),
-                owner => $target->{owner},
+                %extra,
             };
         } elsif (($target->{kind} // '') eq 'nodes_pm') {
             my ($has_use, $has_rep) = (0, 0);
@@ -227,24 +319,32 @@ sub check {
                 $has_use = 1 if $line =~ /^\s*use\s+PVE::API2::\w+(?:::\w+)*;/;
                 $has_rep = 1 if $line =~ /subclass\s*=>\s*"PVE::API2::Replication"/;
             }
-            my $previous_failure = $state->{$id}{previous_failure}
-                && ($state->{$id}{source_hash} // '') eq sha256_hex(join('', @{$lines}));
             $res{$id} = {
                 status => $has_marker ? 'applied' : (!( $has_use && $has_rep ) ? 'anchor_missing'
                     : ($previous_failure ? 'previous_failure' : 'not_applied')),
-                owner => $target->{owner},
+                %extra,
             };
         } else {
-            my $has_anchor = defined($class->_anchor_index($target, $lines));
-            my $previous_failure = $state->{$id}{previous_failure}
-                && ($state->{$id}{source_hash} // '') eq sha256_hex(join('', @{$lines}));
+            my $anchor_index = $class->_anchor_index($target, $lines);
+            my $has_anchor = defined($anchor_index);
+            my ($inserted_index) = grep { index($lines->[$_], $marker) >= 0 } 0 .. $#{$lines};
+            $inserted_index = $anchor_index + 1
+                if !defined($inserted_index) && defined($anchor_index);
+            my @declaration_errors = defined($inserted_index)
+                ? $class->static_check_target($target, $lines, $inserted_index) : ();
+            my $status = $has_marker ? 'applied' : (!$has_anchor ? 'anchor_missing'
+                : ($previous_failure ? 'previous_failure' : 'not_applied'));
+            $status = 'declaration_missing' if @declaration_errors;
             $res{$id} = {
-                status => $has_marker ? 'applied' : (!$has_anchor ? 'anchor_missing'
-                    : ($previous_failure ? 'previous_failure' : 'not_applied')),
-                owner => $target->{owner}, module => $target->{module},
+                status => $status,
+                %extra, module => $target->{module},
                 daemons => [ @{ $target->{daemons} // [] } ],
                 processes => [ @{ $target->{processes} // [] } ],
             };
+            if (@declaration_errors) {
+                $res{$id}{declaration_errors} = \@declaration_errors;
+                $res{$id}{error} = join('; ', @declaration_errors);
+            }
         }
     }
     return \%res;
@@ -252,12 +352,12 @@ sub check {
 
 # ---------------------------------------------------------------- content
 
-sub _anchor_index {
+sub _target_scope_bounds {
     my ($class, $target, $lines) = @_;
     my ($start, $end) = (0, $#{$lines});
     if (exists($target->{scope_anchor})) {
         my @scope = grep { $lines->[$_] =~ $target->{scope_anchor} } 0 .. $#{$lines};
-        return undef unless @scope == 1;
+        return unless @scope == 1;
         $start = $scope[0];
         if ($lines->[$start] =~ /^\s*sub\s+[A-Za-z_][A-Za-z0-9_]*\b/) {
             # Plain Perl subs close with an unindented `}` in the PVE sources.
@@ -269,7 +369,7 @@ sub _anchor_index {
                     last;
                 }
             }
-            return undef unless defined($end);
+            return unless defined($end);
         } else {
             for my $i ($start + 1 .. $#{$lines}) {
                 if ($lines->[$i] =~ /^\s*__PACKAGE__->register_method\s*\(/) {
@@ -279,6 +379,14 @@ sub _anchor_index {
             }
         }
     }
+    return ($start, $end);
+}
+
+sub _anchor_index {
+    my ($class, $target, $lines) = @_;
+    return undef unless ref($target->{anchor}) eq 'Regexp';
+    my ($start, $end) = $class->_target_scope_bounds($target, $lines);
+    return undef unless defined($start) && defined($end);
     my $wanted = $target->{occurrence} // 1;
     my $seen = 0;
     for my $i ($start .. $end) {
@@ -287,6 +395,32 @@ sub _anchor_index {
         return $i if $seen == $wanted;
     }
     return undef;
+}
+
+sub static_check_target {
+    my ($class, $target, $lines, $insert_index) = @_;
+    return ('insertion index is missing') unless defined($insert_index);
+    my ($start, $end) = $class->_target_scope_bounds($target, $lines);
+    return ('target scope is missing') unless defined($start) && defined($end)
+        && $insert_index > $start && $insert_index <= $end;
+
+    my $line = $target->{line} // '';
+    my @variables = $line =~ /(?<![A-Za-z0-9_:])([\$\@\%][A-Za-z_][A-Za-z0-9_]*)/g;
+    my %seen;
+    my @errors;
+    for my $variable (grep { $_ ne '\@_' && !$seen{$_}++ } @variables) {
+        my $declared = 0;
+        for my $i ($start .. $insert_index - 1) {
+            my $source = $lines->[$i] // '';
+            if ($source =~ /\b(?:my|our)\b[^;\n]*\Q$variable\E\b/
+                || $source =~ /^\s*sub\b[^\{;\n]*\Q$variable\E\b/) {
+                $declared = 1;
+                last;
+            }
+        }
+        push @errors, "undeclared variable $variable before insertion" unless $declared;
+    }
+    return @errors;
 }
 
 sub _index_insert {
@@ -424,7 +558,10 @@ sub _perl_c {
         ? ($target->{path} // '') =~ m{\A/usr/share/perl5/((?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.pm)\z}
         : ();
     return MMPve::Core::Runner->run(['perl', '-c', $path], timeout => 120) unless defined($rel);
-    return MMPve::Core::Runner->run(['perl', '-e', $STAGED_LOADER, $rel, $path], timeout => 120);
+    my @perl = ('perl');
+    push @perl, '-MMMAutoStub' if $ENV{MM_PVE_ANCHOR_AUTOSTUB};
+    push @perl, '-e', $STAGED_LOADER, $rel, $path;
+    return MMPve::Core::Runner->run(\@perl, timeout => 120);
 }
 
 # Esquece falhas anteriores de patch. Roda na instalação do pacote: código novo
@@ -487,52 +624,113 @@ sub _validate_staged {
 sub _sync_group {
     my ($class, $module, $ids, $all, $want_on, %opts) = @_;
     my $state = _patch_state();
-    my (%out, %raw, %desired, %backup, %staged, %path_raw, %path_desired, @changed);
+    my (%out, %raw, %desired, %backup, %staged, %path_raw, %path_desired,
+        %source_hashes, @changed);
     my $group = { module => $module, enabled => $want_on ? 1 : 0, target_ids => [ @{$ids} ],
         targets => \%out, changed => 0, daemons => [], processes => [], ok => 1 };
     my (%daemons, %processes);
+
+    my $owner_versions = $class->_owner_versions($ids, $all);
+    my ($failed_target, $failure_error);
     for my $id (@{$ids}) {
         my $target = $all->{$id}; my $path = root_path($target->{path});
         my $raw_now = eval { read_file($path) };
-        if ($@) { $out{$id} = { status => 'file_missing', owner => $target->{owner}, module => $module };
-            $group->{ok} = 0 if $want_on; next; }
+        if ($@) {
+            $out{$id} = { status => 'file_missing', owner => $target->{owner}, module => $module };
+            if ($want_on) {
+                $group->{ok} = 0;
+                $failed_target //= $id;
+                $failure_error //= 'owner file is missing';
+            }
+            next;
+        }
         $path_raw{$path} //= $raw_now;
         $raw{$id} = $raw_now;
-        my $working = exists($path_desired{$path}) ? $path_desired{$path} : $raw_now;
+        $source_hashes{$id} = sha256_hex($raw_now);
+    }
+
+    if ($want_on) {
+        my ($blocked, $changed) = (0, 0);
+        for my $id (@{$ids}) {
+            next unless $state->{$id} && $state->{$id}{previous_failure};
+            $blocked = 1;
+            $changed = 1 if $class->_failure_changed($state->{$id}, $ids, $all,
+                \%source_hashes, $owner_versions);
+        }
+        if ($blocked && !$changed) {
+            my $entry = (grep { $state->{$_} && $state->{$_}{previous_failure} } @{$ids})[0];
+            my $failure = _failure_for_target($state->{$entry});
+            my $error = $failure ? $failure->{error} : 'previous patch failure';
+            $out{$_} = {
+                status => 'previous_failure', error => $error,
+                failed_target => $failure ? $failure->{failed_target} : undef,
+                owner => $all->{$_}{owner}, module => $module,
+                failure => $failure,
+            } for @{$ids};
+            $group->{ok} = 0;
+            $group->{error} = $error;
+            $group->{failed_target} = $failure ? $failure->{failed_target} : $entry;
+            $group->{failure} = $failure if $failure;
+            return $group;
+        }
+        if ($changed) {
+            delete $state->{$_}
+                for grep { $state->{$_} && $state->{$_}{previous_failure} } @{$ids};
+        }
+    }
+
+    for my $id (@{$ids}) {
+        my $target = $all->{$id}; my $path = root_path($target->{path});
+        next unless exists $raw{$id};
+        my $working = exists($path_desired{$path}) ? $path_desired{$path} : $raw{$id};
         if ($want_on) {
-            my $source_hash = sha256_hex($path_raw{$path});
-            if ($state->{$id} && ($state->{$id}{source_hash} // '') eq $source_hash && $state->{$id}{previous_failure}) {
-                $out{$id} = { status => 'previous_failure', error => $state->{$id}{error} };
-                $group->{ok} = 0; next;
-            }
             my $want = $class->_desired_content($target, $working);
             if (!$want->{ok}) {
                 $out{$id} = { status => $want->{status}, note => $want->{note}, owner => $target->{owner} };
-                $state->{$id} = { source_hash => $source_hash, previous_failure => 1, error => $want->{note}, target => _state_target($target) }
-                    if ($want->{status} // '') eq 'anchor_missing';
-                $group->{ok} = 0; next;
+                if (($want->{status} // '') eq 'anchor_missing') {
+                    $group->{ok} = 0;
+                    $failed_target //= $id;
+                    $failure_error //= $want->{note};
+                }
+                next;
             }
             $desired{$id} = $want->{content};
             $path_desired{$path} = $desired{$id};
             if ($desired{$id} eq $working) { $out{$id} = { status => 'version_current', changed => 0, owner => $target->{owner} };
                 delete $state->{$id} if $state->{$id} && $state->{$id}{previous_failure}; next; }
             my $bak = $class->_backup_for($target, $path_raw{$path}, $path);
-            if (!$bak) { $out{$id} = { status => 'failed', error => "backup: $!", owner => $target->{owner} };
-                $group->{ok} = 0; next; }
+            if (!$bak) {
+                my $error = "backup: $!";
+                $out{$id} = { status => 'failed', error => $error, owner => $target->{owner} };
+                $group->{ok} = 0; $failed_target //= $id; $failure_error //= $error; next;
+            }
             $backup{$id} = $bak;
         } else {
             my $rev = $class->_revert_content($target, $working); $desired{$id} = $rev->{content};
             $path_desired{$path} = $desired{$id};
             if (!$rev->{changed}) { $out{$id} = { status => 'not_applied', changed => 0, owner => $target->{owner} }; next; }
             my $bak = $class->_transaction_backup($target, $path);
-            if (!$bak) { $out{$id} = { status => 'failed', error => "backup de rollback: $!", owner => $target->{owner} };
-                $group->{ok} = 0; next; }
+            if (!$bak) {
+                my $error = "rollback backup: $!";
+                $out{$id} = { status => 'failed', error => $error, owner => $target->{owner} };
+                $group->{ok} = 0; $failed_target //= $id; $failure_error //= $error; next;
+            }
             $backup{$id} = $bak;
         }
         push @changed, $id; $daemons{$_} = 1 for @{ $target->{daemons} // [] };
         $processes{$_} = 1 for @{ $target->{processes} // [] };
     }
-    if (!$group->{ok}) { $class->_save_patch_state($state) if $want_on; return $group; }
+    if (!$group->{ok}) {
+        if ($want_on) {
+            $group->{failure} = $class->_failure_record($state, $ids, $all, \%raw,
+                \%source_hashes, $owner_versions, $failed_target // $ids->[0],
+                $failure_error // $group->{error} // 'patch group failed');
+            $group->{failed_target} = $failed_target // $ids->[0];
+            $group->{error} = $failure_error // $group->{error} // 'patch group failed';
+            $class->_save_patch_state($state);
+        }
+        return $group;
+    }
 
     my $transaction_error;
     my %changed_paths;
@@ -564,13 +762,21 @@ sub _sync_group {
         $out{$_} = { status => 'failed', error => $error, restored => @rollback_errors ? 0 : 1 } for @changed;
         $group->{ok} = 0; $group->{error} = $error;
         log_line('patch apply: transação do grupo ' . $module . ' revertida: ' . $error);
-        $state->{$_} = { source_hash => sha256_hex($raw{$_}), previous_failure => 1, error => $error, target => _state_target($all->{$_}) } for @changed;
+        $group->{failure} = $class->_failure_record($state, $ids, $all, \%raw,
+            \%source_hashes, $owner_versions, $changed[0], $error);
+        $group->{failed_target} = $changed[0];
         $class->_save_patch_state($state); return $group;
     }
     for my $id (@changed) {
         my $target = $all->{$id}; $out{$id} = { status => $want_on ? 'applied' : 'reverted', changed => 1,
             owner => $target->{owner}, module => $module, backup => $backup{$id} };
-        if ($want_on) { $state->{$id} = { source_hash => sha256_hex($raw{$id}), applied => 1, target => _state_target($target) }; }
+        if ($want_on) {
+            $state->{$id} = {
+                source_hash => $source_hashes{$id},
+                owner_version => $owner_versions->{ $target->{owner} } // 'unknown',
+                applied => 1, target => _state_target($target),
+            };
+        }
         else { delete $state->{$id}; }
     }
     $class->_save_patch_state($state); $group->{changed} = @changed ? 1 : 0;
@@ -580,7 +786,12 @@ sub _sync_group {
         if (!$reload->{ok}) {
             my $rev = $class->_sync_group($module, $ids, $all, 0, %opts, no_restart => 1);
             $group->{reverted} = $rev->{changed}; $group->{recovery_reload} = $class->_restart_and_verify($group->{daemons});
-            $group->{ok} = 0; $group->{error} = 'daemon não voltou ativo após reload; patch do módulo revertido';
+            $group->{ok} = 0; $group->{error} = 'daemon did not become active after reload; module patch reverted';
+            my $reload_state = _patch_state();
+            $group->{failure} = $class->_failure_record($reload_state, $ids, $all, \%raw,
+                \%source_hashes, $owner_versions, $changed[0], $group->{error});
+            $group->{failed_target} = $changed[0];
+            $class->_save_patch_state($reload_state);
         }
     }
     return $group;

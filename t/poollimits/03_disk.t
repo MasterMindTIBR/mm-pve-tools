@@ -288,6 +288,19 @@ subtest 'write_config e entrada no pool contam disco' => sub {
         );
         1;
     }, 'preflight create com pool recusa disco antes de entrar') or diag $@;
+    {
+        no warnings 'redefine';
+        local *PVE::MMTools::PoolLimits::_restore_qemu_conf = sub {
+            return { scsi0 => 'local:5G', vcpus => 1, memory => 128 };
+        };
+        ok(!eval {
+            PVE::MMTools::PoolLimits->check_qemu_create(
+                {}, { volid => 'local:backup/vzdump-qemu-304.vma' },
+                $PVE::MMTools::PoolLimits::TEST_STORAGE_CFG, 304, 'lab',
+            );
+            1;
+        }, 'preflight restore com pool recusa disco antes de entrar') or diag $@;
+    }
     ok(!eval {
         PVE::MMTools::PoolLimits->check_clone(302, 'lab', {
             vcpus => 1, memory => 128, scsi0 => 'local:5G',

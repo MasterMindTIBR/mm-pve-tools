@@ -212,7 +212,7 @@ __PACKAGE__->register_method({
     method => 'GET',
     proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Diagnóstico do node: versões, patches, revisão aplicada, ntfs3g.',
+    description => 'Node diagnostics: versions, patches, honest apply state, ntfs3g.',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -227,8 +227,13 @@ __PACKAGE__->register_method({
         my $rpcenv = PVE::RPCEnvironment->get();
         my $authuser = $rpcenv->get_user();
         my ($cfg) = MMPve::Core::Config->load;
-        return MMPve::Core::Status->collect(skip_ntfs3g => 0, config => $cfg,
+        my $status = MMPve::Core::Status->collect(skip_ntfs3g => 0, config => $cfg,
             authuser => $authuser);
+        $status->{status} = $status->{applied}{state}
+            if ref($status->{applied}) eq 'HASH';
+        $status->{failures} = $status->{applied}{failures}
+            if ref($status->{applied}) eq 'HASH';
+        return $status;
     },
 });
 

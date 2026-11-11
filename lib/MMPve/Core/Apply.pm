@@ -128,8 +128,32 @@ sub status {
     } if $@ || !$state;
 
     my $st = 'applied';
-    if (defined $rev_cfg && ($state->{revision} // 0) < $rev_cfg) {
-        $st = 'pending';
+    my $last_apply_failed = exists($state->{ok}) && !$state->{ok};
+    my @failures;
+    my %failed_targets;
+    my $patches = MMPve::Core::Patch->check;
+    my $patches_were_requested = ref($state->{patches}) eq 'HASH';
+    my $enabled = sub {
+        my ($module) = @_;
+        return 1 unless defined($module) && length($module) && $module ne '__core__';
+        (my $name = $module) =~ s/^MMPve::Module:://;
+        return (($cfg && ref($cfg->[0]{modules}) eq 'HASH')
+            && $cfg->[0]{modules}{lc($name)}) ? 1 : 0;
+    };
+    for my $target (sort keys %{$patches}) {
+        next unless $patches_were_requested;
+        my $item = $patches->{$target} || {};
+        next unless $enabled->($item->{module});
+        next if ($item->{status} // '') eq 'applied';
+        my $error = $item->{error} // $item->{note};
+        push @failures, {
+            target => $target,
+            status => $item->{status},
+            error => $error,
+            failed_target => $item->{failed_target},
+            failure => $item->{failure},
+        };
+        $failed_targets{$target} = 1;
     }
     my %mods;
     for my $n (sort keys %{ $state->{modules} // {} }) {
@@ -141,14 +165,32 @@ sub status {
             changed => $m->{changed},
             ts => $m->{ts},
         };
-        $st = 'error' if !$m->{ok};
+        if (!$m->{ok}) {
+            push @failures, { module => $n, error => $m->{error}, status => 'apply_failed' };
+        }
     }
+    if ($last_apply_failed || grep { !$_->{ok} } values %{ $state->{modules} // {} }) {
+        $st = 'error';
+    } elsif (defined $rev_cfg && ($state->{revision} // 0) < $rev_cfg) {
+        $st = 'pending';
+    } elsif (@failures) {
+        $st = 'partial';
+    }
+    my @failed = sort keys %failed_targets;
+    for my $failure (@failures) {
+        push @failed, $failure->{target} if defined($failure->{target});
+    }
+    my %seen;
+    @failed = sort grep { !$seen{$_}++ } @failed;
     return {
         config_revision => $rev_cfg,
         applied_revision => $state->{revision},
         state => $st,
+        last_apply_ok => $last_apply_failed ? 0 : 1,
         modules => \%mods,
-        patches => MMPve::Core::Patch->check,
+        patches => $patches,
+        failures => \@failures,
+        failed_targets => \@failed,
         finished => $state->{finished},
     };
 }

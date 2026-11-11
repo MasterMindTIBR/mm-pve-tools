@@ -59,16 +59,13 @@ lint:
 build:
 	./scripts/build-deb.sh
 
-# Valida o fixture upstream e os alvos de módulo contra pacotes reais fixados
-# e mais recentes: cada owner é combinado em um root temporário e aplicado,
-# conferido e revertido pelo fixture de teste.
+# Valida o fixture upstream e cada set da matriz de owners contra pacotes reais:
+# apply, static module checks, module call checks, apply/revert e anchors da UI.
 check-anchors: js
 	@set -e; \
 	fixture_root=$$(mktemp -d); \
-	pinned_root=$$(mktemp -d); \
-	owned_newest=; \
-	newest_root='$(NEWEST_PVE_ROOT)'; \
-	cleanup() { rm -rf -- "$$fixture_root" "$$pinned_root"; if [ -n "$$owned_newest" ]; then rm -rf -- "$$owned_newest"; fi; }; \
+	matrix='ci/pve-anchor-matrix'; roots=(); \
+	cleanup() { rm -rf -- "$$fixture_root" "$${roots[@]}"; }; \
 	trap cleanup EXIT HUP INT TERM; \
 	mkdir -p "$$fixture_root/usr/share/pve-manager" "$$fixture_root/usr/share/perl5/PVE/API2"; \
 	cp t/fixtures/pve-manager/index.html.tpl "$$fixture_root/usr/share/pve-manager/"; \
@@ -80,42 +77,42 @@ check-anchors: js
 	if [ $$rc -eq 0 ]; then echo "ÂNCORAS PVE MANAGER OK (aplicou e verificou no fixture upstream)"; \
 	elif [ $$rc -eq 4 ]; then echo "ÂNCORA QUEBROU no upstream"; exit 1; \
 	else exit 1; fi; \
-	scripts/fetch-pve-debs.sh "$$pinned_root" \
-		pve-manager=$$(cat ci/pve-manager.version) \
-		libpve-guest-common-perl=$(call pve_package_version,libpve-guest-common-perl) \
-		libpve-access-control=$(call pve_package_version,libpve-access-control) \
-		libpve-storage-perl=$(call pve_package_version,libpve-storage-perl) \
-		qemu-server=$(call pve_package_version,qemu-server) \
-		pve-container=$(call pve_package_version,pve-container) \
-		proxmox-widget-toolkit=$(call pve_package_version,proxmox-widget-toolkit); \
-	if [ -z "$$newest_root" ]; then owned_newest=$$(mktemp -d); newest_root="$$owned_newest"; \
-		scripts/fetch-pve-debs.sh "$$newest_root" pve-manager=latest \
-			libpve-guest-common-perl=latest libpve-access-control=latest libpve-storage-perl=latest \
-			qemu-server=latest pve-container=latest \
-			proxmox-widget-toolkit=latest; \
-	fi; \
-	for bundle in "$$pinned_root" "$$newest_root"; do \
-		perl $(PERL_INC) lib/mm-pve-tools/apply-patches --no-restart --root "$$bundle/x/pve-manager"; \
-		perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c \
-			"$$bundle/x/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"; \
-		grep -R -q "Ext.define('PMX.image.LogoSVG'" "$$bundle/x/proxmox-widget-toolkit"; \
-		grep -R -q 'proxmox_logo.svg' "$$bundle/x/proxmox-widget-toolkit"; \
-		combined=$$(mktemp -d); \
-		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl qemu-server pve-container; do \
-			cp -a "$$bundle/x/$$package/." "$$combined/"; \
-		done; \
-		MM_PVE_UPSTREAM_ROOT="$$bundle/x" $(PROVE) t/poollimits/02_patch_calls.t; \
-		perl -Ilib -Iperl -It/lib t/anchors/module-patches-check.pl "$$combined"; \
-		rm -rf -- "$$combined"; \
-	done; \
 	grep -Fq "MM.Ui" build/mm-tools.js; \
 	grep -Fq "MM.PoolLimits" build/mm-tools.js; \
 	grep -Fq "MM.panel.Updates" build/mm-tools.js; \
 	grep -Fq "checked_command" build/mm-tools.js; \
-	scripts/check-ui-bundles.sh "$$pinned_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
-		"$$pinned_root/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js" \
-		"$$newest_root/x/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" \
-		"$$newest_root/x/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
+	pinned_root=$$(mktemp -d); roots+=("$$pinned_root"); \
+	pinned_specs="pve-manager=$$(cat ci/pve-manager.version) $$(awk -F= '/^[a-z0-9]/{print $$1 "=" $$2}' ci/pve-package-versions | grep -E '^(libpve-guest-common-perl|libpve-access-control|libpve-storage-perl|qemu-server|pve-container|proxmox-widget-toolkit)=')"; \
+	check_bundle() { \
+		label=$$1; root=$$2; bundle="$$root/x"; combined=$$(mktemp -d); \
+		if ! apply_out=$$(perl $(PERL_INC) lib/mm-pve-tools/apply-patches --json --no-restart --root "$$bundle/pve-manager" 2>&1); then \
+			echo "ANCHOR SET=$$label target=__core__ reason=apply-patches command failed" >&2; echo "$$apply_out" >&2; return 1; fi; \
+		if ! printf '%s' "$$apply_out" | perl -MJSON::PP -0777 -ne 'my $$d=decode_json($$_); for my $$id (keys %{$$d->{targets}||{}}) { my $$s=$$d->{targets}{$$id}{status}||""; die "$$id: $$s\n" unless $$s eq "applied" || $$s eq "version_current"; }'; then \
+			echo "ANCHOR SET=$$label target=__core__ reason=apply-patches target failed" >&2; echo "$$apply_out" >&2; return 1; fi; \
+		if ! perl -Ilib -Iperl -It/lib-stubs -It/lib-autostub -MMMAutoStub -c "$$bundle/pve-manager/usr/share/perl5/PVE/API2/Nodes.pm"; then \
+			echo "ANCHOR SET=$$label target=nodes_pm reason=staged compile failed" >&2; return 1; fi; \
+		if grep -R -q "Ext.define('PMX.image.LogoSVG'" "$$bundle/proxmox-widget-toolkit" \
+			&& grep -R -q 'proxmox_logo.svg' "$$bundle/proxmox-widget-toolkit"; then :; \
+		elif [ "$$label" = oldest ]; then \
+			echo "ANCHOR SET=$$label target=branding_logo WARNING: no PMX.image.LogoSVG in this toolkit; the branding logo is not replaced on this version" >&2; \
+		else echo "ANCHOR SET=$$label target=branding_logo reason=LogoSVG/logo asset anchor missing" >&2; return 1; fi; \
+		for package in pve-manager libpve-guest-common-perl libpve-access-control libpve-storage-perl qemu-server pve-container; do cp -a "$$bundle/$$package/." "$$combined/"; done; \
+		if ! MM_PVE_UPSTREAM_ROOT="$$bundle" $(PROVE) t/poollimits/02_patch_calls.t; then \
+			echo "ANCHOR SET=$$label target=poollimits reason=02_patch_calls.t failed" >&2; return 1; fi; \
+		if ! MM_PVE_ANCHOR_SET="$$label" PERL5LIB="$$PWD/lib:$$PWD/perl:$$PWD/t/lib-stubs:$$PWD/t/lib-autostub:$$combined/usr/share/perl5" perl -Ilib -Iperl -It/lib t/anchors/module-patches-check.pl "$$combined"; then \
+			echo "ANCHOR SET=$$label target=poollimits reason=module staged compile/apply/revert failed" >&2; return 1; fi; \
+		if ! scripts/check-ui-bundles.sh "$$bundle/pve-manager/usr/share/pve-manager/js/pvemanagerlib.js" "$$bundle/proxmox-widget-toolkit/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"; then \
+			echo "ANCHOR SET=$$label target=ui_bundle reason=UI anchors failed" >&2; return 1; fi; \
+		rm -rf -- "$$combined"; echo "ANCHOR SET=$$label OK"; \
+	}; \
+	if ! scripts/fetch-pve-debs.sh "$$pinned_root" $$pinned_specs; then echo 'ANCHOR SET=pinned target=packages reason=fetch failed' >&2; exit 1; fi; \
+	check_bundle pinned "$$pinned_root"; \
+	while read -r label specs; do \
+		case "$$label" in ''|\#*) continue;; esac; \
+		root=$$(mktemp -d); roots+=("$$root"); \
+		if ! scripts/fetch-pve-debs.sh "$$root" $$specs; then echo "ANCHOR SET=$$label target=packages reason=fetch failed" >&2; exit 1; fi; \
+		check_bundle "$$label" "$$root"; \
+	done < "$$matrix"
 
 clean:
 	rm -rf build

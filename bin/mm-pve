@@ -176,6 +176,12 @@ sub cmd_status {
         print "pve:             $s->{pve_version}\n";
         my $ap = $s->{applied};
         print "estado:          $ap->{state} (aplicada r" . ($ap->{applied_revision} // '-') . ', config r' . ($ap->{config_revision} // '-') . ")\n";
+        for my $failure (@{ $ap->{failures} // [] }) {
+            my $target = $failure->{target} // $failure->{module} // 'apply';
+            my $error = $failure->{error} // 'unknown failure';
+            $error =~ s/[\r\n]+/ /g;
+            print "failure $target: $error\n";
+        }
         my $pc = $ap->{patches} // {};
         for my $target (sort keys %{$pc}) {
             my $p = $pc->{$target} // {};
@@ -200,7 +206,12 @@ sub cmd_patch {
     if ($sub eq 'check') {
         my $c = MMPve::Core::Patch->check;
         out_json($c) if $JSON;
-        for my $k (sort keys %{$c}) { print "$k: $c->{$k}{status}\n" unless $JSON }
+        for my $k (sort keys %{$c}) {
+            next if $JSON;
+            my $error = $c->{$k}{error};
+            $error =~ s/[\r\n]+/ /g if defined($error);
+            print "$k: $c->{$k}{status}" . (defined($error) ? " ($error)" : '') . "\n";
+        }
         return 0;
     }
     if ($sub eq 'apply') {

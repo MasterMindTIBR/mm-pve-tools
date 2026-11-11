@@ -1,0 +1,7 @@
+# Anchor proof sets. The pinned set is assembled from ci/pve-package-versions
+# and ci/pve-manager.version; all other sets list owner package selectors.
+# Selectors are exact versions, oldest, or newest (latest in the mirror).
+pve-9.2.20 pve-manager=9.2.20 libpve-guest-common-perl=6.0.5 libpve-access-control=9.1.2 libpve-storage-perl=9.1.10 qemu-server=9.2.8 pve-container=6.1.14 proxmox-widget-toolkit=5.2.10
+pve-9.2.21 pve-manager=9.2.21 libpve-guest-common-perl=6.0.5 libpve-access-control=9.1.2 libpve-storage-perl=9.1.13 qemu-server=9.2.11 pve-container=6.1.14 proxmox-widget-toolkit=5.2.10
+oldest pve-manager=oldest libpve-guest-common-perl=oldest libpve-access-control=oldest libpve-storage-perl=oldest qemu-server=oldest pve-container=oldest proxmox-widget-toolkit=oldest
+newest pve-manager=latest libpve-guest-common-perl=latest libpve-access-control=latest libpve-storage-perl=latest qemu-server=latest pve-container=latest proxmox-widget-toolkit=latest

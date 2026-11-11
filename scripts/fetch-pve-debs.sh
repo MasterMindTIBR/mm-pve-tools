@@ -3,7 +3,7 @@
 # com a mesma verificação do apt, para os jobs do CI que precisam de arquivos
 # reais do PVE.
 #
-#   scripts/fetch-pve-debs.sh DIR PACOTE=VERSÃO|PACOTE=latest...
+#   scripts/fetch-pve-debs.sh DIR PACOTE=VERSÃO|PACOTE=latest|PACOTE=oldest...
 #
 # O espelho é acessado por HTTP, como no sources.list da documentação do PVE:
 # a confiança vem da assinatura do InRelease (chave conferida pelo sha256),
@@ -34,7 +34,7 @@ fetch() {
 dir=$1
 shift
 for spec in "$@"; do
-    [[ $spec =~ ^[a-z0-9][a-z0-9.+-]*=[A-Za-z0-9.+:~-]+$ ]] || die "pacote inválido: $spec"
+    [[ $spec =~ ^[a-z0-9][a-z0-9.+-]*=(oldest|latest|[A-Za-z0-9.+:~-]+)$ ]] || die "pacote inválido: $spec"
 done
 
 mkdir -p "$dir/meta" "$dir/debs" "$dir/x"
@@ -86,13 +86,18 @@ for stanza in re.split(r"\n\s*\n", data.decode("utf-8")):
     package = fields.get("Package")
     if package not in wanted or not {"Version", "Filename", "SHA256"} <= fields.keys():
         continue
-    if wanted[package] != "latest":
+    if wanted[package] not in ("latest", "oldest"):
         if fields["Version"] == wanted[package]:
             chosen[package] = fields
         continue
+    # "oldest" is the oldest stable release: pre-releases (a "~" in the
+    # version, e.g. 9.0.0~8) never satisfy the package Depends (>= 9.0).
+    if wanted[package] == "oldest" and "~" in fields["Version"]:
+        continue
     current = chosen.get(package)
+    relation = "gt" if wanted[package] == "latest" else "lt"
     if current is None or subprocess.run(
-        ["dpkg", "--compare-versions", fields["Version"], "gt", current["Version"]],
+        ["dpkg", "--compare-versions", fields["Version"], relation, current["Version"]],
         check=False,
     ).returncode == 0:
         chosen[package] = fields

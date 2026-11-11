@@ -3,7 +3,7 @@
 # nunca é inserido nos bundles upstream; estes arquivos são somente leitura.
 set -u
 
-[ "$#" -eq 4 ] || { echo "uso: $0 PINNED_PVE PINNED_PWT NEWEST_PVE NEWEST_PWT" >&2; exit 2; }
+[ "$#" -eq 2 ] || [ "$#" -eq 4 ] || { echo "uso: $0 PVE PWT [NEWEST_PVE NEWEST_PWT]" >&2; exit 2; }
 
 check_bundle() {
     path=$1
@@ -21,16 +21,19 @@ check_bundle() {
 }
 
 rc=0
-check_bundle "$1" 'pinned pve-manager' \
-    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton \
-    "Ext.define('PVE.pool.Config'" "alias: 'widget.pvePoolConfig'" || rc=1
-check_bundle "$2" 'pinned proxmoxlib' \
-    checked_command 'No valid subscription' || rc=1
-check_bundle "$3" 'newest pve-manager' \
-    defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton \
-    "Ext.define('PVE.pool.Config'" "alias: 'widget.pvePoolConfig'" || rc=1
-check_bundle "$4" 'newest proxmoxlib' \
-    checked_command 'No valid subscription' || rc=1
+check_pair() { # check_pair PVE PWT LABEL
+    check_bundle "$1" "$3 pve-manager" \
+        defaultViewer openDefaultConsoleWindow openConsoleWindow pveNoVncConsole pveConsoleButton \
+        "Ext.define('PVE.pool.Config'" "alias: 'widget.pvePoolConfig'" || rc=1
+    check_bundle "$2" "$3 proxmoxlib" \
+        checked_command 'No valid subscription' || rc=1
+}
+if [ "$#" -eq 2 ]; then
+    check_pair "$1" "$2" bundle
+else
+    check_pair "$1" "$2" pinned
+    check_pair "$3" "$4" newest
+fi
 
 [ "$rc" -eq 0 ] || exit 1
-echo 'UI bundle anchors: pinned + newest OK'
+echo 'UI bundle anchors OK'

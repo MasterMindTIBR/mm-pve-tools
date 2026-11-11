@@ -117,29 +117,41 @@ my ($class, $vmid, $conf, $phase, $param, $archive, $storecfg, $pool, $newid,
     $snapshot, $base_snapshot, $with_snapshots, $allow_rename, $running);
 my %vars = (
     abstract_config_write => [check_write_config => [\$class, \$vmid, \$conf],
-        sub { ($class, $vmid, $conf) = ('PVE::QemuConfig', 101, { vcpus => 2 }) }],
+        sub { ($class, $vmid, $conf) = ('PVE::QemuConfig', 101, { vcpus => 2 }) },
+        'my ($class, $vmid, $conf) = @_;'],
     guest_helpers_start => [check_start => [\$conf, \$vmid, \$phase],
-        sub { ($conf, $vmid, $phase) = ({ vcpus => 2 }, 101, 'pre-start') }],
+        sub { ($conf, $vmid, $phase) = ({ vcpus => 2 }, 101, 'pre-start') },
+        'my ($conf, $vmid, $phase) = @_;'],
     access_control_pool => [check_pool_entry => [\$vmid, \$pool],
-        sub { ($vmid, $pool) = (101, 'lab') }],
+        sub { ($vmid, $pool) = (101, 'lab') },
+        'my ($vmid, $pool) = @_;'],
     qemu_create_pool => [check_qemu_create => [\$param, \$archive, \$storecfg, \$vmid, \$pool],
-        sub { ($param, $archive, $storecfg, $vmid, $pool) = ({ vcpus => 2 }, { type => 'file' }, { ids => {} }, 101, 'lab') }],
+        sub { ($param, $archive, $storecfg, $vmid, $pool) = ({ vcpus => 2 }, { type => 'file' }, { ids => {} }, 101, 'lab') },
+        'my ($param, $archive, $storecfg, $vmid, $pool) = @_;'],
     qemu_clone_pool => [check_clone => [\$newid, \$pool, \$oldconf, \$qemu_type],
-        sub { ($newid, $pool, $oldconf, $qemu_type) = (102, 'lab', { vcpus => 2 }, 'qemu') }],
+        sub { ($newid, $pool, $oldconf, $qemu_type) = (102, 'lab', { vcpus => 2 }, 'qemu') },
+        'my ($newid, $pool, $oldconf, $qemu_type) = @_;'],
     lxc_create_pool => [check_lxc_create => [\$param, \$archive, \$storage_cfg, \$vmid, \$pool],
-        sub { ($param, $archive, $storage_cfg, $vmid, $pool) = ({ cores => 2 }, 'backup.tar', { ids => {} }, 201, 'lab') }],
+        sub { ($param, $archive, $storage_cfg, $vmid, $pool) = ({ cores => 2 }, 'backup.tar', { ids => {} }, 201, 'lab') },
+        'my ($param, $archive, $storage_cfg, $vmid, $pool) = @_;'],
     lxc_clone_pool => [check_clone => [\$newid, \$pool, \$src_conf, \$lxc_type, \$snapname],
-        sub { ($newid, $pool, $src_conf, $lxc_type, $snapname) = (202, 'lab', { cores => 2 }, 'lxc', 'snap0') }],
+        sub { ($newid, $pool, $src_conf, $lxc_type, $snapname) = (202, 'lab', { cores => 2 }, 'lxc', 'snap0') },
+        'my ($newid, $pool, $src_conf, $lxc_type, $snapname) = @_;'],
     pool_update => [check_pool_update => [\$param, \$usercfg],
-        sub { ($param, $usercfg) = ({ poolid => 'lab', vms => '101' }, { pools => {} }) }],
+        sub { ($param, $usercfg) = ({ poolid => 'lab', vms => '101' }, { pools => {} }) },
+        'my ($param, $usercfg) = @_;'],
     storage_vdisk_alloc => [check_storage_alloc => [\$cfg, \$storeid, \$vmid, \$fmt, \$name, \$size],
-        sub { ($cfg, $storeid, $vmid, $fmt, $name, $size) = ({ ids => {} }, 'local', 101, 'raw', 'vm-101-disk-0', 1024) }],
+        sub { ($cfg, $storeid, $vmid, $fmt, $name, $size) = ({ ids => {} }, 'local', 101, 'raw', 'vm-101-disk-0', 1024) },
+        'my ($cfg, $storeid, $vmid, $fmt, $name, $size) = @_;'],
     storage_vdisk_clone => [check_storage_clone => [\$cfg, \$volid, \$vmid, \$snap],
-        sub { ($cfg, $volid, $vmid, $snap) = ({ ids => {} }, 'local:vm-101-disk-0', 101, undef) }],
+        sub { ($cfg, $volid, $vmid, $snap) = ({ ids => {} }, 'local:vm-101-disk-0', 101, undef) },
+        'my ($cfg, $volid, $vmid, $snap) = @_;'],
     storage_volume_resize => [check_storage_resize => [\$cfg, \$volid, \$size, \$running, \$snapname],
-        sub { ($cfg, $volid, $size, $running, $snapname) = ({ ids => {} }, 'local:vm-101-disk-0', 2147483648, 0, undef) }],
+        sub { ($cfg, $volid, $size, $running, $snapname) = ({ ids => {} }, 'local:vm-101-disk-0', 2147483648, 0, undef) },
+        'my ($cfg, $volid, $size, $running, $snapname) = @_;'],
     storage_volume_import => [check_storage_import => [\$cfg, \$fh, \$volid, \$format, \$snapshot, \$base_snapshot, \$with_snapshots, \$allow_rename],
-        sub { ($cfg, $fh, $volid, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename) = ({ ids => {} }, {}, 'local:vm-101-disk-0', 'raw', undef, undef, 0, 0) }],
+        sub { ($cfg, $fh, $volid, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename) = ({ ids => {} }, {}, 'local:vm-101-disk-0', 'raw', undef, undef, 0, 0) },
+        'my ($cfg, $fh, $volid, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename) = @_;'],
 );
 
 for my $target (@{MMPve::Module::Poollimits->patch_targets}) {
@@ -155,11 +167,14 @@ for my $target (@{MMPve::Module::Poollimits->patch_targets}) {
     ok(defined($line), "$target->{id}: linha inserida é a linha real") or next;
     ($line) = $line =~ /\A([ \t]*\Q$target->{line}\E\n)\z/;
     ok(defined($line), "$target->{id}: linha real validada para perl -T") or next;
-    my ($method, $expected, $init) = @{ $vars{$target->{id}} };
+    my ($method, $expected, $init, $unpack) = @{ $vars{$target->{id}} };
     $init->();
     @PVE::MMTools::PoolLimits::CALLS = ();
-    my $ok = eval "no strict; $line";
-    ok($ok && !$@, "$target->{id}: sintaxe exata executa") or diag $@;
+    my @args = map { ${$_} } @{$expected};
+    my $runner = eval "sub { no strict; $unpack\n$line }";
+    ok($runner && !$@, "$target->{id}: linha compila com a assinatura upstream") or diag $@;
+    my $ok = eval { $runner->(@args); 1 };
+    ok($ok && !$@, "$target->{id}: chamada com os argumentos originais executa") or diag $@;
     is(scalar(@PVE::MMTools::PoolLimits::CALLS), 1, "$target->{id}: uma chamada") or next;
     my $call = $PVE::MMTools::PoolLimits::CALLS[0];
     is($call->[0], $method, "$target->{id}: método correto");
