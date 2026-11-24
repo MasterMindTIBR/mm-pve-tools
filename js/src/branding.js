@@ -233,6 +233,7 @@ Ext.define('MM.panel.Branding', {
 
 	me.reload = function () {
 	    MM.Api.request({
+		owner: me,
 		method: 'GET',
 		url: '/nodes/localhost/mm-tools/branding',
 		success: (res) => {

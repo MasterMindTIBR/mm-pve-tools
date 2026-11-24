@@ -276,6 +276,7 @@ Ext.define('MM.panel.PoolLimits', {
 	};
 	me.reload = function () {
 	    MM.Api.request({
+		owner: me,
 		url: MM.PoolLimits.path(me.pool),
 		success: (res) => me.renderData(res.data || {}),
 		failure: (msg) => { warning.setVisible(true); warning.setValue(`⚠ ${msg}`); },

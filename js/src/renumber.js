@@ -60,6 +60,7 @@ Ext.define('MM.panel.Vmid', {
 
 	me.reload = function () {
 	    MM.Api.request({
+		owner: me,
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
 		    let data = res.data || {};

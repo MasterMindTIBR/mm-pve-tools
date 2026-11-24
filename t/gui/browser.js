@@ -400,12 +400,15 @@ async function main() {
             };
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();
-            while (panel.getStore().getCount() < 2) {
+            // Espera a grade e o status de cada node: a linha aparece antes
+            // da resposta do status chegar.
+            let find = (node) => panel.getStore().findRecord('node', node, 0, false, true, true);
+            while (panel.getStore().getCount() < 2 || find('localhost')?.get('reboot_suggested') !== true) {
                 if (Date.now() - started > assertionTimeout) { throw new Error('grade de updates não carregou todos os nodes'); }
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
-            let local = panel.getStore().findRecord('node', 'localhost');
-            let offline = panel.getStore().findRecord('node', 'offline-node');
+            let local = find('localhost');
+            let offline = find('offline-node');
             if (!local || !offline || local.get('reboot_suggested') !== true || offline.get('online') !== false) {
                 throw new Error('status de updates por node incompleto');
             }
@@ -441,14 +444,25 @@ async function main() {
             let bulkStartDisabled = panel.down('#mm-updates-start-selected').isDisabled();
             panel.progressPanel.down('#mm-updates-cancel').handler();
             await wait('cancelamento não terminou', () => !panel.activeBulk);
+            // Sem o polling de 5 s no meio: o próximo status do localhost é o
+            // que falha, e ele tem que cair neste registro.
+            panel.stopPolling();
             await new Promise((resolve) => MM.Api.request({ method: 'POST',
                 url: MM.Updates.path('localhost', 'transient-failure'), success: resolve, failure: resolve }));
             local.set({ job: { state: 'running' }, online: true });
             panel.reloadRow(local);
             await wait('erro transitório não virou updating', () => local.get('update_state') === 'updating');
+            let transientUpdating = local.get('update_state') === 'updating';
+            panel.stopPolling();
+            // O reload atualiza os registros no lugar: um status a caminho acha
+            // o mesmo registro (antes, o setData deixava o registro órfão).
+            panel.reload();
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            let sameRecord = panel.getStore().findRecord('node', 'localhost', 0, false, true, true) === local;
+            panel.stopPolling();
             return { rows: panel.getStore().getCount(), blocked, wrongNameBlocked, exactNameEnabled,
                 rebootDone, contextVisible, busyOnClick, progressVisible, progressText, bulkStartDisabled,
-                transientUpdating: local.get('update_state') === 'updating' };
+                transientUpdating, sameRecord };
         }, TIMEOUT);
         if (updatesAssertions.rows !== 2 || !updatesAssertions.blocked
             || !updatesAssertions.wrongNameBlocked || !updatesAssertions.exactNameEnabled
@@ -456,7 +470,8 @@ async function main() {
             || !updatesAssertions.busyOnClick || !updatesAssertions.progressVisible
             || !updatesAssertions.progressText.includes('17s')
             || !updatesAssertions.progressText.includes('localhost')
-            || !updatesAssertions.bulkStartDisabled || !updatesAssertions.transientUpdating) {
+            || !updatesAssertions.bulkStartDisabled || !updatesAssertions.transientUpdating
+            || !updatesAssertions.sameRecord) {
             throw new Error(`updates assertions failed: ${JSON.stringify(updatesAssertions)}`);
         }
         await page.waitForTimeout(100);

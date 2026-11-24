@@ -323,6 +323,7 @@ Ext.define('MM.panel.Ui', {
 	let status = Ext.create('Ext.form.field.Display', { itemId: 'ui-status', value: '—' });
 	me.reload = function () {
 	    MM.Api.request({
+		owner: me,
 		url: '/nodes/localhost/mm-tools/config',
 		success: (res) => {
 		    let data = res.data || {};
@@ -333,6 +334,7 @@ Ext.define('MM.panel.Ui', {
 		},
 	    });
 	    MM.Api.request({
+		owner: me,
 		url: '/nodes/localhost/mm-tools/status',
 		success: (res) => {
 		    let c = res.data?.modules?.ui?.check;

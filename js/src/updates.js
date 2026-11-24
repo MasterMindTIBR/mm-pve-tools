@@ -131,7 +131,7 @@ Ext.define('MM.panel.Updates', {
 	let reloadRow = function (record) {
 		let node = record.get('node');
 		if (!record.get('online')) { record.set({ last_result: MM.t('common.offline'), update_state: 'offline' }); return; }
-		MM.Api.request({ url: MM.Updates.path(node, 'status'),
+		MM.Api.request({ owner: me, url: MM.Updates.path(node, 'status'),
 			success: (res) => me.applyStatus(record, res.data || {}),
 			failure: (msg) => {
 				let active = jobStates.includes(record.get('job')?.state)
@@ -145,17 +145,28 @@ Ext.define('MM.panel.Updates', {
 	};
 	me.reloadRow = reloadRow;
 	me.reload = function () {
-		MM.Api.request({ url: '/cluster/status', success: (res) => {
+		MM.Api.request({ owner: me, url: '/cluster/status', success: (res) => {
 			let nodes = (res.data || []).filter((e) => e.type === 'node');
-			me.getStore().setData(nodes.map((n) => {
-				let previous = me.getStore().findRecord('node', n.name);
-				return { node: n.name, online: !!n.online, pending: [],
-					reboot_suggested: false, job: previous?.get('job') || null, bulk: previous?.get('bulk') || null,
-					update_state: previous?.get('update_state') || (n.online ? 'loading' : 'offline'),
-					starting: previous?.get('starting') || false,
-				last_result: n.online ? (previous?.get('last_result') || MM.t('updates.loading')) : MM.t('updates.node_offline') };
-			}));
-			nodes.forEach((n) => { let r = me.getStore().findRecord('node', n.name); if (r) { reloadRow(r); } });
+			let store = me.getStore();
+			// Atualiza no lugar: um status de node que ainda está a caminho
+			// (reloadRow) precisa achar o mesmo registro quando chegar.
+			let names = nodes.map((n) => n.name);
+			store.remove(store.queryBy((r) => !names.includes(r.get('node'))).getRange());
+			let added = [];
+			nodes.forEach((n) => {
+				let record = store.findRecord('node', n.name, 0, false, true, true);
+				if (!record) {
+					added.push({ node: n.name, online: !!n.online, pending: [], reboot_suggested: false,
+						job: null, bulk: null, update_state: n.online ? 'loading' : 'offline', starting: false,
+						last_result: n.online ? MM.t('updates.loading') : MM.t('updates.node_offline') });
+				} else if (!n.online) {
+					record.set({ online: false, last_result: MM.t('updates.node_offline') });
+				} else if (!record.get('online')) {
+					record.set({ online: true, last_result: MM.t('updates.loading'), update_state: 'loading' });
+				}
+			});
+			if (added.length) { store.add(added); }
+			nodes.forEach((n) => { let r = store.findRecord('node', n.name, 0, false, true, true); if (r) { reloadRow(r); } });
 		}, failure: (msg) => Ext.Msg.alert(MM.t('common.error'), msg) });
 	};
 	me.ensurePolling = function () {

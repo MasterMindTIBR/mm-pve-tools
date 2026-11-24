@@ -56,11 +56,15 @@ Ext.define('MM.Api', {
     singleton: true,
 
     request: function (opts) {
+	// opts.owner: componente dono da resposta. Se ele foi destruído antes da
+	// resposta chegar (troca de aba, painel fechado), success e failure não rodam.
+	let gone = () => !!opts.owner && (opts.owner.destroyed || opts.owner.isDestroyed);
 	let base = {
 	    method: opts.method || 'GET',
 	    url: opts.url,
 	    params: opts.params,
 	    failure: function (response) {
+		if (gone()) { return; }
 		let msg = response?.htmlStatus ||
 		    (Proxmox.Utils.extractRequestError
 			? Proxmox.Utils.extractRequestError(response?.result || {}, true) : '') ||
@@ -80,7 +84,10 @@ Ext.define('MM.Api', {
 	    base.headers = Ext.apply({ 'Content-Type': 'application/json' }, opts.headers || {});
 	}
 	if (opts.success) {
-	    base.success = function (response) { opts.success(response.result, response); };
+	    base.success = function (response) {
+		if (gone()) { return; }
+		opts.success(response.result, response);
+	    };
 	}
 	Proxmox.Utils.API2Request(base);
     },
