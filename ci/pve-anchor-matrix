@@ -3,5 +3,7 @@
 # Selectors are exact versions, oldest, or newest (latest in the mirror).
 pve-9.2.20 pve-manager=9.2.20 libpve-guest-common-perl=6.0.5 libpve-access-control=9.1.2 libpve-storage-perl=9.1.10 qemu-server=9.2.8 pve-container=6.1.14 proxmox-widget-toolkit=5.2.10
 pve-9.2.21 pve-manager=9.2.21 libpve-guest-common-perl=6.0.5 libpve-access-control=9.1.2 libpve-storage-perl=9.1.13 qemu-server=9.2.11 pve-container=6.1.14 proxmox-widget-toolkit=5.2.10
+pve-9.2.2 pve-manager=9.2.2 libpve-guest-common-perl=6.0.3 libpve-access-control=9.1.1 libpve-storage-perl=9.1.5 qemu-server=9.1.15 pve-container=6.1.10 proxmox-widget-toolkit=5.2.2
+pve-9.2.26 pve-manager=9.2.26 libpve-guest-common-perl=6.0.7 libpve-access-control=9.2.0 libpve-storage-perl=9.1.15 qemu-server=9.2.15 pve-container=6.1.18 proxmox-widget-toolkit=5.2.12
 oldest pve-manager=oldest libpve-guest-common-perl=oldest libpve-access-control=oldest libpve-storage-perl=oldest qemu-server=oldest pve-container=oldest proxmox-widget-toolkit=oldest
 newest pve-manager=latest libpve-guest-common-perl=latest libpve-access-control=latest libpve-storage-perl=latest qemu-server=latest pve-container=latest proxmox-widget-toolkit=latest
