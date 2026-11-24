@@ -506,38 +506,82 @@ Ext.define('MM.panel.General', {
 
 /* ------------------------- Diagnóstico ------------------------- */
 
+/* Uma linha por node do cluster, sempre (offline também). Recarregar não
+ * esvazia a grade: cada linha mostra que está carregando e é atualizada no
+ * lugar quando o node responde. Enquanto houver node sem resposta, o botão
+ * fica desabilitado e um segundo pedido (clique ou troca de aba) é ignorado. */
+MM.DIAG_EMPTY = {
+    pkg: null, pve: null, patch_tpl: null, patch_pm: null, state: null, applied: null,
+    cfgrev: null, branding_serves: null, ntfs3g: null, ntfs3g_ok: null,
+};
+
 MM.fillDiag = function (grid) {
-    MM.Api.clusterNodes((nodes) => {
-	let store = grid.getStore();
-	store.removeAll();
-	nodes.forEach((n) => {
-	    MM.Api.request({
-		url: `/nodes/${n.name}/mm-tools/status`,
-		success: (res) => {
-		    let data = res.data || {};
-		    let ap = data.applied || {};
-		    let patches = ap.patches || {};
-		    store.add({
-			node: data.node || n.name,
-			pkg: data.package_version,
-			pve: data.pve_version,
-			patch_tpl: patches.index_tpl?.status,
-			patch_pm: patches.nodes_pm?.status,
-			state: ap.state,
-			applied: ap.applied_revision,
-			cfgrev: ap.config_revision,
-			branding_serves: !!data.branding?.serves_asset,
-			ntfs3g_ok: !!data.ntfs3g?.ok,
-			ntfs3g: data.ntfs3g?.ok === undefined
-		    ? MM.t('diagnostics.skipped')
-		    : (data.ntfs3g.ok ? MM.t('diagnostics.ok') : (data.ntfs3g.error || MM.t('diagnostics.fail'))),
-		    });
-		},
-	    failure: (msg) => {
-		    store.add({ node: n.name, state: MM.t('diagnostics.inaccessible'), ntfs3g: msg });
-		},
+    if (grid.diagLoading) { return; }
+    let store = grid.getStore();
+    let gone = () => grid.destroyed || grid.isDestroyed;
+    let pending = 0;
+    let setLoading = (on) => {
+	grid.diagLoading = on;
+	let button = grid.down('#reload');
+	button?.setDisabled(on);
+	button?.setIconCls(on ? 'fa fa-fw fa-refresh fa-spin' : 'fa fa-fw fa-refresh');
+    };
+    let finish = (record, values) => {
+	if (gone()) { return; }
+	record.set(Object.assign({}, MM.DIAG_EMPTY, values, { loading: false }));
+	pending--;
+	if (pending <= 0) { setLoading(false); }
+    };
+    setLoading(true);
+    store.each((record) => { record.set('loading', true); });
+    MM.Api.request({
+	owner: grid,
+	url: '/cluster/status',
+	success: (res) => {
+	    let nodes = (res.data || []).filter((e) => e.type === 'node');
+	    let names = new Set(nodes.map((n) => n.name));
+	    store.remove(store.getRange().filter((record) => !names.has(record.get('node'))));
+	    let find = (name) => store.findRecord('node', name, 0, false, true, true);
+	    let added = nodes.filter((n) => !find(n.name)).map((n) => ({ node: n.name, loading: true }));
+	    if (added.length) { store.add(added); }
+	    pending = nodes.length;
+	    if (!pending) { setLoading(false); return; }
+	    nodes.forEach((n) => {
+		let record = find(n.name);
+		if (!n.online) {
+		    finish(record, { state: MM.t('common.offline') });
+		    return;
+		}
+		MM.Api.request({
+		    owner: grid,
+		    url: `/nodes/${n.name}/mm-tools/status`,
+		    success: (r) => {
+			let data = r.data || {};
+			let ap = data.applied || {};
+			let patches = ap.patches || {};
+			finish(record, {
+			    pkg: data.package_version,
+			    pve: data.pve_version,
+			    patch_tpl: patches.index_tpl?.status,
+			    patch_pm: patches.nodes_pm?.status,
+			    state: ap.state,
+			    applied: ap.applied_revision,
+			    cfgrev: ap.config_revision,
+			    branding_serves: !!data.branding?.serves_asset,
+			    ntfs3g_ok: !!data.ntfs3g?.ok,
+			    ntfs3g: data.ntfs3g?.ok === undefined
+				? MM.t('diagnostics.skipped')
+				: (data.ntfs3g.ok ? MM.t('diagnostics.ok') : (data.ntfs3g.error || MM.t('diagnostics.fail'))),
+			});
+		    },
+		    failure: (msg) => finish(record, { state: MM.t('diagnostics.inaccessible'), ntfs3g: msg }),
+		});
 	    });
-	});
+	},
+	failure: () => {
+	    store.each((record) => { record.set('loading', false); });
+	    setLoading(false);
+	},
     });
 };
 
@@ -548,42 +592,58 @@ Ext.define('MM.panel.Diag', {
 
     initComponent: function () {
 	let me = this;
+	let empty = MM.t('common.empty');
+	// Sem valor ainda: "-". Carregando de novo: o valor anterior fica
+	// esmaecido até o node responder.
+	let cell = (render) => (v, md, rec) => {
+	    if (v === null || v === undefined) { return empty; }
+	    let html = render(v, rec);
+	    return rec.get('loading') ? `<span style="opacity:0.45">${html}</span>` : html;
+	};
 	Ext.apply(me, {
 	    store: {
 		fields: [
 		    'node', 'pkg', 'pve', 'patch_tpl', 'patch_pm',
-		    'state', 'applied', 'cfgrev', 'branding_serves', 'ntfs3g', 'ntfs3g_ok',
+		    'state', 'applied', 'cfgrev', 'branding_serves', 'ntfs3g', 'ntfs3g_ok', 'loading',
 		],
+		sorters: 'node',
 	    },
 	    columns: [
-		{ text: MM.t('common.node'), dataIndex: 'node', width: 120 },
-		{ text: MM.t('diagnostics.mm_package'), dataIndex: 'pkg', width: 110 },
-		{ text: MM.t('diagnostics.pve'), dataIndex: 'pve', width: 70 },
+		{
+		    text: MM.t('common.node'), dataIndex: 'node', width: 140,
+		    renderer: (v, md, rec) => (rec.get('loading')
+			? '<i class="fa fa-fw fa-spinner fa-pulse mm-diag-loading"></i> '
+			: '<i class="fa fa-fw"></i> ') + MM.Utils.html(v),
+		},
+		{ text: MM.t('diagnostics.mm_package'), dataIndex: 'pkg', width: 110, renderer: cell((v) => MM.Utils.html(v)) },
+		{ text: MM.t('diagnostics.pve'), dataIndex: 'pve', width: 70, renderer: cell((v) => MM.Utils.html(v)) },
 		{
 		    text: MM.t('diagnostics.patch_index'), dataIndex: 'patch_tpl', width: 120,
-		    renderer: (v) => MM.Utils.checkIcon(v === 'applied', v),
+		    renderer: cell((v) => MM.Utils.checkIcon(v === 'applied', v)),
 		},
 		{
 		    text: MM.t('diagnostics.patch_nodes'), dataIndex: 'patch_pm', width: 120,
-		    renderer: (v) => MM.Utils.checkIcon(v === 'applied', v),
+		    renderer: cell((v) => MM.Utils.checkIcon(v === 'applied', v)),
 		},
 		{
 		    text: MM.t('diagnostics.revision'), dataIndex: 'state', width: 140,
-		    renderer: (v, md, rec) =>
-			`${MM.Utils.html(rec.get('applied') ?? '-')}/${MM.Utils.html(rec.get('cfgrev') ?? '-')} (${MM.Utils.html(v)})`,
+		    renderer: cell((v, rec) => (rec.get('applied') === null && rec.get('cfgrev') === null
+			? MM.Utils.html(v)
+			: `${MM.Utils.html(rec.get('applied') ?? empty)}/${MM.Utils.html(rec.get('cfgrev') ?? empty)} (${MM.Utils.html(v)})`)),
 		},
 		{
 		    text: MM.t('diagnostics.branding'), dataIndex: 'branding_serves', width: 100,
-		    renderer: (v) => MM.Utils.checkIcon(v, v ? MM.t('common.serving') : MM.t('common.not_serving')),
+		    renderer: cell((v) => MM.Utils.checkIcon(v, v ? MM.t('common.serving') : MM.t('common.not_serving'))),
 		},
 		{
 		    text: MM.t('diagnostics.ntfs3g'), dataIndex: 'ntfs3g', flex: 1,
-		    renderer: (v, md, rec) => MM.Utils.checkIcon(rec.get('ntfs3g_ok'), v),
+		    renderer: cell((v, rec) => MM.Utils.checkIcon(rec.get('ntfs3g_ok'), v)),
 		},
 	    ],
 	    tbar: [
 		{
 		    xtype: 'button',
+		    itemId: 'reload',
 		    text: MM.t('common.reload'),
 		    iconCls: 'fa fa-fw fa-refresh',
 		    handler: () => MM.fillDiag(me),
