@@ -202,8 +202,21 @@ read -r still _ < <(node_job "$job_node")
 printf 'unit do job: %s; segundo pedido: %s\n' "$unit_state" "$second_exit"
 final=$(wait_job_done "$job_node" "$job_id")
 [[ $final == succeeded ]] || lab_fail "job terminou em $final"
-back=$(lab_ssh "$job_node" dpkg-query -W -f='${Version}' "$target_pkg")
-[[ $back == "$installed" ]] || lab_fail "$target_pkg voltou para $back, esperado $installed"
+# O job roda apt-get update: se o repositório publicou uma versão nova desde o
+# início do teste, o upgrade vai para ela. O esperado é o candidato atual do
+# apt, nunca abaixo da versão instalada antes do downgrade.
+read -r back candidate not_below < <(lab_ssh "$job_node" bash -s -- "$target_pkg" "$installed" <<'REMOTE'
+set -euo pipefail
+pkg=$1 installed=$2
+back=$(dpkg-query -W -f='${Version}' "$pkg")
+candidate=$(apt-cache policy "$pkg" | awk '/Candidate:/ {print $2}')
+not_below=no
+if dpkg --compare-versions "$back" ge "$installed"; then not_below=yes; fi
+printf '%s %s %s\n' "$back" "$candidate" "$not_below"
+REMOTE
+)
+[[ $back == "$candidate" && $not_below == yes ]] \
+    || lab_fail "$target_pkg voltou para $back, esperado o candidato $candidate (>= $installed)"
 patches_applied "$job_node" || lab_fail "${target_patches[*]} não ficaram aplicados depois do job"
 # Reload não muda o timestamp da unit: o journal do pvedaemon desde o início
 # do job mostra o restart do servidor (postinst e reload-verify do patch).
