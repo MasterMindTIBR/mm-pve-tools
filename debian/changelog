@@ -1,3 +1,24 @@
+mm-pve-tools (0.3.4-1) unstable; urgency=medium
+
+  * Alterado:
+
+  * Branding: a pré-visualização mostra o logo no tamanho real do cabeçalho do
+    PVE (200×35 px), sobre o fundo do tema claro e do escuro, junto do texto do
+    topo, e diz quantos pixels o logo vai ocupar. Logo com proporção menor que
+    3:1 (empilhado, como nuvem em cima e nome embaixo) gera um aviso de que vai
+    ficar pequeno, e o campo do logo orienta usar a versão horizontal, sem
+    slogan, com fundo transparente (cerca de 400×70 px).
+
+  * Corrigido:
+
+  * Diagnóstico: a aba mostra sempre uma linha por node do cluster, inclusive
+    os offline, com "-" onde ainda não há dado. Recarregar não esvazia mais a
+    grade: cada linha mostra que está carregando e é atualizada no lugar, e o
+    botão fica travado até todos os nodes responderem. Antes, dois cliques
+    seguidos duplicavam os nodes e não havia sinal de carregamento.
+
+ -- MasterMind TI <infra@mastermindti.cloud>  Tue, 24 Nov 2026 11:46:41 -0300
+
 mm-pve-tools (0.3.3-1) unstable; urgency=medium
 
   * Correções vindas da primeira instalação em produção (cluster de 6 nodes

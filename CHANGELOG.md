@@ -6,6 +6,8 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-24
+
 ### Alterado
 
 - Branding: a pré-visualização mostra o logo no tamanho real do cabeçalho do
