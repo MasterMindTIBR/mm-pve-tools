@@ -13,8 +13,34 @@ Ext.define('MM.Branding', {
     RAW_ASSET_MAX_BYTES: 256 * 1024,
     REQUEST_MAX_BYTES: (512 * 1024) - (16 * 1024),
 
+    // Espaço do logo no cabeçalho do PVE (PMX.image.LogoSVG, refs/upstream/pwt-Logo.js).
+    LOGO_BOX: { width: 200, height: 35 },
+    // Abaixo desta proporção (largura/altura) o logo fica pequeno no cabeçalho.
+    LOGO_MIN_RATIO: 3,
+    // Fundo e texto do cabeçalho em cada tema: o cabeçalho é x-plain e mostra o
+    // fundo do viewport (theme-crisp: .x-border-layout-ct; proxmox-dark:
+    // body.x-border-layout-ct).
+    HEADER_THEMES: [
+	{ key: 'light', background: '#cfcfcf', color: '#000' },
+	{ key: 'dark', background: '#1a1a1a', color: '#f2f2f2' },
+    ],
+    HEADER_DEFAULT_TEXT: 'Virtual Environment',
+
     requestBytes: function (payload) {
 	return new TextEncoder().encode(JSON.stringify(payload)).length;
+    },
+
+    /* Tamanho que um logo w x h ocupa no cabeçalho (object-fit: contain). */
+    logoFit: function (width, height) {
+	let box = this.LOGO_BOX;
+	if (!(width > 0) || !(height > 0)) { return null; }
+	let scale = Math.min(box.width / width, box.height / height);
+	return {
+	    width: Math.round(width * scale),
+	    height: Math.round(height * scale),
+	    ratio: width / height,
+	    small: (width / height) < this.LOGO_MIN_RATIO,
+	};
     },
 
     cfg: null,
@@ -208,17 +234,43 @@ Ext.define('MM.panel.Branding', {
 	});
 	let headerField = Ext.create('Ext.form.field.Text', {
 	    fieldLabel: MM.t('branding.header_text'), name: 'header_text', maxLength: 60,
+	    listeners: { change: () => me.previewText?.() },
+	});
+	let logoHint = Ext.create('Ext.Component', {
+	    itemId: 'logo-hint',
+	    html: Ext.String.htmlEncode(MM.t('branding.logo_hint')),
+	    margin: '0 0 8 105', // alinhado com o campo, depois do rótulo
+	    style: { opacity: 0.8, 'font-size': '12px' },
 	});
 	let loginField = Ext.create('Ext.form.field.TextArea', {
 	    fieldLabel: MM.t('branding.login_text'), name: 'login_text', maxLength: 200,
 	});
 
 	let previewBox = Ext.create('Ext.Component', {
+	    itemId: 'logo-preview',
 	    autoEl: 'div',
-	    padding: 10,
+	    padding: '5 0',
 	    html: MM.t('common.empty'),
+	    listeners: { afterrender: () => me.previewText?.() },
 	});
+	let fitBox = Ext.create('Ext.Component', {
+	    itemId: 'logo-fit',
+	    hidden: true,
+	    padding: '0 0 5 0',
+	});
+	let ratioWarning = Ext.create('Ext.Component', {
+	    itemId: 'logo-ratio-warning',
+	    hidden: true,
+	    padding: '0 0 5 0',
+	});
+	let themeLabels = {
+	    light: MM.t('branding.preview_light'),
+	    dark: MM.t('branding.preview_dark'),
+	};
 
+	/* O cabeçalho do PVE como ele é: o logo na caixa de 200x35 com o mesmo
+	 * CSS do logo aplicado (ensureLogoStyle), seguido do texto do topo, no
+	 * fundo de cada tema. */
 	me.preview = function () {
 	    let src = null;
 	    if (me.pendingLogo) {
@@ -226,9 +278,53 @@ Ext.define('MM.panel.Branding', {
 	    } else if (me.state?.branding?.logo) {
 		src = `/pve2/images/mm-branding/${me.state.branding.logo}?v=${me.state.state?.config_hash || '0'}`;
 	    }
-	    previewBox.setHtml(src
-		? `<img src="${src}" style="max-height:60px;max-width:260px" alt="logo"/>`
-		: MM.t('branding.no_logo'));
+	    me.previewSrc = src;
+	    me.logoFit = null;
+	    fitBox.setHidden(true);
+	    ratioWarning.setHidden(true);
+	    if (!src) {
+		previewBox.setHtml(Ext.String.htmlEncode(MM.t('branding.no_logo')));
+		return;
+	    }
+	    MM.Branding.ensureLogoStyle();
+	    let box = MM.Branding.LOGO_BOX;
+	    previewBox.setHtml(MM.Branding.HEADER_THEMES.map((theme) => ''
+		+ `<div class="mm-branding-preview-theme" data-theme="${theme.key}">`
+		+ '<div style="font-size:11px;opacity:0.8;margin:4px 0 2px">'
+		+ `${Ext.String.htmlEncode(themeLabels[theme.key])}</div>`
+		+ '<div class="mm-branding-preview-header" style="display:flex;align-items:center;'
+		+ `padding:2px 5px;background:${theme.background};color:${theme.color}">`
+		+ `<div class="mm-branding-preview-logo" style="flex:none;width:${box.width}px;height:${box.height}px">`
+		+ `<img class="mm-branding-logo" src="${src}" alt="logo"/></div>`
+		+ '<div class="mm-branding-preview-text" style="padding:0 5px;font-size:16px;'
+		+ 'line-height:20px;white-space:nowrap"></div>'
+		+ '</div></div>').join(''));
+	    me.previewText();
+	    let img = new Image();
+	    img.onload = () => {
+		if (me.destroyed || me.previewSrc !== src) { return; }
+		let fit = MM.Branding.logoFit(img.naturalWidth, img.naturalHeight);
+		if (!fit) { return; }
+		me.logoFit = fit;
+		fitBox.setHtml(Ext.String.htmlEncode(MM.t('branding.preview_size', {
+		    width: fit.width, height: fit.height, max_width: box.width, max_height: box.height,
+		})));
+		fitBox.setHidden(false);
+		let ratio = (Math.round(fit.ratio * 10) / 10)
+		    .toLocaleString(String(MM.i18n.language || 'en').replace('_', '-'));
+		ratioWarning.setHtml('<i class="fa fa-fw fa-exclamation-triangle warning"></i> '
+		    + Ext.String.htmlEncode(MM.t('branding.ratio_warning', { ratio })));
+		ratioWarning.setHidden(!fit.small);
+	    };
+	    img.src = src;
+	};
+
+	/* Só o texto do topo muda enquanto o usuário digita. */
+	me.previewText = function () {
+	    let dom = previewBox.el?.dom;
+	    if (!dom) { return; }
+	    let text = headerField.getValue() || MM.Branding.HEADER_DEFAULT_TEXT;
+	    dom.querySelectorAll('.mm-branding-preview-text').forEach((el) => { el.textContent = text; });
 	};
 
 	me.reload = function () {
@@ -281,18 +377,20 @@ Ext.define('MM.panel.Branding', {
 	    layout: { type: 'vbox', align: 'stretch' },
 	    bodyPadding: 10,
 	    border: false,
+	    scrollable: 'y',
 	    defaults: { width: '100%' },
 	    items: [
 		titleField,
 		headerField,
 		logoField,
+		logoHint,
 		faviconField,
 		loginField,
 		{ xtype: 'tbspacer', height: 10 },
 		{
 		    xtype: 'fieldset',
 		    title: MM.t('branding.preview'),
-		    items: [previewBox],
+		    items: [previewBox, fitBox, ratioWarning],
 		},
 	    ],
 	    buttons: [

@@ -6,6 +6,15 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+### Alterado
+
+- Branding: a pré-visualização mostra o logo no tamanho real do cabeçalho do
+  PVE (200×35 px), sobre o fundo do tema claro e do escuro, junto do texto do
+  topo, e diz quantos pixels o logo vai ocupar. Logo com proporção menor que
+  3:1 (empilhado, como nuvem em cima e nome embaixo) gera um aviso de que vai
+  ficar pequeno, e o campo do logo orienta usar a versão horizontal, sem
+  slogan, com fundo transparente (cerca de 400×70 px).
+
 ## [0.3.3] - 2026-11-24
 
 Correções vindas da primeira instalação em produção (cluster de 6 nodes com
