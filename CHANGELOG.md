@@ -6,6 +6,8 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-24
+
 Correções vindas da primeira instalação em produção (cluster de 6 nodes com
 versões diferentes do PVE 9). Provada no cluster do lab
 (`docs/lab-evidence/2026-11-24.md`).
