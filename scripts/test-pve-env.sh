@@ -15,11 +15,11 @@ pve_version() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-    echo 'test-api requer Docker no ambiente do Visionary/CI' >&2
+    echo 'test-api requires Docker in the Visionary/CI environment' >&2
     exit 2
 fi
 if ! docker info >/dev/null 2>&1; then
-    echo 'test-api não conseguiu acessar o daemon Docker do Visionary/CI' >&2
+    echo 'test-api could not access the Visionary/CI Docker daemon' >&2
     exit 2
 fi
 
@@ -42,7 +42,10 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \
     libproxmox-rs-perl=$(pve_version libproxmox-rs-perl) \\
     libpve-storage-perl=$(pve_version libpve-storage-perl) \\
     qemu-server=$(pve_version qemu-server) \\
-    pve-container=$(pve_version pve-container) && rm -rf /var/lib/apt/lists/*
+    pve-container=$(pve_version pve-container) \\
+    pve-ha-manager=$(pve_version pve-ha-manager) \\
+    libpve-network-perl=$(pve_version libpve-network-perl) \\
+    libproxmox-acme-perl=$(pve_version libproxmox-acme-perl) && rm -rf /var/lib/apt/lists/*
 EOF
 
 run_rc=0
@@ -53,17 +56,17 @@ perl -MPVE::RESTHandler -MPVE::RPCEnvironment -MPVE::JSONSchema -e '
 for my $m (qw(PVE::RESTHandler PVE::RPCEnvironment PVE::JSONSchema)) {
     (my $f = $m) =~ s{::}{/}g;
     $f .= q{.pm};
-    die "$m veio de stub\n" if ($INC{$f} // q{}) =~ m{/t/lib-stubs/};
+    die "$m loaded from a stub\n" if ($INC{$f} // q{}) =~ m{/t/lib-stubs/};
 }'
 PERL5LIB=/src/lib:/src/perl prove -v -r t/api | tee /tmp/mm-pve-tools-api.tap
 if grep -Eqi 'skipped|skip:' /tmp/mm-pve-tools-api.tap; then
-    echo 't/api foi pulado; o ambiente real do PVE não foi validado' >&2
+    echo 't/api was skipped; the real PVE environment was not validated' >&2
     exit 3
 fi
 files=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\1/p' /tmp/mm-pve-tools-api.tap)
 tests=$(sed -n 's/^Files=\([0-9][0-9]*\), Tests=\([0-9][0-9]*\).*/\2/p' /tmp/mm-pve-tools-api.tap)
 if [[ $files != 7 || -z $tests || $tests -eq 0 ]] || ! grep -qx 'All tests successful\.' /tmp/mm-pve-tools-api.tap; then
-    echo 't/api não executou exatamente 7 arquivos com testes bem-sucedidos' >&2
+    echo 't/api did not run exactly 7 files with successful tests' >&2
     exit 4
 fi
 CONTAINER

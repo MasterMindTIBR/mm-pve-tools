@@ -31,7 +31,7 @@ sub _check_request_size {
     my $bytes = MMPve::Module::Branding->encoded_request_bytes($payload);
     return if $bytes <= MMPve::Module::Branding->request_limit;
     raise_param_exc({ request => sprintf(
-        'requisição JSON excede %d bytes (recebidos %d; limite do pveproxy %d com margem %d)',
+        'JSON request exceeds %d bytes (received %d; pveproxy limit %d with margin %d)',
         MMPve::Module::Branding->request_limit, $bytes,
         MMPve::Module::Branding->proxy_request_limit,
         MMPve::Module::Branding->request_margin,
@@ -56,7 +56,7 @@ sub _asset_from_param {
 __PACKAGE__->register_method({
     name => 'index', path => '', method => 'GET', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Audit']] },
-    description => 'Branding: config atual e estado aplicado neste node.', protected => 0,
+    description => 'Branding: current config and applied state on this node.', protected => 0,
     parameters => { additionalProperties => 0, properties => { node => get_standard_option('pve-node') } },
     returns => { type => 'object' },
     code => sub {
@@ -72,7 +72,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'set', path => 'set', method => 'PUT', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Salva a seção de textos do branding; clear restaura o padrão.', protected => 1,
+    description => 'Save branding text fields; clear restores the default.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -114,7 +114,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'upload', path => 'upload', method => 'PUT', proxyto => 'node',
     permissions => { check => ['perm', '/', ['Sys.Modify']] },
-    description => 'Envia PNGs em JSON base64; limite bruto 256 KiB por asset.', protected => 1,
+    description => 'Upload PNGs as base64 JSON; raw limit 256 KiB per asset.', protected => 1,
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -129,7 +129,7 @@ __PACKAGE__->register_method({
     returns => { type => 'object' },
     code => sub {
         my ($param) = @_;
-        raise_param_exc({ logo_b64 => 'envie logo_b64 ou favicon_b64' })
+        raise_param_exc({ logo_b64 => 'send logo_b64 or favicon_b64' })
             unless defined $param->{logo_b64} || defined $param->{favicon_b64};
         _check_request_size($param);
 

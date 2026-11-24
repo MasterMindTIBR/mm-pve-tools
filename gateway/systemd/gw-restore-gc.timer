@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind gw-restore: coleta periódica de sessões
+Description=MasterMind gw-restore: periodically collect sessions
 
 [Timer]
 OnBootSec=3min

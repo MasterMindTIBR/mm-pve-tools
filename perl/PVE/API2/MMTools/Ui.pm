@@ -21,7 +21,7 @@ my @VIEWERS = qw(cluster default html5 xtermjs vv);
 sub _user {
     my $rpcenv = PVE::RPCEnvironment->get();
     my $user = $rpcenv->get_user();
-    die "usuário autenticado ausente\n" unless defined $user && length $user;
+    die "authenticated user is missing\n" unless defined $user && length $user;
     if (index($user, '!') >= 0) {
         my ($owner) = PVE::AccessControl::split_tokenid($user, 1);
         $user = $owner if defined $owner && length $owner;
@@ -54,7 +54,7 @@ sub _response {
 __PACKAGE__->register_method({
     name => 'preference', path => '', method => 'GET', proxyto => 'node',
     permissions => { user => 'all' },
-    description => 'Lê apenas a preferência de console do usuário autenticado.',
+    description => 'Read only the authenticated user console preference.',
     protected => 1,
     parameters => {
         additionalProperties => 0,
@@ -72,7 +72,7 @@ __PACKAGE__->register_method({
 __PACKAGE__->register_method({
     name => 'set_preference', path => 'preference', method => 'PUT', proxyto => 'node',
     permissions => { user => 'all' },
-    description => 'Grava somente a preferência do usuário autenticado.',
+    description => 'Write only the authenticated user console preference.',
     protected => 1,
     parameters => {
         additionalProperties => 0,

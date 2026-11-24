@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 || ! $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    printf 'uso: %s X.Y.Z\n' "$0" >&2
+    printf 'usage: %s X.Y.Z\n' "$0" >&2
     exit 2
 fi
 
@@ -31,20 +31,20 @@ markdown = changelog_path.read_text(encoding="utf-8")
 marker = "## [Unreleased]"
 start = markdown.find(marker)
 if start < 0:
-    raise SystemExit("CHANGELOG.md sem a seção [Unreleased]")
+    raise SystemExit("CHANGELOG.md has no [Unreleased] section")
 notes_start = start + len(marker)
 next_heading = markdown.find("\n## [", notes_start)
 if next_heading < 0:
     next_heading = len(markdown)
 notes = markdown[notes_start:next_heading].strip()
 if not notes:
-    raise SystemExit("a seção [Unreleased] está vazia")
+    raise SystemExit("the [Unreleased] section is empty")
 if f"## [{version}]" in markdown:
-    raise SystemExit(f"CHANGELOG.md já contém a versão {version}")
+    raise SystemExit(f"CHANGELOG.md already contains version {version}")
 
 debian = debian_path.read_text(encoding="utf-8")
 if debian.startswith(f"mm-pve-tools ({version}-"):
-    raise SystemExit(f"debian/changelog já contém a versão {version}")
+    raise SystemExit(f"debian/changelog already contains version {version}")
 debian_lines = []
 for line in notes.splitlines():
     if line.startswith("### "):
@@ -70,4 +70,4 @@ updated += markdown[next_heading:]
 changelog_path.write_text(updated, encoding="utf-8")
 PY
 
-printf 'versão %s adicionada a debian/changelog e movida de [Unreleased]\n' "$VERSION"
+printf 'version %s added to debian/changelog and moved from [Unreleased]\n' "$VERSION"

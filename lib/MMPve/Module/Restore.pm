@@ -11,7 +11,7 @@ use strict;
 use warnings;
 use utf8;
 use MIME::Base64 qw(decode_base64);
-use JSON::PP qw(encode_json decode_json);
+use JSON::PP qw(decode_json);
 use Getopt::Long qw(GetOptionsFromArray);
 use POSIX qw(strftime);
 
@@ -20,7 +20,7 @@ use parent qw(MMPve::Core::ModuleBase);
 
 use MMPve::Core::Runner;
 use MMPve::Core::Config;
-use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_dir now_iso flock_ex unlock random_uuid sha256_hex_of);
+use MMPve::Core::Util qw(root_path log_line read_file write_file_atomic ensure_dir now_iso flock_ex unlock random_uuid sha256_hex_of json_encode);
 use MMPve::Contract::Gateway;
 use MMPve::Journal;
 
@@ -37,7 +37,7 @@ sub name { 'restore' }
 
 sub parse_volid {
     my ($class, $volid) = @_;
-    die "volid inválido (esperado <storage>:backup/vm/<id>/<ts>): "
+    die "invalid volid (expected <storage>:backup/vm/<id>/<ts>): "
         . (defined $volid ? $volid : '<undef>') . "\n"
         unless defined $volid
         && $volid =~ m{^([A-Za-z0-9][A-Za-z0-9_.-]*):backup/vm/(\d+)/([0-9][0-9T:.\-Z]*)$};
@@ -48,15 +48,15 @@ sub parse_volid {
 # aceitos; somente controles e traversal são proibidos.
 sub decode_path_b64 {
     my ($class, $b64) = @_;
-    die "caminho em base64 ausente\n" unless defined $b64 && length $b64;
+    die "base64 path is missing\n" unless defined $b64 && length $b64;
     my $path = eval { decode_base64($b64) };
-    die "caminho base64 inválido\n" if $@ || !defined $path;
+    die "invalid base64 path\n" if $@ || !defined $path;
     utf8::decode($path) unless utf8::is_utf8($path);
-    die "caminho precisa começar com '/' (ex.: /drive-scsi1.img.fidx/part/2/Dados)\n"
+    die "path must start with '/' (for example /drive-scsi1.img.fidx/part/2/Data)\n"
         unless $path =~ m{^/};
-    die "caminho contém caracteres de controle\n" if $path =~ /[\x00-\x1F\x7F]/;
-    die "caminho não pode conter '..'\n" if $path =~ m{(?:^|/)\.\.(?:/|$)};
-    die "caminho vazio\n" if $path eq '/';
+    die "path contains control characters\n" if $path =~ /[\x00-\x1F\x7F]/;
+    die "path cannot contain '..'\n" if $path =~ m{(?:^|/)\.\.(?:/|$)};
+    die "path is empty\n" if $path eq '/';
     $path =~ s{/+$}{};
     return $path;
 }
@@ -68,8 +68,8 @@ sub decode_path_b64 {
 # a partição ou o disco inteiro não são publicados.
 sub require_folder {
     my ($class, $xlate) = @_;
-    die "escolha uma pasta dentro da partição (drive-*.img.fidx/part/N/<pasta>); "
-        . "publicar a partição ou o disco inteiro não é suportado\n"
+    die "choose a folder inside the partition (drive-*.img.fidx/part/N/<folder>); "
+        . "publishing the partition or the whole disk is not supported\n"
         unless defined $xlate->{part} && length($xlate->{subpath} // '');
     return $xlate;
 }
@@ -78,24 +78,24 @@ sub translate_path {
     my ($class, $path) = @_;
     $path = $class->decode_path_b64($path) if $path !~ m{^/};
     my @segs = grep { length } split m{/}, $path;
-    die "caminho inválido\n" unless @segs;
+        die "invalid path\n" unless @segs;
     for my $s (@segs) {
-        die "bucket '$s' ainda não suportado (fase 2 — restore de Linux). "
-            . "Use uma pasta dentro de uma partição de disco (drive-*.img.fidx/part/N/...).\n"
+        die "bucket '$s' is not supported yet (phase 2 - Linux restore). "
+            . "Use a folder inside a disk partition (drive-*.img.fidx/part/N/...).\n"
             if $s =~ /^(lvm|zpool|raw)$/i;
     }
     my ($drive) = $segs[0] =~ /^([A-Za-z0-9][A-Za-z0-9._-]*)\.fidx$/
-        or die "o primeiro componente do caminho precisa ser um disco do backup "
-            . "(drive-*.img.fidx), veio '$segs[0]'\n";
+        or die "the first path component must be a backup disk "
+            . "(drive-*.img.fidx); got '$segs[0]'\n";
     shift @segs;
     my $part;
     if (@segs >= 2 && $segs[0] eq 'part' && $segs[1] =~ /^\d+$/) {
         $part = $segs[1] + 0;
-        die "partição precisa ser 1..128\n" if $part < 1 || $part > 128;
+        die "partition must be 1..128\n" if $part < 1 || $part > 128;
         splice(@segs, 0, 2);
     }
     my $subpath = join('/', @segs);
-    die "caminho não pode terminar em 'part'\n" if !defined $part && @segs && $segs[-1] eq 'part';
+    die "path cannot end in 'part'\n" if !defined $part && @segs && $segs[-1] eq 'part';
     return {
         drive   => $drive,
         part    => $part,
@@ -133,8 +133,8 @@ sub pick_vlan {
         my $tag = $1;
         return $tag if $vlans->{$tag};
     }
-    die "nenhuma NIC da VM destino tem tag com entrada em restore.vlans. "
-        . "Configure restore.vlans no mm-pve-tools ou coloque a VM numa VLAN cadastrada.\n";
+    die "no destination VM NIC has a tag configured in restore.vlans. "
+        . "Configure restore.vlans in mm-pve-tools or put the VM in a registered VLAN.\n";
 }
 
 # escolhe IPv4 do guest agent dentro do prefixo do gateway
@@ -163,7 +163,7 @@ sub find_node_of_vmid {
         next unless ref $e eq 'HASH' && ($e->{vmid} // -1) == $vmid;
         return $e->{node};
     }
-    die "VM $vmid não encontrada no cluster\n";
+    die "VM $vmid was not found in the cluster\n";
 }
 
 sub vm_config {
@@ -183,16 +183,16 @@ sub gw_exec {
         # de caracteres, o que vira Latin-1 ("Á" chega ao gateway como 0xC1).
         # Com \uXXXX o JSON passa intacto.
         $json = ref $opt{input_data}
-            ? JSON::PP->new->ascii->canonical->encode($opt{input_data})
+            ? json_encode($opt{input_data}, ascii => 1)
             : $opt{input_data};
         push @cmd, '--input-data', $json;
     }
     my $res = MMPve::Core::Runner->run(\@cmd, timeout => 60);
-    die "agent/exec no gateway falhou: " . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n"
+    die "gateway agent/exec failed: " . ($res->{err} || $res->{error} || "rc=$res->{rc}") . "\n"
         unless $res->{ok};
     my $pid;
     eval { $pid = (decode_json($res->{out}))->{pid} }
-        or die "resposta do agent/exec sem pid: $res->{out}\n";
+        or die "agent/exec response has no pid: $res->{out}\n";
 
     my $deadline = time + ($opt{timeout} // $GW_TIMEOUT);
     my $st;
@@ -200,7 +200,7 @@ sub gw_exec {
         $st = MMPve::Core::Runner->pvesh(get => "/nodes/$gw_node/qemu/$gwvmid/agent/exec-status",
             pid => $pid);
         last if $st->{exited};
-        die "timeout (" . ($opt{timeout} // $GW_TIMEOUT) . "s) esperando o gateway (pid $pid)\n"
+        die "timeout (" . ($opt{timeout} // $GW_TIMEOUT) . "s) waiting for gateway (pid $pid)\n"
             if time >= $deadline;
         sleep($POLL_DELAY);
     }
@@ -209,7 +209,7 @@ sub gw_exec {
         $detail =~ s/\s+$//;
         # num traceback a exceção está no fim: guarda o final
         $detail = '...' . substr($detail, -500) if length($detail) > 500;
-        die "gw-restore falhou (exit " . $st->{exitcode} . ")"
+        die "gw-restore failed (exit " . $st->{exitcode} . ")"
             . (length($detail) ? ": $detail" : "") . "\n";
     }
     return $st->{'out-data'} // $st->{out} // '';
@@ -218,7 +218,7 @@ sub gw_exec {
 sub gateway_locate {
     my ($class, $cfg) = @_;
     my $gwvmid = $cfg->{restore}{gateway_vmid};
-    die "restore.gateway_vmid não configurado (mm-pve-tools config)\n"
+    die "restore.gateway_vmid is not configured (mm-pve-tools config)\n"
         unless defined $gwvmid && length $gwvmid;
     return ($class->find_node_of_vmid($gwvmid), $gwvmid);
 }
@@ -237,7 +237,7 @@ sub results_lock_path {
 
 sub result_key_for_upid {
     my ($class, $upid) = @_;
-    die "UPID ausente para calcular result_key\n" unless defined $upid && length $upid;
+    die "UPID is required to calculate result_key\n" unless defined $upid && length $upid;
     return sha256_hex_of($upid);
 }
 
@@ -248,14 +248,14 @@ sub _result_key_ok {
 
 sub register_pending_result {
     my ($class, $key, $upid, $user) = @_;
-    die "result_key inválido\n" unless _result_key_ok($key);
-    die "UPID ausente\n" unless defined $upid && length $upid;
+    die "invalid result_key\n" unless _result_key_ok($key);
+    die "UPID is missing\n" unless defined $upid && length $upid;
     my $dir = $class->results_dir;
     ensure_dir($dir, 0700);
     my $lock = flock_ex($class->results_lock_path);
     my $ok = eval {
         if (!-f "$dir/$key.json") {
-            write_file_atomic("$dir/$key.pending", encode_json({
+            write_file_atomic("$dir/$key.pending", json_encode({
                 user => $user, upid => $upid, created => now_iso(),
             }) . "\n", 0600);
         }
@@ -270,7 +270,7 @@ sub register_pending_result {
 # grava resultado com a senha — NUNCA em log/journal/Task Log
 sub save_result {
     my ($class, $key, $user, $data) = @_;
-    die "result_key inválido\n" unless _result_key_ok($key);
+    die "invalid result_key\n" unless _result_key_ok($key);
     my $dir = $class->results_dir;
     ensure_dir($dir, 0700);
     chmod(0700, $dir);
@@ -278,7 +278,7 @@ sub save_result {
     my $lock = flock_ex($class->results_lock_path);
     my $ok = eval {
         if (!-f $file) {
-            write_file_atomic($file, encode_json({
+            write_file_atomic($file, json_encode({
                 user    => $user,
                 created => now_iso(),
                 data    => $data,
@@ -298,7 +298,7 @@ sub save_result {
 # então lê; uma leitura não autorizada deixa o arquivo intacto.
 sub fetch_result {
     my ($class, $key, $user, %opt) = @_;
-    die "result_key inválido\n" unless _result_key_ok($key);
+    die "invalid result_key\n" unless _result_key_ok($key);
     my $dir = $class->results_dir;
     my $file = "$dir/$key.json";
     my $lock = flock_ex($class->results_lock_path);
@@ -307,16 +307,16 @@ sub fetch_result {
         if (!-f $file) {
             $err = -f "$dir/$key.pending"
                 ? 'RESULT_UNFINISHED'
-                : 'RESULT_NOT_FOUND: resultado não encontrado (não existe ou já foi lido — a leitura é única)';
+                : 'RESULT_NOT_FOUND: result not found (missing or already read - reads are one-shot)';
             die "$err\n";
         }
         my $meta = decode_json(read_file($file));
         my $allowed = !defined($user) || $opt{sys_modify}
             || $user eq 'root@pam' || $user eq ($meta->{user} // '');
-        die "RESULT_FORBIDDEN: resultado pertence a outro requester; só o dono da tarefa ou Sys.Modify pode lê-lo\n"
+        die "RESULT_FORBIDDEN: result belongs to another requester; only the task owner or Sys.Modify may read it\n"
             unless $allowed;
         my $claim = "$dir/$key.claim.$$";
-        rename($file, $claim) or die "RESULT_NOT_FOUND: resultado não encontrado\n";
+        rename($file, $claim) or die "RESULT_NOT_FOUND: result not found\n";
         my $claimed = eval { read_file($claim) };
         my $read_err = $@;
         unlink($claim);
@@ -378,8 +378,8 @@ sub set_tag {
         '--output-format', 'json');
     push @cmd, '--tags', $val;
     my $res = MMPve::Core::Runner->run(\@cmd, timeout => 30);
-    die "não consegui " . ($add ? 'adicionar' : 'remover')
-        . " a tag $TAG na VM $vmid: " . ($res->{err} || "rc=$res->{rc}") . "\n"
+    die "could not " . ($add ? 'add' : 'remove')
+        . " a tag $TAG on VM $vmid: " . ($res->{err} || "rc=$res->{rc}") . "\n"
         unless $res->{ok};
     return 1;
 }
@@ -393,7 +393,7 @@ sub sessions {
     my $out = $class->gw_exec($gwn, $gwvmid, ['gw-restore', 'list', '--json'],
         timeout => $opt{timeout} // $GW_TIMEOUT);
     my $response = eval { decode_json($out) };
-    die "saída do gw-restore list não é JSON\n" if $@;
+    die "gw-restore list output is not JSON\n" if $@;
     MMPve::Contract::Gateway->validate('list_response', $response);
     my $list = $response->{sessions};
     return wantarray ? @{$list} : $list;
@@ -401,7 +401,7 @@ sub sessions {
 
 sub revoke {
     my ($class, $sid, %opt) = @_;
-    die "id de sessão inválido\n" unless defined $sid && $sid =~ /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+    die "invalid session id\n" unless defined $sid && $sid =~ /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
     my $cfg = $opt{config} // MMPve::Core::Config->load;
     my ($gwn, $gwvmid) = $class->gateway_locate($cfg);
     my @before = $class->sessions(config => $cfg);
@@ -427,10 +427,10 @@ sub test_gateway {
     for my $line (split /\n/, $out) {
         $line =~ s/\s+$//;
         next unless length $line;
-        my $ok = ($line =~ /^[✘✗xX]/ || $line =~ /(?:FALH|ERRO|FAIL)/i) ? 0 : 1;
+        my $ok = ($line =~ /^(?:FAIL|ERROR|x|X)/i) ? 0 : 1;
         push @items, { ok => $ok, line => $line };
     }
-    push @items, { ok => 1, line => 'selfcheck executou sem saída' } unless @items;
+    push @items, { ok => 1, line => 'selfcheck completed with no output' } unless @items;
     return { node => $gwn, gateway_vmid => $gwvmid, items => \@items };
 }
 
@@ -483,44 +483,44 @@ sub publish {
         my ($step, $msg) = @_;
         chomp $msg;
         $j->mark_failed($step, $msg);
-        log_line("restore publish FALHOU passo $step: $msg");
-        die "$msg\nPara continuar: $resume_cmd\n";
+        log_line("restore publish FAILED at step $step: $msg");
+        die "$msg\nTo continue: $resume_cmd\n";
     };
-    $j->steps([qw(validar limites rede gateway resultado tag)]);
+    $j->steps([qw(validate limits network gateway result tag)]);
 
     # --- validar
     eval {
-        $j->mark_running('validar');
-        die "backup ausente\n" unless defined $spec->{backup};
+        $j->mark_running('validate');
+        die "backup is missing\n" unless defined $spec->{backup};
         my %vol = $class->parse_volid($spec->{backup});
         $spec->{owner_vmid} = $vol{vmid};
         $spec->{storage}    = $vol{storage};
         $spec->{timestamp}  = $vol{timestamp};
         $spec->{xlate} = $class->require_folder($class->translate_path($spec->{path_b64}));
-        die "duração precisa ser inteiro 1.." . $r->{session_max_hours} . " horas\n"
+        die "duration must be an integer from 1 to " . $r->{session_max_hours} . " hours\n"
             unless defined $spec->{hours} && $spec->{hours} =~ /^\d+$/
             && $spec->{hours} >= 1 && $spec->{hours} <= $r->{session_max_hours};
         if (defined $spec->{ticket}) {
-            die "chamado precisa ter formato GLPI-<número>\n"
+            die "ticket must use the GLPI-<number> format\n"
                 unless $spec->{ticket} =~ /^GLPI-\d+$/;
         }
         $spec->{vmid} //= $spec->{owner_vmid};
-        $j->mark_done('validar');
-    } or $fail->('validar', $@);
+        $j->mark_done('validate');
+    } or $fail->('validate', $@);
 
     # --- limites (max_sessions)
     eval {
-        $j->mark_running('limites');
+        $j->mark_running('limits');
         my @sess = $class->sessions(config => $cfg);
-        die "limite de sessões atingido (max_sessions="
-            . $r->{max_sessions} . ", ativas=" . scalar(@sess) . ")\n"
+        die "session limit reached (max_sessions="
+            . $r->{max_sessions} . ", active=" . scalar(@sess) . ")\n"
             if scalar(@sess) >= $r->{max_sessions};
-        $j->mark_done('limites');
-    } or $fail->('limites', $@);
+        $j->mark_done('limits');
+    } or $fail->('limits', $@);
 
     # --- rede (VLAN, gateway, IP da VM)
     eval {
-        $j->mark_running('rede');
+        $j->mark_running('network');
         $spec->{dest_node} = $class->find_node_of_vmid($spec->{vmid});
         my $conf = $class->vm_config($spec->{dest_node}, $spec->{vmid});
         $spec->{vlan} = $class->pick_vlan($conf, $r->{vlans});
@@ -528,7 +528,7 @@ sub publish {
         $spec->{gw_ip}  = $vent->{gw_ip};
         $spec->{prefix} = $vent->{prefix};
         if (defined $spec->{vm_ip}) {
-            die "IP $spec->{vm_ip} fora do prefixo do gateway "
+            die "IP $spec->{vm_ip} is outside the gateway prefix "
                 . "$spec->{gw_ip}/$spec->{prefix}\n"
                 unless $class->ip_in_prefix($spec->{vm_ip}, $spec->{gw_ip}, $spec->{prefix});
         } else {
@@ -537,12 +537,12 @@ sub publish {
                     "/nodes/$spec->{dest_node}/qemu/$spec->{vmid}/agent/network-get-interfaces");
             };
             $spec->{vm_ip} = $class->pick_vm_ip($ifaces, $spec->{gw_ip}, $spec->{prefix});
-            die "guest agent indisponível na VM $spec->{vmid} e nenhum --vm-ip informado\n"
+            die "guest agent unavailable on VM $spec->{vmid} and no --vm-ip was provided\n"
                 unless defined $spec->{vm_ip};
-            $j->record('rede', vm_ip => $spec->{vm_ip});
+            $j->record('network', vm_ip => $spec->{vm_ip});
         }
-        $j->mark_done('rede');
-    } or $fail->('rede', $@);
+        $j->mark_done('network');
+    } or $fail->('network', $@);
 
     # --- chamada ao gateway
     my $gw_out;
@@ -556,11 +556,11 @@ sub publish {
                 require PVE::Storage;
                 PVE::Storage::config();
             };
-            die "não consegui ler storage.cfg: $@\n" if $@;
+            die "could not read storage.cfg: $@\n" if $@;
         }
         my $storage = $storage_cfg->{ids}{ $spec->{storage} }
-            or die "storage '$spec->{storage}' não encontrado no storage.cfg\n";
-        die "o caminho selecionado não contém uma partição\n"
+            or die "storage '$spec->{storage}' was not found in storage.cfg\n";
+        die "the selected path does not contain a partition\n"
             unless defined $spec->{xlate}{part};
         my $payload = {
             contract => 1,
@@ -591,19 +591,19 @@ sub publish {
     # --- resultado (senha só no arquivo one-shot)
     my $result;
     eval {
-        $j->mark_running('resultado');
+        $j->mark_running('result');
         $result = eval { decode_json($gw_out) };
-        die "saída do gw-restore publish não é JSON\n" if $@;
+        die "gw-restore publish output is not JSON\n" if $@;
         MMPve::Contract::Gateway->validate('publish_response', $result);
-        die "gateway devolveu request_id diferente\n"
+        die "gateway returned a different request_id\n"
             unless ($result->{request_id} // '') eq $spec->{request_id};
         my $key = $arg{result_key}
             || sha256_hex_of($spec->{request_id});
         $class->save_result($key, $spec->{user}, $result);
         $spec->{result_key} = $key;
-        $j->record('resultado', result_key => $key);    # SEM a senha
-        $j->mark_done('resultado');
-    } or $fail->('resultado', $@);
+        $j->record('result', result_key => $key);    # password excluded
+        $j->mark_done('result');
+    } or $fail->('result', $@);
 
     # --- tag restore-ativo
     eval {
@@ -613,12 +613,12 @@ sub publish {
     } or do {
         chomp(my $warning = $@);
         $j->record('tag', warning => $warning);
-        log_line("restore publish: sessão criada, mas tag não aplicada: $warning");
+        log_line("restore publish: session created, but tag was not applied: $warning");
     };
 
-    $j->finish('publicado');
-    log_line("restore publish ok vm=$spec->{vmid} vlan=$spec->{vlan} horas=$spec->{hours}"
-        . ($spec->{ticket} ? " chamado=$spec->{ticket}" : ''));
+    $j->finish('published');
+    log_line("restore publish ok vm=$spec->{vmid} vlan=$spec->{vlan} hours=$spec->{hours}"
+        . ($spec->{ticket} ? " ticket=$spec->{ticket}" : ''));
 
     return {
         ok         => 1,
@@ -642,23 +642,23 @@ sub validate_section {
 sub apply {
     my ($class, $cfg) = @_;
     my $r = ($cfg // {})->{restore};
-    return { ok => 0, changed => 0, error => 'seção restore ausente' } unless $r;
-    return { ok => 0, changed => 0, error => 'restore.gateway_vmid não configurado' }
+    return { ok => 0, changed => 0, error => 'restore section is missing' } unless $r;
+    return { ok => 0, changed => 0, error => 'restore.gateway_vmid is not configured' }
         unless defined $r->{gateway_vmid} && length $r->{gateway_vmid};
-    return { ok => 0, changed => 0, error => 'restore.vlans vazio (nenhuma VLAN cadastrada)' }
+    return { ok => 0, changed => 0, error => 'restore.vlans is empty (no VLANs configured)' }
         unless $r->{vlans} && %{ $r->{vlans} };
-    return { ok => 1, changed => 0, message => 'restore configurado (gateway e VLANs ok)' };
+    return { ok => 1, changed => 0, message => 'restore configured (gateway and VLANs are valid)' };
 }
 
 sub revert {
     my ($class) = @_;
-    return { ok => 1, changed => 0, message => 'restore: nada aplicado por node' };
+    return { ok => 1, changed => 0, message => 'restore: nothing is applied per node' };
 }
 
 sub check {
     my ($class, $cfg) = @_;
     my $r = ($cfg // {})->{restore};
-    return { ok => 0, note => 'seção restore ausente' } unless $r;
+    return { ok => 0, note => 'restore section is missing' } unless $r;
     return {
         ok          => (defined $r->{gateway_vmid} && %{ $r->{vlans} // {} }) ? 1 : 0,
         gateway_vmid => $r->{gateway_vmid} // '',
@@ -681,7 +681,7 @@ sub cli {
         if ($opt{'dry-run'}) {
             my %vol = $class->parse_volid($opt{backup});
             my $x = $class->translate_path($opt{'path-b64'});
-            printf "publicaria storage=%s vm_origem=%d ts=%s drive=%s part=%s subpasta=%s\n",
+            printf "would publish storage=%s source_vm=%d ts=%s drive=%s partition=%s subpath=%s\n",
                 @vol{qw(storage vmid timestamp)}, $x->{drive},
                 (defined $x->{part} ? $x->{part} : '-'), ($x->{subpath} || '-');
             return 0;
@@ -697,13 +697,13 @@ sub cli {
         );
         my $data = $class->fetch_result($res->{result_key}, undef);
         if ($opt{json}) {
-            print encode_json({ %{$res}, result => $data }), "\n";
+            print json_encode({ %{$res}, result => $data }), "\n";
         } else {
-            print "Publicação criada (VM $res->{vmid}, VLAN $res->{vlan}, expira $data->{expires_at})\n";
+            print "Publish created (VM $res->{vmid}, VLAN $res->{vlan}, expires $data->{expires_at})\n";
             print "UNC:      $data->{unc}\n";
-            print "Usuário:  $data->{user}\n";
-            print "Senha:    $data->{password}\n";
-            print "Guarde a senha: ela não será mostrada de novo.\n";
+            print "User:     $data->{user}\n";
+            print "Password: $data->{password}\n";
+            print "Keep the password: it will not be shown again.\n";
         }
         return 0;
     }
@@ -712,10 +712,10 @@ sub cli {
         GetOptionsFromArray($av, \%opt, 'json!') or return 2;
         my @s = $class->sessions;
         if ($opt{json}) {
-            print encode_json(\@s), "\n";
+            print json_encode(\@s), "\n";
         } else {
-            if (!@s) { print "nenhuma sessão ativa\n"; return 0 }
-            printf "%-14s %-8s %-15s %-16s %s\n", qw(ID VMID VLAN EXPIRA PASTA);
+            if (!@s) { print "no active sessions\n"; return 0 }
+            printf "%-14s %-8s %-15s %-16s %s\n", qw(ID VMID VLAN EXPIRES PATH);
             for my $s (@s) {
                 printf "%-14s %-8s %-15s %-16s %s\n",
                     $s->{id} // '?', $s->{vmid} // '?', $s->{vlan} // '?',
@@ -727,23 +727,23 @@ sub cli {
     if ($cmd eq 'revoke') {
         my $id = shift @{$av};
         unless (defined $id) {
-            print STDERR "uso: mm-pve restore revoke <id> (veja mm-pve restore sessions)\n";
+            print STDERR "usage: mm-pve restore revoke <id> (see mm-pve restore sessions)\n";
             return 2;
         }
         my $res = $class->revoke($id);
-        print "sessão $res->{id} revogada\n";
+        print "session $res->{id} revoked\n";
         return 0;
     }
     if ($cmd eq 'test-gateway') {
         my $res = $class->test_gateway;
-        print "gateway: VM $res->{gateway_vmid} no node $res->{node}\n";
+        print "gateway: VM $res->{gateway_vmid} on node $res->{node}\n";
         for my $it (@{ $res->{items} }) {
-            print(($it->{ok} ? '✔' : '✘'), ' ', $it->{line}, "\n");
+            print(($it->{ok} ? 'OK' : 'FAIL'), ' ', $it->{line}, "\n");
         }
         return 1 if grep { !$_->{ok} } @{ $res->{items} };
         return 0;
     }
-    print STDERR "uso: mm-pve restore <publish|sessions|revoke|test-gateway> [opções]\n";
+    print STDERR "usage: mm-pve restore <publish|sessions|revoke|test-gateway> [options]\n";
     return 2;
 }
 

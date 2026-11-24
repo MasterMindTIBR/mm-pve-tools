@@ -185,7 +185,7 @@ run_rollback_case() {
             >"$rollback_log" 2>&1; then
             die 'rollback após destroy foi aceito'
         fi
-        grep -qi 'rollback recusado' "$rollback_log" || die 'rollback não explicou a recusa pós-destroy'
+        grep -qi 'rollback refused' "$rollback_log" || die 'rollback não explicou a recusa pós-destroy'
         return
     fi
     mm-pve renumber --rollback --from "$old" --to "$new" --node "$node" \

@@ -20,7 +20,7 @@ is($v{storage}, 'pbs1', 'volid storage');
 is($v{vmid}, 100, 'volid vmid');
 is($v{timestamp}, '2026-10-26T02:00:03Z', 'volid ts');
 eval { $R->parse_volid('lixo') };
-like($@, qr/volid inválido/, 'volid lixo recusado');
+like($@, qr/invalid volid/, 'invalid volid refused');
 
 # ---- tradução válida completa
 my $t = $R->translate_path(b64('/drive-scsi1.img.fidx/part/2/Dados/Financeiro'));
@@ -42,7 +42,7 @@ is($t->{part}, 1, 'particao via caminho plano');
 for my $p ('/drive-scsi1.img.fidx/lvm/data', '/drive-scsi1.img.fidx/part/1/zpool',
     '/drive-scsi0.img.fidx/raw') {
     eval { $R->translate_path(b64($p)) };
-    like($@, qr/bucket .*fase 2/, "bucket recusado: $p");
+    like($@, qr/bucket .*phase 2/, "bucket refused: $p");
 }
 
 # ---- path traversal / lixo
@@ -52,7 +52,7 @@ for my $p ('/../etc', '/drive-scsi1.img.fidx/part/2/../../etc',
     like($@, qr/\.\.|caracteres/, "traversal recusado: $p");
 }
 eval { $R->translate_path(encode_base64("/drive-scsi1.img.fidx/part/2/x\0y")) };
-like($@, qr/base64 inválido|caracteres/, 'byte nulo recusado');
+like($@, qr/invalid base64|control characters/, 'null byte refused');
 
 # primeiro componente precisa ser drive-*.fidx
 eval { $R->translate_path(b64('/notes.txt')) };
@@ -60,18 +60,18 @@ like($@, qr/drive-\*\.img\.fidx/, 'arquivo solto recusado');
 
 # part fora da faixa
 eval { $R->translate_path(b64('/drive-scsi1.img.fidx/part/0')) };
-like($@, qr/partição precisa ser 1/, 'particao 0 recusada');
+like($@, qr/partition must be 1/, 'partition 0 refused');
 
 # caminho sem barra
 eval { $R->translate_path(b64('drive-scsi1.img.fidx')) };
-like($@, qr/precisa começar/, 'sem barra inicial recusado');
+like($@, qr/path must start with/, 'missing leading slash refused');
 
 # ---- publicar exige uma pasta dentro de uma partição (contrato v1)
 ok(eval { $R->require_folder($R->translate_path(b64('/drive-sata1.img.fidx/part/2/Área de Trabalho'))) },
     'pasta dentro da partição é aceita') or diag $@;
 for my $p ('/drive-sata1.img.fidx/part/2', '/drive-sata1.img.fidx/part/2/', '/drive-sata0.img.fidx') {
     eval { $R->require_folder($R->translate_path(b64($p))) };
-    like($@, qr/escolha uma pasta dentro da partição/, "recusado sem pasta: $p");
+    like($@, qr/choose a folder inside the partition/, "refused without folder: $p");
 }
 
 done_testing();

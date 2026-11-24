@@ -44,12 +44,12 @@ subtest 'validacao aceita bom' => sub {
 subtest 'validacao rejeita ruim' => sub {
     my @cases = (
         [ { revision => 0 },                                   qr/revision/ ],
-        [ { modules => { renumber => 'sim' } },                qr/booleano/ ],
-        [ { modules => { inexistente => 1 } },                 qr/desconhecido/ ],
-        [ { chave_nova => 1 },                                 qr/desconhecida/ ],
-        [ { branding => { logo => 'logo.gif' } },             qr/só \.png|asset precisa/ ],
+        [ { modules => { renumber => 'sim' } },                qr/must be boolean/ ],
+        [ { modules => { inexistente => 1 } },                 qr/unknown module/ ],
+        [ { chave_nova => 1 },                                 qr/unknown key/ ],
+        [ { branding => { logo => 'logo.gif' } },             qr/only \.png|invalid file/ ],
         [ { vmid_scheme => [ { label => 'A', from => 1000, to => 1999 },
-                             { label => 'B', from => 1500, to => 2500 } ] }, qr/sobrepostas/ ],
+                             { label => 'B', from => 1500, to => 2500 } ] }, qr/overlapping/ ],
         [ { vmid_scheme => [ { label => 'A', from => 2000, to => 1000 } ] }, qr/from/ ],
         [ { restore => { vlans => { 5000 => { gw_ip => '10.0.0.1', prefix => 24 } } } }, qr/1\.\.4094/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.999', prefix => 24 } } } }, qr/IPv4/ ],
@@ -57,8 +57,8 @@ subtest 'validacao rejeita ruim' => sub {
         [ { restore => { session_default_hours => 100, session_max_hours => 50 } },       qr/default_hours/ ],
         [ { restore => { session_max_hours => 99999 } },                                  qr/168/ ],
         [ { restore => { vlans => { 100 => { gw_ip => '10.0.0.1', prefix => 24 },
-                                      200 => { gw_ip => '10.0.0.1', prefix => 24 } } } }, qr/repetido/ ],
-        [ { branding => { logo => '../../etc/passwd' } },     qr/nome de arquivo/ ],
+                                      200 => { gw_ip => '10.0.0.1', prefix => 24 } } } }, qr/repeated/ ],
+        [ { branding => { logo => '../../etc/passwd' } },     qr/invalid file name/ ],
         [ { branding => { assets_hash => 'md5:xx' } },        qr/sha256/ ],
         [ { branding => { title => 'x' x 101 } },             qr/100 caracteres/ ],
     );
@@ -102,7 +102,7 @@ subtest 'JSON inválido rejeitado' => sub {
     print $fh '{"revision": 1, oops}';
     close $fh;
     eval { MMPve::Core::Config->load };
-    like($@, qr/inválido/, 'json quebrado → die');
+    like($@, qr/invalid config\.json/, 'invalid JSON dies');
 };
 
 done_testing();

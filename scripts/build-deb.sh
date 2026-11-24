@@ -17,7 +17,7 @@ for arg in "$@"; do
         --in-container) in_container=1 ;;
         --version-suffix=*) version_suffix=${arg#--version-suffix=} ;;
         *)
-            printf 'uso: %s [--lintian] [--in-container] [--version-suffix=SUFIXO]\n' "$0" >&2
+            printf 'usage: %s [--lintian] [--in-container] [--version-suffix=SUFFIX]\n' "$0" >&2
             exit 2
             ;;
     esac
@@ -26,13 +26,13 @@ done
 # 0.2.0-1+SUFIXO). Serve ao lab: com a mesma versão do APT, um dist-upgrade
 # trocava o build em teste pelo pacote publicado.
 if [[ -n $version_suffix && ! $version_suffix =~ ^[a-z0-9][a-z0-9.+~]*$ ]]; then
-    printf 'sufixo de versão inválido: %s\n' "$version_suffix" >&2
+        printf 'invalid version suffix: %s\n' "$version_suffix" >&2
     exit 2
 fi
 
 if (( ! in_container )); then
     command -v docker >/dev/null 2>&1 || {
-        printf 'docker não encontrado; use --in-container dentro de Debian 13\n' >&2
+        printf 'docker not found; use --in-container inside Debian 13\n' >&2
         exit 127
     }
 
@@ -72,11 +72,11 @@ if command -v apt-get >/dev/null 2>&1 && {
 fi
 
 command -v dpkg-buildpackage >/dev/null 2>&1 || {
-    printf 'dpkg-buildpackage não encontrado; instale as dependências Debian de build\n' >&2
+        printf 'dpkg-buildpackage not found; install Debian build dependencies\n' >&2
     exit 127
 }
 command -v mk-build-deps >/dev/null 2>&1 || {
-    printf 'mk-build-deps não encontrado; instale devscripts/equivs\n' >&2
+        printf 'mk-build-deps not found; install devscripts/equivs\n' >&2
     exit 127
 }
 
@@ -107,12 +107,12 @@ if [[ -n $version_suffix ]]; then
     maintainer=$(dpkg-parsechangelog -l debian/changelog -SMaintainer)
     {
         printf 'mm-pve-tools (%s+%s) UNRELEASED; urgency=medium\n\n' "$base_version" "$version_suffix"
-        printf '  * Build de laboratório; não publicar.\n\n'
+        printf '  * Lab build; do not publish.\n\n'
         printf ' -- %s  %s\n\n' "$maintainer" "$(date -R)"
         cat debian/changelog
     } >debian/changelog.lab
     mv -- debian/changelog.lab debian/changelog
-    printf 'versão do build de laboratório: %s+%s\n' "$base_version" "$version_suffix"
+    printf 'lab build version: %s+%s\n' "$base_version" "$version_suffix"
 fi
 mk-build-deps --install --remove --tool='apt-get -y --no-install-recommends' debian/control
 rm -f -- ../mm-pve-tools_*.deb ../mm-gw-restore_*.deb ../mm-pve-tools_*.changes \
@@ -122,7 +122,7 @@ dpkg-buildpackage -us -uc -b
 for package in mm-pve-tools mm-gw-restore; do
     deb=$(find .. -maxdepth 1 -type f -name "${package}_*.deb" -print -quit)
     if [[ -z "$deb" ]]; then
-        printf 'build não produziu o pacote %s\n' "$package" >&2
+        printf 'build did not produce package %s\n' "$package" >&2
         exit 1
     fi
     mv -- "$deb" "${REPO_ROOT}/dist/"
@@ -140,7 +140,7 @@ done
 
 leftovers=$(grep -R -a -l -F '@MM_PVE_VERSION@' "$inspect_root" || true)
 if [[ -n "$leftovers" ]]; then
-    printf 'placeholder de versão encontrado no pacote: %s\n' "$leftovers" >&2
+    printf 'version placeholder found in package: %s\n' "$leftovers" >&2
     exit 1
 fi
 cli_version=$(awk -F"'" '/^our \$VERSION = / { print $2; exit }' \
@@ -148,11 +148,11 @@ cli_version=$(awk -F"'" '/^our \$VERSION = / { print $2; exit }' \
 js_version=$(sed -nE "s/.*version: '([^']+)'.*/\1/p" \
     "$inspect_root/mm-pve-tools/usr/share/pve-manager/js/mm-tools.js" | head -n 1)
 if [[ "$cli_version" != "$version" || "$js_version" != "$version" ]]; then
-    printf 'versão instalada divergente: changelog=%s cli=%s js=%s\n' \
+    printf 'installed version mismatch: changelog=%s cli=%s js=%s\n' \
         "$version" "$cli_version" "$js_version" >&2
     exit 1
 fi
-printf 'substituição de versão validada: %s\n' "$version"
+printf 'version substitution validated: %s\n' "$version"
 
 if (( lintian )); then
     lintian --fail-on warning "${REPO_ROOT}"/dist/*.deb
@@ -161,4 +161,4 @@ fi
 build_owner="${MM_PVE_BUILD_OWNER:-$(id -u):$(id -g)}"
 chown -- "$build_owner" "${REPO_ROOT}/dist" \
     "${REPO_ROOT}"/dist/*.deb
-printf 'pacotes gerados em %s/dist\n' "$REPO_ROOT"
+printf 'packages generated in %s/dist\n' "$REPO_ROOT"

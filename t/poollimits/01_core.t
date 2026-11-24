@@ -94,7 +94,7 @@ my $refused = eval {
     1;
 };
 ok(!$refused, 'segunda reserva que excede vCPU é recusada') or diag $@;
-like($@, qr/pool 'lab'.*vCPU.*uso atual.*pedido.*limite/s, 'mensagem inclui pool, recurso, uso, pedido e limite');
+like($@, qr/pool 'lab'.*vCPU.*current.*requested.*limit/s, 'message includes pool, resource, usage, request, and limit');
 
 ok(eval {
     PVE::MMTools::PoolLimits->check_config('lab', 101, 'qemu',
@@ -206,7 +206,7 @@ ok(!eval {
     PVE::MMTools::PoolLimits->check_start($configs{'qemu:104'}, 104, 'pre-start');
     1;
 }, 'segundo start na janela do RRD é recusado');
-like($@, qr/limite de vCPU excedido/, 'pela conta de vCPU');
+like($@, qr/vCPU limit exceeded/, 'by vCPU accounting');
 $cfg->{poollimits}{pools}{lab}{cpu}{max} = 4;
 MMPve::Core::Config->save($cfg);
 
@@ -228,7 +228,7 @@ my $fail_closed = eval {
     1;
 };
 ok(!$fail_closed, 'config inválida não libera aumento') or diag $@;
-like($@, qr/desative o módulo/, 'fail-closed explica como desligar');
+like($@, qr/disable the module/, 'fail-closed explains how to disable');
 
 done_testing();
 

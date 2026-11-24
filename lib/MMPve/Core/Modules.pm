@@ -26,11 +26,11 @@ sub all {
         $file .= '.pm';
         eval { require $file; 1 } or do {
             # módulo ausente = pacote parcialmente instalado; segue sem ele
-            MMPve::Core::Util->can('log_line') and MMPve::Core::Util::log_line("módulo $m indisponível: $@");
+            MMPve::Core::Util->can('log_line') and MMPve::Core::Util::log_line("module $m unavailable: $@");
             next;
         };
         my $targets = eval { $m->patch_targets };
-        die "registro de patches do módulo $m falhou: $@\n" if $@;
+        die "patch registration for module $m failed: $@\n" if $@;
         if (ref($targets) eq 'ARRAY' && @{$targets}) {
             MMPve::Core::Patch->register_module($m);
         }

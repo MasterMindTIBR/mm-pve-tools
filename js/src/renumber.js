@@ -6,7 +6,7 @@
 Ext.define('MM.panel.Vmid', {
     extend: 'Ext.panel.Panel',
     alias: 'widget.mmPanelVmid',
-    title: 'VMID',
+	    title: MM.t('tabs.vmid'),
     layout: { type: 'vbox', align: 'stretch' },
 
     initComponent: function () {
@@ -26,25 +26,25 @@ Ext.define('MM.panel.Vmid', {
 	    },
 	    columns: [
 		{
-		    text: gettext('Label'), dataIndex: 'label', flex: 1,
+		    text: MM.t('common.label'), dataIndex: 'label', flex: 1,
 		    editor: { xtype: 'proxmoxtextfield', allowBlank: false, maxLength: 64 },
 		},
 		{
-		    text: 'De', dataIndex: 'from', width: 120,
+		    text: MM.t('vmid.from'), dataIndex: 'from', width: 120,
 		    editor: { xtype: 'proxmoxintegerfield', minValue: 100, maxValue: 9999999 },
 		},
 		{
-		    text: 'Até', dataIndex: 'to', width: 120,
+		    text: MM.t('vmid.to'), dataIndex: 'to', width: 120,
 		    editor: { xtype: 'proxmoxintegerfield', minValue: 101, maxValue: 9999999 },
 		},
 	    ],
 	    tbar: [
 		{
-		    xtype: 'button', text: gettext('Add'), iconCls: 'fa fa-fw fa-plus',
-		    handler: () => store.add({ label: 'nova faixa', from: 1000, to: 1999 }),
+		    xtype: 'button', text: MM.t('common.add'), iconCls: 'fa fa-fw fa-plus',
+		    handler: () => store.add({ label: MM.t('vmid.add_range'), from: 1000, to: 1999 }),
 		},
 		{
-		    xtype: 'button', text: gettext('Remove'), iconCls: 'fa fa-fw fa-minus',
+		    xtype: 'button', text: MM.t('common.remove'), iconCls: 'fa fa-fw fa-minus',
 		    handler: () => {
 			let sel = grid.getSelection();
 			store.remove(sel);
@@ -52,7 +52,7 @@ Ext.define('MM.panel.Vmid', {
 		},
 		{ xtype: 'tbspacer', width: 10 },
 		{
-		    xtype: 'button', text: gettext('Save'), iconCls: 'fa fa-fw fa-floppy-o',
+		    xtype: 'button', text: MM.t('common.save'), iconCls: 'fa fa-fw fa-floppy-o',
 		    handler: () => me.saveScheme(),
 		},
 	    ],
@@ -60,6 +60,7 @@ Ext.define('MM.panel.Vmid', {
 
 	me.reload = function () {
 	    MM.Api.request({
+		owner: me,
 		url: '/nodes/localhost/mm-tools/config',
 		success: function (res) {
 		    let data = res.data || {};
@@ -82,7 +83,7 @@ Ext.define('MM.panel.Vmid', {
 		success: () => {
 		    me.digest = undefined;
 		    me.reload();
-		    Ext.Msg.alert('MM Tools', gettext('Saved'));
+		    Ext.Msg.alert(MM.t('product.name'), MM.t('common.saved'));
 		},
 	    });
 	};
@@ -93,16 +94,16 @@ Ext.define('MM.panel.Vmid', {
 	me.saveNextId = function () {
 	    let first = store.getAt(0);
 	    if (!first || !first.get('from') || !first.get('to')) {
-		Ext.Msg.alert('MM Tools', 'Cadastre a faixa principal antes (primeira linha da grade).');
+		Ext.Msg.alert(MM.t('product.name'), MM.t('vmid.primary_required'));
 		return;
 	    }
 	    MM.Api.request({
 		method: 'PUT',
 		url: '/cluster/options',
 		params: { 'next-id': `lower=${first.get('from')},upper=${first.get('to')}` },
-		success: () => Ext.Msg.alert(
-		    'MM Tools',
-		    `next-id do datacenter gravado: ${first.get('from')}–${first.get('to')}`,
+		 success: () => Ext.Msg.alert(
+		    MM.t('product.name'),
+		    MM.t('vmid.next_id_saved', { from: first.get('from'), to: first.get('to') }),
 		),
 	    });
 	};
@@ -113,7 +114,7 @@ Ext.define('MM.panel.Vmid', {
 		{
 		    xtype: 'component',
 		    padding: '10 10 0 10',
-		    html: 'Faixas de VMID por finalidade (vmid_scheme). O renumber avisa quando o ID novo cai fora delas.',
+		    html: MM.t('vmid.scheme_help'),
 		},
 		{
 		    xtype: 'container',
@@ -122,13 +123,13 @@ Ext.define('MM.panel.Vmid', {
 		    items: [
 			{
 			    xtype: 'button',
-			    text: 'Gravar faixa principal no next-id do datacenter.cfg',
+			    text: MM.t('vmid.save_next_id'),
 			    iconCls: 'fa fa-fw fa-arrow-up',
 			    handler: () => me.saveNextId(),
 			},
 			{ xtype: 'tbspacer', width: 10 },
 			{
-			    xtype: 'button', text: gettext('Reload'), iconCls: 'fa fa-fw fa-refresh',
+			    xtype: 'button', text: MM.t('common.reload'), iconCls: 'fa fa-fw fa-refresh',
 			    handler: () => me.reload(),
 			},
 		    ],
@@ -139,11 +140,12 @@ Ext.define('MM.panel.Vmid', {
 	});
 
 	me.callParent();
+	MM.ModuleState.bind(me, 'renumber');
 	me.reload();
     },
 });
 
-MM.registerTab({ xtype: 'mmPanelVmid', title: 'VMID' });
+MM.registerTab({ xtype: 'mmPanelVmid', title: MM.t('tabs.vmid') });
 
 /* ------------------------- Diálogo "Trocar ID…" ------------------------- */
 
@@ -154,7 +156,7 @@ Ext.define('MM.window.Renumber', {
     modal: true,
     width: 620,
     layout: { type: 'vbox', align: 'stretch' },
-    title: 'Trocar ID da VM',
+	    title: MM.t('vmid.change_id'),
 
     vmid: undefined,   // ID antigo
     nodename: undefined,
@@ -172,7 +174,7 @@ Ext.define('MM.window.Renumber', {
 	});
 
 	let idfield = Ext.create('Proxmox.form.field.Integer', {
-	    fieldLabel: 'ID novo',
+	    fieldLabel: MM.t('vmid.new_id'),
 	    minValue: 100,
 	    maxValue: 9999999,
 	    allowBlank: false,
@@ -198,13 +200,13 @@ Ext.define('MM.window.Renumber', {
 			return MM.Utils.checkIcon(v);
 		    },
 		},
-		{ text: gettext('Check'), dataIndex: 'check', width: 150 },
-		{ text: gettext('Detail'), dataIndex: 'detail', flex: 1 },
+		{ text: MM.t('common.check'), dataIndex: 'check', width: 150 },
+		{ text: MM.t('common.detail'), dataIndex: 'detail', flex: 1 },
 	    ],
 	});
 
 	me.runButton = Ext.create('Ext.Button', {
-	    text: 'Executar',
+	    text: MM.t('vmid.execute'),
 	    disabled: true,
 	    handler: () => me.runRenumber(idfield.getValue()),
 	});
@@ -268,7 +270,7 @@ Ext.define('MM.window.Renumber', {
 		{ xtype: 'container', padding: 10, items: [idfield] },
 		grid,
 	    ],
-	    buttons: [{ text: gettext('Cancel'), handler: () => me.close() }, me.runButton],
+	    buttons: [{ text: MM.t('common.cancel'), handler: () => me.close() }, me.runButton],
 	});
 
 	me.callParent();
@@ -286,7 +288,7 @@ Ext.define('PVE.qemu.CmdMenu', {
 	let caps = Ext.state.Manager.get('GuiCap');
 	if (caps?.nodes?.['Sys.Modify']) {
 	    me.insert(0, {
-		text: 'Trocar ID…',
+		text: MM.t('vmid.menu_change_id'),
 		iconCls: 'fa fa-fw fa-exchange',
 		handler: () => Ext.create('MM.window.Renumber', {
 		    vmid: info.vmid,
@@ -327,8 +329,7 @@ Ext.define('MM.VmidSchemeCache', {
 	    if (vmid >= r.from && vmid <= r.to) { return null; }
 	}
 	let labels = ranges.map((r) => r.label).join(', ');
-	return `AVISO: VMID ${vmid} fora das faixas do MM Tools (${labels}). ` +
-	    'Confirme se é intencional.';
+	return MM.t('vmid.outside_warning', { vmid, labels });
     },
 });
 

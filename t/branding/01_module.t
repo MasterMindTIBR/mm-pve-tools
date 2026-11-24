@@ -33,10 +33,10 @@ my $PNG = "\x89PNG\r\n\x1a\n" . pack('N', 13) . 'IHDR'
 subtest 'somente PNG assinado' => sub {
     my $bad = 'conteúdo vetorial';
     eval { $M->store_asset(kind => 'logo', filename => 'x.txt', data => \$bad) };
-    like($@, qr/apenas PNG/, 'extensão não PNG recusada');
+    like($@, qr/only PNG/, 'non-PNG extension refused');
 
     eval { $M->store_asset(kind => 'logo', filename => 'fake.png', data => \$bad) };
-    like($@, qr/não é um PNG válido/, 'extensão PNG sem assinatura recusada');
+    like($@, qr/not a valid PNG/, 'PNG extension without signature refused');
 
     my $r = $M->store_asset(kind => 'logo', filename => 'qualquer.png', data => \$PNG);
     $ASSET = $r->{filename};
@@ -47,10 +47,10 @@ subtest 'somente PNG assinado' => sub {
 subtest 'limites e extensões' => sub {
     my $big = "\x89PNG\r\n\x1a\n" . ('A' x (256 * 1024));
     eval { $M->store_asset(kind => 'logo', filename => 'big.png', data => \$big) };
-    like($@, qr/excede o limite/, 'recusa > 256 KiB');
+    like($@, qr/exceeds the .* limit/, 'refuse > 256 KiB');
 
     eval { $M->store_asset(kind => 'logo', filename => 'x.jpg', data => \'xx') };
-    like($@, qr/apenas PNG/, 'recusa extensão inválida');
+    like($@, qr/only PNG/, 'invalid extension refused');
 
     my $tr = $M->store_asset(kind => 'logo', filename => '../evil.png', data => \$PNG);
     ok($tr, 'basename do upload não escapa');
@@ -63,12 +63,12 @@ $CFG->{modules}{branding} = 1;
 
 subtest 'validate_section' => sub {
     my @e = $M->validate_section({ modules => { branding => 1 }, branding => { logo => ('f' x 64) . '.png' } });
-    ok((grep { /não existe/ } @e), 'pega logo inexistente');
+    ok((grep { /does not exist/ } @e), 'missing logo');
 
     # hash errado
     my $c2 = { modules => { branding => 1 }, branding => { logo => $ASSET, assets_hash => 'sha256:' . ('0' x 64) } };
     @e = $M->validate_section($c2);
-    ok((grep { /assets_hash não confere/ } @e), 'pega hash errado') or diag explain \@e;
+    ok((grep { /assets_hash does not match/ } @e), 'wrong hash') or diag explain \@e;
 
     # hash certo passa
     my $h = $M->assets_hash({ branding => { logo => $ASSET } });
@@ -81,6 +81,7 @@ subtest 'apply/revert/check' => sub {
     my $asset = $ASSET;
     $M->store_asset(kind => 'favicon', filename => 'fav.png', data => \$PNG);
     my $cfg = MMPve::Core::Config->default;
+    $cfg->{modules}{branding} = 1;
     $cfg->{branding} = {
         title => 'MasterMind', header_text => 'MM Cloud', login_text => 'Bem-vindo',
         logo => $asset, favicon => $asset,
@@ -109,7 +110,9 @@ subtest 'apply/revert/check' => sub {
     ok($rv->{changed}, 'revert mudou');
     ok(!-f "$tmp/usr/share/pve-manager/images/mm-branding/$asset", 'logo removido');
     ok(!-d "$tmp/usr/share/pve-manager/images/mm-branding", 'dir removido');
-    ok(!-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json removido');
+    ok(-f "$tmp/usr/share/pve-manager/js/mm-branding.json", 'json estático preservado');
+    is(decode_json(MMPve::Core::Util::read_file("$tmp/usr/share/pve-manager/js/mm-branding.json"))->{enabled},
+        0, 'json estático marca branding desligado');
     my $rv2 = $M->revert;
     is($rv2->{changed}, 0, 'revert idempotente');
     is($M->check($cfg)->{applied}, 0, 'check: não aplicado');
@@ -118,10 +121,11 @@ subtest 'apply/revert/check' => sub {
 
 subtest 'apply morre com asset sumido' => sub {
     my $bad = MMPve::Core::Config->default;
+    $bad->{modules}{branding} = 1;
     $bad->{branding}{logo} = ('0' x 64) . '.png';
     $bad->{branding}{assets_hash} = $M->assets_hash($bad);
     eval { $M->apply($bad) };
-    like($@, qr/branding\.logo.*não existe/, 'erro com asset ausente');
+    like($@, qr/branding\.logo.*does not exist/, 'missing asset error');
 };
 
 done_testing();

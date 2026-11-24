@@ -163,7 +163,7 @@ subtest 'falha no meio: journal registra ANTES/DEPOIS e comando para continuar' 
     is($j->step_info('config')->{status},     'done',   'config done');
     is($j->step_info('firewall')->{status},   'done',   'firewall done');
     is($j->step_info('refs')->{status},       'failed', 'refs failed (depois de gravar ANTES como running)');
-    like($j->step_info('refs')->{error}, qr/backup set falhou/, 'erro registrado');
+    like($j->step_info('refs')->{error}, qr/backup set failed/, 'error recorded');
     my @del = MockPve::ops('delete', '/nodes/n1/qemu/100');
     is(scalar @del, 0, 'destroy não rodou');
 };
@@ -235,7 +235,7 @@ subtest 'wait_task: tarefa concluída com exitstatus != OK morre com a mensagem 
     $MockPve::S{fail_at} = 'task';
     my $err = eval { MMPve::Module::Renumber->run(from => 100, to => 1100) };
     ok($@, 'run morre no move_disks');
-    like($@, qr/tarefa falhou/, 'mensagem de tarefa falhou');
+    like($@, qr/task failed/, 'task failure message');
     like($@, qr/command error/, 'exitstatus real na mensagem');
     my $j = MMPve::Journal->open('renumber-100-1100');
     is($j->step_info('move_disks')->{status}, 'failed', 'move_disks falhou');

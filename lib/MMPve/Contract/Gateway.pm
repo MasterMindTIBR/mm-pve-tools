@@ -41,9 +41,9 @@ sub _resolve {
     my ($schema, $node) = @_;
     return $node unless $node->{'$ref'};
     my ($name) = $node->{'$ref'} =~ m{^#/definitions/([^/]+)$}
-        or die "schema com ref inválida '$node->{'$ref'}'\n";
+        or die "schema has invalid ref '$node->{'$ref'}'\n";
     my $definition = $schema->{definitions}{$name}
-        or die "schema sem definição '$name'\n";
+        or die "schema has no definition '$name'\n";
     return $definition;
 }
 
@@ -51,36 +51,36 @@ sub _validate {
     my ($class, $schema, $node, $value, $where) = @_;
     $node = _resolve($schema, $node);
     if (defined $node->{type} && !_type_ok($value, $node->{type})) {
-        die "$where: esperado $node->{type}\n";
+        die "$where: expected $node->{type}\n";
     }
     if (exists $node->{const} && (!defined($value) || $value ne $node->{const})) {
-        die "$where: esperado valor $node->{const}\n";
+        die "$where: expected value $node->{const}\n";
     }
     if (defined $node->{pattern} && (!defined($value) || $value !~ /$node->{pattern}/)) {
-        die "$where: formato inválido\n";
+        die "$where: invalid format\n";
     }
     if (defined $node->{minLength} && length($value) < $node->{minLength}) {
-        die "$where: curto demais\n";
+        die "$where: too short\n";
     }
     if (defined $node->{maxLength} && length($value) > $node->{maxLength}) {
-        die "$where: longo demais\n";
+        die "$where: too long\n";
     }
     if (defined $node->{minimum} && $value < $node->{minimum}) {
-        die "$where: menor que $node->{minimum}\n";
+        die "$where: less than $node->{minimum}\n";
     }
     if (defined $node->{maximum} && $value > $node->{maximum}) {
-        die "$where: maior que $node->{maximum}\n";
+        die "$where: greater than $node->{maximum}\n";
     }
     if ($node->{enum} && !grep { defined($value) && $_ eq $value } @{ $node->{enum} }) {
-        die "$where: valor inválido\n";
+        die "$where: invalid value\n";
     }
     if ($node->{type} && $node->{type} eq 'object') {
         for my $key (@{ $node->{required} // [] }) {
-            die "$where.$key: obrigatório\n" unless exists $value->{$key};
+            die "$where.$key: required\n" unless exists $value->{$key};
         }
         if (exists $node->{additionalProperties} && !$node->{additionalProperties}) {
             for my $key (keys %$value) {
-                die "$where.$key: campo desconhecido\n" unless exists $node->{properties}{$key};
+                die "$where.$key: unknown field\n" unless exists $node->{properties}{$key};
             }
         }
         for my $key (keys %{ $node->{properties} // {} }) {
@@ -100,7 +100,7 @@ sub validate {
     my ($class, $definition, $value) = @_;
     my $schema = $class->schema;
     my $node = $schema->{definitions}{$definition}
-        or die "definição de contrato desconhecida '$definition'\n";
+        or die "unknown contract definition '$definition'\n";
     return $class->_validate($schema, $node, $value, "contract.$definition");
 }
 

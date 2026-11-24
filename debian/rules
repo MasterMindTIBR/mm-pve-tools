@@ -15,7 +15,7 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 ifneq ($(filter nocheck,$(DEB_BUILD_OPTIONS)),)
-	@echo "testes omitidos por DEB_BUILD_OPTIONS=nocheck"
+	@echo "tests skipped because DEB_BUILD_OPTIONS=nocheck"
 else
 	$(MAKE) test test-gateway
 endif

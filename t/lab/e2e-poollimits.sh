@@ -158,7 +158,7 @@ refuse_same() {
     [[ $v0 == "$v1" ]] || { printf 'antes:\n%s\ndepois:\n%s\n' "$v0" "$v1"; lab_fail "$label: volumes mudaram"; return 1; }
 }
 
-limit_re() { printf "pool '%s': limite de %s excedido \\\\(uso atual [0-9]+, pedido [0-9]+, limite [0-9]+\\\\)" "$1" "$2"; }
+limit_re() { printf "pool '%s': %s limit exceeded \\\\(current [0-9]+, requested [0-9]+, limit [0-9]+\\\\)" "$1" "$2"; }
 
 # limits POOL MODE CPU MEM TOTAL STORES: CPU/MEM/TOTAL número ou off; STORES
 # "s1=N,s2=M" ou off. O CLI mescla storages, então zera antes de gravar.
@@ -430,7 +430,7 @@ lab_ssh "$ctl" qm set "$qmain" --memory 200 >/dev/null || lab_fail 'redução co
 lab_ssh "$ctl" qm set "$qmain" --memory 256 >/dev/null 2>&1 && lab_fail 'aumento com pool acima do limite aceito'
 printf 'redução aceita e aumento recusado com o pool acima do limite\n'
 limits "$pool" allocated 2 512 off off
-refuse_same 'CT sem cores/cpulimit entrando no pool' lxc "$lsecond" "não tem cpulimit nem cores" "$ctl" \
+refuse_same 'CT without cores/cpulimit entering pool' lxc "$lsecond" "has neither cpulimit nor cores" "$ctl" \
     pvesh set "/pools/${pool}" --vms "$lsecond"
 lab_pass 'vCPU/RAM: CLI, API, pvesh, pending, redução acima do limite e CT sem cores'
 
@@ -512,7 +512,7 @@ lab_pass 'modo ligado: CLI, API (task), HA (error, journal do LRM) e só um de d
 lab_step 'poollimits: disco total no limite (add, resize, import, alloc, cloud-init, EFI, TPM, LXC)'
 limits "$pool" allocated off off 3 off   # uso: qmain 1 + lmain 1 + qsecond 1 = 3 GiB
 pool_usage "$pool"
-dre=$(limit_re "$pool" 'disco total')
+dre=$(limit_re "$pool" 'disk total')
 refuse_same 'add disk' qemu "$qmain" "$dre" "$ctl" qm set "$qmain" --scsi1 "$lvm:1"
 refuse_same 'resize' qemu "$qmain" "$dre" "$ctl" qm resize "$qmain" scsi0 +1G
 lab_ssh "$ctl" truncate -s 1G /var/tmp/mm-e2e-import.raw
@@ -534,11 +534,11 @@ limits "$pool" allocated off off 4 off
 lab_ssh "$ctl" qm set "$qmain" --scsi1 "$lvm:1" >/dev/null || lab_fail 'add disk dentro do limite recusado'
 lab_ssh "$ctl" qm set "$qmain" --delete scsi1 >/dev/null
 lab_ssh "$ctl" qm config "$qmain" | grep -q '^unused0:' || lab_fail 'disco não virou unused0'
-refuse_same 'add com unused0 contado' qemu "$qmain" "$(limit_re "$pool" 'disco total')" "$ctl" qm set "$qmain" --scsi2 "$lvm:1"
+refuse_same 'add com unused0 contado' qemu "$qmain" "$(limit_re "$pool" 'disk total')" "$ctl" qm set "$qmain" --scsi2 "$lvm:1"
 limits "$pool" allocated off off off "${lvm}=4,${dir}=1"
-refuse_same "add por storage ($lvm)" qemu "$qmain" "$(limit_re "$pool" "disco em ${lvm}")" "$ctl" qm set "$qmain" --scsi2 "$lvm:1"
+refuse_same "add por storage ($lvm)" qemu "$qmain" "$(limit_re "$pool" "disk on ${lvm}")" "$ctl" qm set "$qmain" --scsi2 "$lvm:1"
 lab_ssh "$ctl" qm disk move "$qmain" scsi0 "$dir" --delete 1 >/dev/null || lab_fail "move para $dir dentro do limite recusado"
-refuse_same "move por storage ($dir)" qemu "$qsecond" "$(limit_re "$pool" "disco em ${dir}")" "$ctl" qm disk move "$qsecond" scsi0 "$dir" --delete 1
+refuse_same "move por storage ($dir)" qemu "$qsecond" "$(limit_re "$pool" "disk on ${dir}")" "$ctl" qm disk move "$qsecond" scsi0 "$dir" --delete 1
 lab_ssh "$ctl" qm disk move "$qmain" scsi0 "$lvm" --delete 1 >/dev/null || lab_fail "move de volta para $lvm recusado"
 pool_usage "$pool"
 lab_pass "unusedN contado; limite por storage recusa add em $lvm e move para $dir; movimentos dentro do limite passam"
@@ -570,7 +570,7 @@ wait_reservations
 used=$(disk_total_gib "$pool")
 limits "$pool" allocated off off "$used" off
 c0=$(conf qemu "$qmain" | grep -v '^lock:')
-refuse 'rollback reanexando volume' "$(limit_re "$pool" 'disco total')" "$ctl" qm rollback "$qmain" mme2e
+refuse 'rollback reanexando volume' "$(limit_re "$pool" 'disk total')" "$ctl" qm rollback "$qmain" mme2e
 lab_ssh "$ctl" qm unlock "$qmain" >/dev/null 2>&1 || true
 [[ $c0 == "$(conf qemu "$qmain" | grep -v '^lock:')" ]] || lab_fail 'rollback recusado mudou a config'
 limits "$pool" allocated off off off off

@@ -23,13 +23,13 @@ $R->save_result($key, 'admin@pve', { unc => 'u', password => 'x' });
 my $f = "$ENV{MM_PVE_ROOT}/run/mm-pve-tools/results/$key.json";
 is((stat($f))[2] & 0777, 0600, 'resultado 0600');
 eval { $R->fetch_result($key, 'outro@pve') };
-like($@, qr/só o dono da tarefa/, 'não-dono recusado');
+like($@, qr/only the task owner/, 'non-owner refused');
 ok(-f $f, 'arquivo intacto após recusa');
 my $d = $R->fetch_result($key, 'admin@pve');
 is($d->{unc}, 'u', 'dono lê o resultado');
 ok(!-f $f, 'arquivo apagado na leitura');
 eval { $R->fetch_result($key, 'admin@pve') };
-like($@, qr/já foi lido|não existe/, 'one-shot');
+like($@, qr/already read|not found/, 'one-shot');
 
 # ---------- sessions ----------
 local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(sessions => [
@@ -127,6 +127,6 @@ local $MMPve::Core::Runner::OVERRIDE = RestoreTest::make_override(
 
 # id inválido
 eval { $R->revoke('../escapa') };
-like($@, qr/id de sessão inválido/, 'id inválido recusado');
+like($@, qr/invalid session id/, 'invalid id refused');
 
 done_testing();

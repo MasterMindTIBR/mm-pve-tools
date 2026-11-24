@@ -19,6 +19,7 @@ async function withTimeout(operation, label) {
 
 async function main() {
     const stallUi = process.env.MM_GUI_STALL_UI === '1';
+    const languages = (process.env.MM_GUI_LANGS || 'en,pt_BR,es').split(',').filter(Boolean);
     const flags = process.getuid && process.getuid() === 0
         ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];
     console.log(`GUI: launching Chromium (flags=${flags.join(',') || 'sandbox'})`);
@@ -32,6 +33,86 @@ async function main() {
         domain: '127.0.0.1',
         path: '/',
     }]);
+    const expected = {
+        en: {
+            tabs: ['General', 'Diagnostics', 'VMID', 'Restore', 'Branding', 'Interface', 'Updates', 'About'],
+            general: ['General', 'Module', 'Enable'], updates: ['Updates', 'Update list', 'Update selected'],
+            restore: ['Restore', 'Publish', 'Revoke'], branding: ['Branding', 'Preview', 'Save'],
+            ui: ['Interface', 'QEMU console', 'Save'], vmid: ['VMID', 'From', 'Add'], about: ['About', 'Links'],
+            diagnostics: ['Diagnostics', 'Node', 'Reload'], pool: ['Pool limits', 'Resource', 'Save'],
+        },
+        pt_BR: {
+            tabs: ['Geral', 'Diagnóstico', 'VMID', 'Restore', 'Branding', 'Interface', 'Updates', 'Sobre'],
+            general: ['Geral', 'Módulo', 'Ligar'], updates: ['Updates', 'Atualizar lista', 'Atualizar selecionados'],
+            restore: ['Restore', 'Publicar', 'Revogar'], branding: ['Branding', 'Pré-visualização', 'Salvar'],
+            ui: ['Interface', 'Console QEMU', 'Salvar'], vmid: ['VMID', 'De', 'Adicionar'], about: ['Sobre', 'Links'],
+            diagnostics: ['Diagnóstico', 'Node', 'Recarregar'], pool: ['Limites de pool', 'Recurso', 'Salvar'],
+        },
+        es: {
+            tabs: ['General', 'Diagnóstico', 'VMID', 'Restauración', 'Marca', 'Interfaz', 'Actualizaciones', 'Acerca de'],
+            general: ['General', 'Módulo', 'Activar'], updates: ['Actualizaciones', 'Actualizar lista', 'Actualizar seleccionados'],
+            restore: ['Restauración', 'Publicar', 'Revocar'], branding: ['Marca', 'Vista previa', 'Guardar'],
+            ui: ['Interfaz', 'Consola QEMU', 'Guardar'], vmid: ['VMID', 'Desde', 'Añadir'], about: ['Acerca de', 'Enlaces'],
+            diagnostics: ['Diagnóstico', 'Nodo', 'Recargar'], pool: ['Límites del pool', 'Recurso', 'Guardar'],
+        },
+    };
+    const i18nErrors = [];
+    for (const language of languages) {
+        if (!expected[language]) { throw new Error(`unsupported GUI language: ${language}`); }
+        await context.addCookies([{ name: 'PVELangCookie', value: language,
+            domain: '127.0.0.1', path: '/' }]);
+        const smoke = await context.newPage();
+        await smoke.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load', timeout: TIMEOUT });
+        await smoke.waitForFunction(() => window.__MM_HARNESS_READY__ && window.Ext,
+            undefined, { timeout: TIMEOUT });
+        const result = await smoke.evaluate((want) => {
+            const tools = Ext.create('MM.panel.Tools', { renderTo: Ext.getBody(), width: 1100, height: 700 });
+            const panels = {
+                mmPanelGeneral: tools.down('mmPanelGeneral'), mmPanelUpdates: tools.down('mmPanelUpdates'),
+                mmPanelRestore: tools.down('mmPanelRestore'), mmPanelBranding: tools.down('mmPanelBranding'),
+                mmPanelUi: tools.down('mmPanelUi'), mmPanelVmid: tools.down('mmPanelVmid'),
+                mmPanelDiag: tools.down('mmPanelDiag'), about: tools.down('#about'),
+            };
+            const buttonText = (panel, itemId) => panel?.down(`#${itemId}`)?.getText?.() || '';
+            const buttonTexts = (panel) => (panel?.query?.('button') || []).map((button) => button.getText?.() || '');
+            const pool = Ext.create('MM.panel.PoolLimits', { renderTo: Ext.getBody(), pool: 'harness',
+                poolData: { can_edit: true, limits: {}, usage: {} } });
+            const actual = {
+                tabs: tools.items.getRange().map((panel) => panel.title),
+                general: [panels.mmPanelGeneral?.title, panels.mmPanelGeneral?.down('#modules')?.columnManager?.getHeaderAtIndex(0)?.text,
+                    buttonText(panels.mmPanelGeneral, 'module-on')],
+                updates: [panels.mmPanelUpdates?.title, ...buttonTexts(panels.mmPanelUpdates)],
+                restore: [panels.mmPanelRestore?.title, MM.t('restore.publish'),
+                    panels.mmPanelRestore?.down('proxmoxButton')?.getText?.()],
+                branding: [panels.mmPanelBranding?.title, panels.mmPanelBranding?.down('fieldset')?.title,
+                    ...buttonTexts(panels.mmPanelBranding)],
+                ui: [panels.mmPanelUi?.title, panels.mmPanelUi?.down('#mm-ui-qemu')?.fieldLabel,
+                    ...buttonTexts(panels.mmPanelUi)],
+                vmid: [panels.mmPanelVmid?.title, panels.mmPanelVmid?.down('grid')?.columnManager?.getHeaderAtIndex(1)?.text,
+                    ...buttonTexts(panels.mmPanelVmid)],
+                about: [panels.about?.title, MM.t('about.links')],
+                diagnostics: [panels.mmPanelDiag?.title, panels.mmPanelDiag?.columnManager?.getHeaderAtIndex(0)?.text,
+                    panels.mmPanelDiag?.down('button')?.getText?.()],
+                pool: [pool.title, pool.down('grid')?.columnManager?.getHeaderAtIndex(0)?.text,
+                    pool.down('#save')?.getText?.()],
+            };
+            pool.destroy(); tools.destroy(); return actual;
+        }, expected[language]);
+        const mismatches = [];
+        for (const [screen, wanted] of Object.entries(expected[language])) {
+            const got = result[screen];
+            if (!got || !wanted.every((value) => got.includes(value))) {
+                mismatches.push(`i18n ${language}/${screen}: expected ${JSON.stringify(wanted)}, got ${JSON.stringify(got)}`);
+            }
+        }
+        if (mismatches.length) { i18nErrors.push(...mismatches); await smoke.close(); continue; }
+        console.log(`GUI i18n OK: ${language} (${Object.keys(expected[language]).length} screens)`);
+        await smoke.close();
+    }
+    if (i18nErrors.length) { throw new Error(`\n${i18nErrors.join('\n')}`); }
+    const mainLanguage = languages.includes('pt_BR') ? 'pt_BR' : languages[0];
+    await context.addCookies([{ name: 'PVELangCookie', value: mainLanguage,
+        domain: '127.0.0.1', path: '/' }]);
     const page = await context.newPage();
     const browserConsole = [];
     const pageErrors = [];
@@ -39,10 +120,15 @@ async function main() {
     let mmRequests = 0;
     let updateRequests = [];
     let poolRequests = [];
+    let moduleConfigPuts = [];
+    let applyRequests = [];
+    let brandingRequests = [];
+    let brandingResponses = [];
     page.on('console', (message) => browserConsole.push(`${message.type()}: ${message.text()}`));
     page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)));
     page.on('response', (response) => {
         const url = new URL(response.url());
+        if (url.pathname === '/pve2/js/mm-branding.json') { brandingResponses.push(response.status()); }
         if (url.pathname.endsWith('.js') && response.status() >= 400) {
             assetFailures.push(`${response.status()} ${response.url()}`);
         }
@@ -54,14 +140,22 @@ async function main() {
         }
     });
     page.on('request', (request) => {
-        if (new URL(request.url()).pathname === '/pve2/js/mm-tools.js') { mmRequests++; }
-        if (new URL(request.url()).pathname.includes('/mm-tools/updates/')) {
-            updateRequests.push({ url: request.url(), path: new URL(request.url()).pathname,
+        const url = new URL(request.url());
+        if (url.pathname === '/pve2/js/mm-tools.js') { mmRequests++; }
+        if (url.pathname === '/pve2/js/mm-branding.json') { brandingRequests.push(request.url()); }
+        if (url.pathname.endsWith('/mm-tools/config/modules') && request.method() === 'PUT') {
+            moduleConfigPuts.push({ url: request.url(), postData: request.postData() || '' });
+        }
+        if (url.pathname.endsWith('/mm-tools/apply') && request.method() === 'POST') {
+            applyRequests.push(request.url());
+        }
+        if (url.pathname.includes('/mm-tools/updates/')) {
+            updateRequests.push({ url: request.url(), path: url.pathname,
                 postData: request.postData() || '' });
         }
-        if (new URL(request.url()).pathname.includes('/mm-tools/poollimits/')) {
+        if (url.pathname.includes('/mm-tools/poollimits/')) {
             poolRequests.push({ method: request.method(), url: request.url(),
-                path: new URL(request.url()).pathname, postData: request.postData() || '' });
+                path: url.pathname, postData: request.postData() || '' });
         }
     });
     try {
@@ -87,6 +181,9 @@ async function main() {
             undefined,
             { timeout: TIMEOUT },
         );
+        if (brandingRequests.length !== 1 || brandingResponses.some((status) => status >= 400)) {
+            throw new Error(`branding JSON estático inválido: ${JSON.stringify({ brandingRequests, brandingResponses })}`);
+        }
         await withTimeout(page.evaluate(() => {
             // pvemanagerlib reads every cap group (caps.storage, caps.access,
             // caps.sdn, caps.mapping, …) while building these panels, so a
@@ -192,7 +289,12 @@ async function main() {
             const confirms = [];
             const realApply = MM.applyAll;
             const realConfirm = Ext.Msg.confirm;
-            MM.applyAll = () => { applied += 1; };
+            const realClusterNodesAll = MM.Api.clusterNodesAll;
+            MM.applyAll = (done) => { applied += 1; if (done) { done(); } };
+            MM.Api.clusterNodesAll = (callback) => callback([
+                { type: 'node', node: 'localhost', name: 'localhost', online: 1 },
+                { type: 'node', node: 'failing-node', name: 'failing-node', online: 1 },
+            ]);
             Ext.Msg.confirm = (title, text, callback) => { confirms.push(String(text)); callback('yes'); };
             try {
                 const panel = Ext.create('MM.panel.General', { renderTo: Ext.getBody(), width: 900, height: 400 });
@@ -200,40 +302,113 @@ async function main() {
                 const store = grid.getStore();
                 await wait('módulos não carregaram', () => store.getCount() === 6);
                 const order = store.getRange().map((r) => r.get('name'));
-                const on = panel.down('#module-on');
-                const off = panel.down('#module-off');
-                const pl = () => store.findRecord('name', 'poollimits', 0, false, true, true);
-                grid.setSelection(pl());
-                const beforeOn = !on.isDisabled() && off.isDisabled() && !pl().get('enabled');
-                on.handler();
-                await wait('poollimits não ligou', () => pl() && pl().get('enabled'));
-                const afterOn = on.isDisabled() && !off.isDisabled();
-                off.handler();
-                await wait('poollimits não desligou', () => pl() && !pl().get('enabled'));
+                const onAll = panel.down('#module-on-all');
+                const offAll = panel.down('#module-off-all');
+                const record = (name) => store.findRecord('name', name, 0, false, true, true);
+                await wait('status inicial dos nodes não carregou', () =>
+                    record('ui').get('nodesApplied') === 2
+                    && record('ui').get('nodesTotal') === 2
+                    && record('poollimits').get('nodesApplied') === 2
+                    && record('branding').get('nodesUnknown')?.includes('failing-node'));
+                const initialNodes = {
+                    ui: `${record('ui').get('nodesApplied')}/${record('ui').get('nodesTotal')}`,
+                    brandingUnknown: record('branding').get('nodesUnknown'),
+                };
+                const noApplyAll = !panel.down('button[text=Apply on all nodes]');
+                onAll.handler();
+                await wait('Ligar todos não ligou todos', () =>
+                    store.getRange().every((r) => r.get('enabled'))
+                    && record('poollimits').get('nodesApplied') === 1
+                    && record('poollimits').get('nodesIssues')?.includes('failing-node'));
+                const onNodes = `${record('poollimits').get('nodesApplied')}/${record('poollimits').get('nodesTotal')}`;
+                offAll.handler();
+                await wait('Desligar todos não desligou todos', () =>
+                    store.getRange().every((r) => !r.get('enabled')));
                 panel.destroy();
-                return { order, beforeOn, afterOn, applied, confirms,
+                return { order, noApplyAll, initialNodes, onNodes, applied, confirms,
                          info: !!MM.Modules.info.poollimits };
             } finally {
                 MM.applyAll = realApply;
+                MM.Api.clusterNodesAll = realClusterNodesAll;
                 Ext.Msg.confirm = realConfirm;
             }
         }, TIMEOUT);
         if (general.order.join(',') !== 'ui,updates,poollimits,renumber,restore,branding'
-            || !general.beforeOn || !general.afterOn || general.applied !== 2
-            || general.confirms.length !== 2 || !/daemons/.test(general.confirms[0])
+            || !general.noApplyAll || general.initialNodes.ui !== '2/2'
+            || !general.initialNodes.brandingUnknown.includes('failing-node')
+            || general.onNodes !== '1/2' || general.applied !== 2
+            || general.confirms.length !== 2 || !/Limites de pool/.test(general.confirms[0])
+            || !/gateway/.test(general.confirms[0]) || !/logo/.test(general.confirms[0])
             || !/revertidos/.test(general.confirms[1]) || !general.info) {
             throw new Error(`General liga/desliga incompleto: ${JSON.stringify(general)}`);
         }
-        console.log('GUI OK: General liga e desliga módulo (confirmação, gravação com digest, apply em todos)');
+        const modulePutData = moduleConfigPuts.map((request) => {
+            const params = new URL(request.url).searchParams;
+            for (const [key, value] of new URLSearchParams(request.postData)) {
+                params.set(key, value);
+            }
+            return { modules: JSON.parse(params.get('value')), digest: params.get('digest') };
+        });
+        if (modulePutData.length !== 2 || modulePutData.some((item) => item.digest !== `sha256=${'0'.repeat(64)}`
+            && item.digest !== `sha256:${'0'.repeat(64)}`)) {
+            throw new Error(`PUT de módulos não usou um digest por ação: ${JSON.stringify(modulePutData)}`);
+        }
+        if (applyRequests.length !== 0) {
+            throw new Error(`o teste mockado deveria chamar MM.applyAll sem POST de apply: ${applyRequests.length}`);
+        }
+        console.log('GUI OK: General sem Apply-all, todos em um PUT + um apply e Nodes 2/2, 1/2, unknown');
+
+        const moduleTabs = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const started = Date.now();
+                while (!ok()) {
+                    if (Date.now() - started > assertionTimeout) { throw new Error(`abas: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
+            const tools = Ext.create('MM.panel.Tools', { renderTo: Ext.getBody(), width: 1100, height: 600 });
+            const panels = [
+                ['ui', 'mmPanelUi'], ['updates', 'mmPanelUpdates'], ['restore', 'mmPanelRestore'],
+                ['renumber', 'mmPanelVmid'], ['branding', 'mmPanelBranding'],
+            ].map(([name, xtype]) => [name, tools.down(xtype)]);
+            await wait('faixas não carregaram', () => panels.every(([, panel]) => panel.moduleBanner));
+            await wait('estado das faixas não carregou', () => panels.every(([, panel]) =>
+                panel.moduleEnabled === false));
+            const visible = Object.fromEntries(panels.map(([name, panel]) =>
+                [name, !panel.moduleBanner.isHidden()]));
+            const branding = tools.down('mmPanelBranding');
+            const general = tools.down('mmPanelGeneral');
+            await wait('General não carregou para o link', () => general.down('#modules').getStore().getCount() === 6);
+            branding.moduleBanner.down('button').handler();
+            await wait('link não abriu General', () => tools.getActiveTab() === general
+                && general.down('#modules').getSelection()[0]?.get('name') === 'branding');
+            tools.destroy();
+            return visible;
+        }, TIMEOUT);
+        if (!moduleTabs.ui || !moduleTabs.updates || !moduleTabs.restore
+            || !moduleTabs.renumber || !moduleTabs.branding) {
+            throw new Error(`faixas incorretas: ${JSON.stringify(moduleTabs)}`);
+        }
+        console.log('GUI OK: abas desligadas mostram faixa, link seleciona General e branding não pede JSON ausente');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const begin = Date.now();
+                while (!ok()) {
+                    if (Date.now() - begin > assertionTimeout) { throw new Error(`Updates: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
             let panel = Ext.create('MM.panel.Updates', { renderTo: Ext.getBody(), width: 1200, height: 500 });
             let started = Date.now();
-            while (panel.getStore().getCount() < 2) {
+            // Espera a grade e o status de cada node: a linha aparece antes
+            // da resposta do status chegar.
+            let find = (node) => panel.getStore().findRecord('node', node, 0, false, true, true);
+            while (panel.getStore().getCount() < 2 || find('localhost')?.get('reboot_suggested') !== true) {
                 if (Date.now() - started > assertionTimeout) { throw new Error('grade de updates não carregou todos os nodes'); }
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
-            let local = panel.getStore().findRecord('node', 'localhost');
-            let offline = panel.getStore().findRecord('node', 'offline-node');
+            let local = find('localhost');
+            let offline = find('offline-node');
             if (!local || !offline || local.get('reboot_suggested') !== true || offline.get('online') !== false) {
                 throw new Error('status de updates por node incompleto');
             }
@@ -244,6 +419,7 @@ async function main() {
             Ext.Msg.confirm = (title, text, callback) => callback('yes');
             panel.getSelectionModel().select(local);
             panel.runRow(local);
+            let busyOnClick = local.get('starting') === true;
             panel.refreshRow(local);
             panel.refreshSelected();
             panel.down('button[text=Atualizar selecionados]').handler();
@@ -260,18 +436,49 @@ async function main() {
             field.setValue('localhost');
             let exactNameEnabled = !rebootButton.isDisabled();
             rebootButton.handler();
+            await wait('painel do bulk não apareceu', () => panel.activeBulk
+                && panel.progressPanel.isVisible()
+                && panel.progressPanel.down('#mm-updates-progress-text').getEl().dom.innerHTML.includes('apt-update'));
+            let progressVisible = panel.progressPanel.isVisible();
+            let progressText = panel.progressPanel.down('#mm-updates-progress-text').getEl().dom.innerHTML;
+            let bulkStartDisabled = panel.down('#mm-updates-start-selected').isDisabled();
+            panel.progressPanel.down('#mm-updates-cancel').handler();
+            await wait('cancelamento não terminou', () => !panel.activeBulk);
+            // Sem o polling de 5 s no meio: o próximo status do localhost é o
+            // que falha, e ele tem que cair neste registro.
+            panel.stopPolling();
+            await new Promise((resolve) => MM.Api.request({ method: 'POST',
+                url: MM.Updates.path('localhost', 'transient-failure'), success: resolve, failure: resolve }));
+            local.set({ job: { state: 'running' }, online: true });
+            panel.reloadRow(local);
+            await wait('erro transitório não virou updating', () => local.get('update_state') === 'updating');
+            let transientUpdating = local.get('update_state') === 'updating';
+            panel.stopPolling();
+            // O reload atualiza os registros no lugar: um status a caminho acha
+            // o mesmo registro (antes, o setData deixava o registro órfão).
+            panel.reload();
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            let sameRecord = panel.getStore().findRecord('node', 'localhost', 0, false, true, true) === local;
+            panel.stopPolling();
             return { rows: panel.getStore().getCount(), blocked, wrongNameBlocked, exactNameEnabled,
-                rebootDone, contextVisible };
+                rebootDone, contextVisible, busyOnClick, progressVisible, progressText, bulkStartDisabled,
+                transientUpdating, sameRecord };
         }, TIMEOUT);
         if (updatesAssertions.rows !== 2 || !updatesAssertions.blocked
             || !updatesAssertions.wrongNameBlocked || !updatesAssertions.exactNameEnabled
-            || !updatesAssertions.rebootDone || !updatesAssertions.contextVisible) {
+            || !updatesAssertions.rebootDone || !updatesAssertions.contextVisible
+            || !updatesAssertions.busyOnClick || !updatesAssertions.progressVisible
+            || !updatesAssertions.progressText.includes('17s')
+            || !updatesAssertions.progressText.includes('localhost')
+            || !updatesAssertions.bulkStartDisabled || !updatesAssertions.transientUpdating
+            || !updatesAssertions.sameRecord) {
             throw new Error(`updates assertions failed: ${JSON.stringify(updatesAssertions)}`);
         }
         await page.waitForTimeout(100);
         const updateRuns = updateRequests.filter((request) => request.path.endsWith('/updates/run'));
         const updateRefreshes = updateRequests.filter((request) => request.path.endsWith('/updates/refresh'));
         const bulkRequests = updateRequests.filter((request) => request.path.endsWith('/updates/bulk'));
+        const cancelRequests = updateRequests.filter((request) => request.path.endsWith('/updates/bulk/cancel'));
         if (updateRuns.length < 1 || updateRefreshes.length < 2 || bulkRequests.length < 2
             || !bulkRequests.some((request) => request.url.includes('override_preflight=1')
                 || request.postData.includes('override_preflight=1'))
@@ -282,7 +489,10 @@ async function main() {
                 || /(?:^|&)mode=parallel(?:&|$)/.test(request.postData)))) {
             throw new Error(`bulk paralelo não foi enviado: ${JSON.stringify(updateRequests)}`);
         }
-        console.log('GUI OK: grade Updates, ações de linha/seleção, override de preflight, contexto e confirmação tripla');
+        if (cancelRequests.length < 1) {
+            throw new Error(`cancelamento de bulk não foi enviado: ${JSON.stringify(updateRequests)}`);
+        }
+        console.log('GUI OK: busy, painel de fase/tempo, estados por node, cancelamento e erro transitório como updating');
         await page.locator('.x-btn-inner', { hasText: 'Publicar pasta…' }).first()
             .waitFor({ state: 'visible', timeout: TIMEOUT });
         console.log('GUI: button found');
@@ -524,7 +734,7 @@ async function main() {
             throw new Error(`poollimits PUT incorreto: ${JSON.stringify(poolRequests)}`);
         }
         if (!poolAssertions.conflictMessage.includes('DIGEST_MISMATCH')
-            || !poolAssertions.conflictMessage.includes('configuração do pool mudou')) {
+            || !poolAssertions.conflictMessage.includes('config changed since it was read')) {
             throw new Error(`erro concorrente não chegou à GUI: ${JSON.stringify(poolAssertions)}`);
         }
         console.log('GUI OK: aba Limites, uso x limite, storages, warning, CAS, edição e modo leitura');
@@ -551,8 +761,8 @@ async function main() {
             hardware.destroy(); resize.destroy();
             return messages;
         }, TIMEOUT);
-        if (!nativeErrorAssertions.some((message) => message.includes('limite de RAM excedido'))
-            || !nativeErrorAssertions.some((message) => message.includes('limite de disco total excedido'))) {
+        if (!nativeErrorAssertions.some((message) => message.includes('RAM MiB limit exceeded'))
+            || !nativeErrorAssertions.some((message) => message.includes('disk total limit exceeded'))) {
             throw new Error(`mensagens nativas de poollimits perdidas: ${JSON.stringify(nativeErrorAssertions)}`);
         }
         console.log('GUI OK: hardware edit e resize exibem a mensagem de limite do servidor');
@@ -569,6 +779,8 @@ async function main() {
 }
 
 main().catch((error) => {
-    if (!error) { console.error('GUI FAIL: unknown error'); }
-    process.exitCode = 1;
+    // Errors outside the try/finally (e.g. the i18n loop) leave Chromium open
+    // and would hang until the harness timeout: report and exit right away.
+    console.error(`GUI FAIL: ${(error && (error.stack || error)) || 'unknown error'}`);
+    process.exit(1);
 });

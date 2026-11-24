@@ -50,10 +50,10 @@ is($pools->{alive}{cpu}{max}, 4, 'resto do pool vivo preservado');
 is($pools->{fresh}{mode}, 'running', 'pool gravado ficou');
 
 ok(!eval { MMPve::Module::Poollimits->_save_pool('ghost', $new); 1 }, 'gravar pool inexistente continua recusado');
-like($@, qr/poollimits\.pools\.ghost não existe/, 'com a mensagem de pool inexistente');
+like($@, qr/poollimits\.pools\.ghost does not exist/, 'with missing pool message');
 my $bad = { %{$new}, disk_storage => { enabled => 1, limits => { gone => 1 } } };
 ok(!eval { MMPve::Module::Poollimits->_save_pool('fresh', $bad); 1 }, 'storage inexistente no pool gravado continua recusado');
-like($@, qr/storage 'gone' não existe/, 'com a mensagem de storage inexistente');
+like($@, qr/storage 'gone' does not exist/, 'with missing storage message');
 
 is_deeply(MMPve::Module::Poollimits->prune_missing({ pools => {} }, undef, 'x'), [], 'sem catálogo não mexe');
 

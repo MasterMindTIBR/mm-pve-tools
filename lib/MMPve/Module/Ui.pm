@@ -8,9 +8,9 @@ use strict;
 use warnings;
 use base qw(MMPve::Core::ModuleBase);
 
-use JSON::PP qw(decode_json encode_json);
+use JSON::PP qw(decode_json);
 use MMPve::Core::Config;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -30,7 +30,7 @@ sub _ui { return ref($_[1]) eq 'HASH' ? ($_[1]{ui} || {}) : {} }
 
 sub _viewer_error {
     my ($where, $value) = @_;
-    return "$where precisa ser um de: default, html5, xtermjs, vv"
+    return "$where must be one of: default, html5, xtermjs, vv"
         unless defined $value && !ref($value) && $VIEWER{$value};
     return;
 }
@@ -42,7 +42,7 @@ sub validate_section {
     my $u = $class->_ui($cfg);
     my $console = $u->{console};
     if (ref($console) ne 'HASH') {
-        push @errors, 'ui.console precisa ser objeto';
+        push @errors, 'ui.console must be an object';
     } else {
         for my $type (qw(qemu lxc)) {
             my $err = _viewer_error("ui.console.$type", $console->{$type});
@@ -51,7 +51,7 @@ sub validate_section {
     }
     if (exists $u->{hide_subscription_popup}) {
         my $v = $u->{hide_subscription_popup};
-        push @errors, 'ui.hide_subscription_popup precisa ser booleano'
+        push @errors, 'ui.hide_subscription_popup must be boolean'
             unless defined($v) && (!ref($v) ? ($v eq '0' || $v eq '1') : ref($v) =~ /Boolean/);
     }
     return @errors;
@@ -73,28 +73,28 @@ sub _desired_json {
 
 sub apply {
     my ($class, $cfg) = @_;
-    my $want = JSON::PP->new->canonical->pretty->utf8->encode($class->_desired_json($cfg)) . "\n";
+    my $want = json_encode($class->_desired_json($cfg), pretty => 1) . "\n";
     my $cur = eval { read_file($class->static_path) };
     my $changed = !defined($cur) || $cur ne $want;
     if ($changed) {
         ensure_dir(root_path('/usr/share/pve-manager/js'));
         write_file_atomic($class->static_path, $want, 0644);
-        log_line('ui: arquivo estático aplicado');
+        log_line('ui: static file applied');
     }
     return {
         ok => 1, changed => $changed ? 1 : 0,
-        message => $changed ? 'ui aplicado neste node' : 'ui já estava aplicado',
+        message => $changed ? 'ui applied on this node' : 'ui was already applied',
         static_path => STATIC_PATH,
     };
 }
 
 sub revert {
     my ($class) = @_;
-    return { ok => 1, changed => 0, message => 'ui já estava ausente' }
+    return { ok => 1, changed => 0, message => 'ui was already absent' }
         unless -e $class->static_path;
-    unlink($class->static_path) or die "não consegui remover " . $class->static_path . ": $!\n";
-    log_line('ui: arquivo estático removido');
-    return { ok => 1, changed => 1, message => 'ui removido deste node' };
+    unlink($class->static_path) or die "could not remove " . $class->static_path . ": $!\n";
+    log_line('ui: static file removed');
+    return { ok => 1, changed => 1, message => 'ui removed from this node' };
 }
 
 sub _symbol_state {
@@ -136,15 +136,15 @@ sub check {
         applied => $static->{exists} ? 1 : 0,
         static => $static,
         bundles => { pve_manager => $pve, widget_toolkit => $pwt },
-        note => $ok ? 'símbolos e arquivo estático compatíveis' : 'incompatibilidade de bundle ou estado aplicado',
+        note => $ok ? 'symbols and static file are compatible' : 'bundle or applied state is incompatible',
     };
 }
 
 sub _safe_user {
     my ($user) = @_;
-    die "usuário autenticado ausente\n" unless defined $user && !ref($user) && length $user;
+    die "authenticated user is missing\n" unless defined $user && !ref($user) && length $user;
     ($user) = $user =~ /\A([^\x00-\x1f\x7f]{1,255})\z/;
-    die "usuário autenticado inválido\n" unless defined $user;
+    die "authenticated user is invalid\n" unless defined $user;
     return $user;
 }
 
@@ -153,14 +153,14 @@ sub _read_users {
     return {} unless -e $class->users_path;
     my $raw = read_file($class->users_path);
     my $data = eval { decode_json($raw) };
-    die "ui-users.json inválido: $@\n" if $@ || ref($data) ne 'HASH';
+    die "invalid ui-users.json: $@\n" if $@ || ref($data) ne 'HASH';
     return $data;
 }
 
 sub _valid_preference {
     my ($type, $value) = @_;
     return if !defined $value || $value eq 'cluster';
-    my $err = _viewer_error("preferência $type", $value);
+    my $err = _viewer_error("$type preference", $value);
     die "$err\n" if $err;
 }
 
@@ -177,8 +177,8 @@ sub get_user_preference {
 sub save_user_preference {
     my ($class, $user, $input) = @_;
     $user = _safe_user($user);
-    die "preferência precisa ser objeto\n" unless ref($input) eq 'HASH';
-    die "campo de preferência desconhecido\n"
+    die "preference must be an object\n" unless ref($input) eq 'HASH';
+    die "unknown preference field\n"
         if grep { $_ ne 'qemu' && $_ ne 'lxc' } keys %{$input};
     for my $type (qw(qemu lxc)) {
         _valid_preference($type, $input->{$type}) if exists $input->{$type};
@@ -195,7 +195,7 @@ sub save_user_preference {
             }
         }
         if (keys %{$pref}) { $all->{$user} = $pref } else { delete $all->{$user} }
-        my $json = JSON::PP->new->canonical->pretty->utf8->encode($all) . "\n";
+        my $json = json_encode($all, pretty => 1) . "\n";
         ensure_dir(MMPve::Core::Config->config_dir);
         write_file_atomic($class->users_path, $json, 0644);
         return { %{$pref} };
@@ -224,20 +224,20 @@ sub cli {
         'digest=s' => \$digest, 'check' => \$check, 'help|h' => \$help,
     ) or return 2;
     if ($help) {
-        print "uso: mm-pve ui set [--qemu default|html5|xtermjs|vv] [--lxc ...] "
+        print "usage: mm-pve ui set [--qemu default|html5|xtermjs|vv] [--lxc ...] "
             . "[--hide-subscription-popup|--show-subscription-popup]\n";
-        print "     mm-pve ui check\n";
+        print "       mm-pve ui check\n";
         return 0;
     }
     if ($check) {
-        print JSON::PP->new->canonical->pretty->encode($class->check(MMPve::Core::Config->load)), "\n";
+        print json_encode($class->check(MMPve::Core::Config->load), pretty => 1), "\n";
         return 0;
     }
     die "use: mm-pve ui set [--qemu default|html5|xtermjs|vv] [--lxc ...] [--hide-subscription-popup|--show-subscription-popup]\n"
         unless @ARGV == 1 && $ARGV[0] eq 'set';
-    die "use --hide-subscription-popup OU --show-subscription-popup\n"
+    die "use --hide-subscription-popup OR --show-subscription-popup\n"
         if $hide && $show;
-    die "ui set precisa de uma alteração\n"
+    die "ui set requires a change\n"
         unless defined($qemu) || defined($lxc) || $hide || $show;
     my ($cfg, $cur_digest) = MMPve::Core::Config->load;
     my $ui = { %{ $cfg->{ui} || {} }, console => { %{ $cfg->{ui}{console} || {} } } };
@@ -247,7 +247,7 @@ sub cli {
     my %opt = defined($digest) ? (digest => $digest) : ();
     my ($saved, $new_digest) = eval { MMPve::Core::Config->save_section('ui', $ui, %opt) };
     if ($@) { chomp(my $error = $@); print STDERR "$error\n"; return 1 }
-    print "ui salvo (revision $saved->{revision})\ndigest: $new_digest\n";
+    print "ui saved (revision $saved->{revision})\ndigest: $new_digest\n";
     return 0;
 }
 

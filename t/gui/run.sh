@@ -8,6 +8,7 @@ REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 ASSETS="$REPO/refs/upstream/pve-9.2.24"
 EXPECT_FAIL=''
 STALL_UI=0
+LANGS='en,pt_BR,es'
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -24,6 +25,14 @@ while [ "$#" -gt 0 ]; do
         --stall-ui)
             STALL_UI=1
             shift
+            ;;
+        --lang)
+            [ "$#" -ge 2 ] || { echo 'uso: --lang en|pt_BR|es' >&2; exit 2; }
+            case "$2" in
+                en|pt_BR|es) LANGS=$2 ;;
+                *) echo 'idioma inválido: use en, pt_BR ou es' >&2; exit 2 ;;
+            esac
+            shift 2
             ;;
         *)
             echo "opção desconhecida: $1" >&2
@@ -67,6 +76,7 @@ timeout --foreground 240s docker run --rm --init --network=none --ipc=host \
     -e HOME=/tmp \
     -e MM_GUI_ASSETS=/assets \
     -e MM_GUI_STALL_UI="$STALL_UI" \
+    -e MM_GUI_LANGS="$LANGS" \
     -e MM_GUI_OLD_JS="$OLD_JS_CONTAINER" \
     -v "$REPO:/repo:ro" \
     -v "$ASSETS:/assets:ro" \

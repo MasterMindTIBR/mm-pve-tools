@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind gw-restore: limpeza de sessões após boot
+Description=MasterMind gw-restore: clean sessions after boot
 After=network-online.target gw-restore-nft.service smbd.service
 Wants=network-online.target gw-restore-nft.service smbd.service
 # "gc --boot" revoga todas as sessões e não desfaz os maps do PBS (supõe que o

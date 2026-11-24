@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind mm-pve-tools: aplica estado desejado no node
+Description=MasterMind mm-pve-tools: apply desired state on the node
 Documentation=file:///usr/share/doc/mm-pve-tools
 After=pveproxy.service pvedaemon.service pve-cluster.service
 ConditionPathExists=/etc/pve/mm-tools/config.json

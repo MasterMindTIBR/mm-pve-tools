@@ -9,13 +9,13 @@ package MMPve::Core::Apply;
 
 use strict;
 use warnings;
-use JSON::PP qw(encode_json decode_json);
+use JSON::PP qw(decode_json);
 use POSIX qw(strftime);
 use MMPve::Core::Config;
 use MMPve::Core::Modules;
 use MMPve::Core::Patch;
 use MMPve::Core::Runner;
-use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line);
+use MMPve::Core::Util qw(root_path read_file write_file_atomic ensure_dir log_line json_encode);
 
 our $VERSION = '@MM_PVE_VERSION@';
 
@@ -35,7 +35,7 @@ sub apply_all {
         };
         if ($busy) {
             return {
-                ok => 1, skipped => 1, reason => 'update em execução ou lock do dpkg',
+                ok => 1, skipped => 1, reason => 'update is running or dpkg is locked',
                 revision => eval { MMPve::Core::Config->load->{revision} },
             };
         }
@@ -78,7 +78,7 @@ sub apply_all {
         my $enabled = $mode->{$name} ? 1 : 0;
         my $out;
         if ($cfg_err) {
-            $out = { ok => 0, error => "config inválido; módulo não aplicado: $cfg_err" };
+            $out = { ok => 0, error => "invalid config; module not applied: $cfg_err" };
         } elsif ($enabled) {
             $out = eval { $m->apply($cfg) };
             $out = { ok => 0, error => $@ } unless ref $out eq 'HASH';
@@ -98,7 +98,8 @@ sub apply_all {
     }
     $res{reload_required} = ($version_changed
         || ($res{patches} && $res{patches}{changed} && $opts{no_reload})
-        || ($res{modules}{branding} && $res{modules}{branding}{changed})
+        || ($res{modules}{branding} && $res{modules}{branding}{enabled}
+            && $res{modules}{branding}{changed})
         || ($res{modules}{ui} && $res{modules}{ui}{changed})) ? 1 : 0;
     if ($res{reload_required} && !$opts{no_reload} && $res{ok}) {
         $res{reload} = MMPve::Core::Patch->reload_services;
@@ -106,7 +107,7 @@ sub apply_all {
     }
     if (!$opts{dry_run}) {
         ensure_dir(root_path('/var/lib/mm-pve-tools'));
-        write_file_atomic(state_path(), encode_json(\%res) . "\n", 0644);
+        write_file_atomic(state_path(), json_encode(\%res) . "\n", 0644);
     }
     log_line('apply: ok=' . $res{ok} . ' revision=' . $res{revision});
     return \%res;
@@ -128,8 +129,32 @@ sub status {
     } if $@ || !$state;
 
     my $st = 'applied';
-    if (defined $rev_cfg && ($state->{revision} // 0) < $rev_cfg) {
-        $st = 'pending';
+    my $last_apply_failed = exists($state->{ok}) && !$state->{ok};
+    my @failures;
+    my %failed_targets;
+    my $patches = MMPve::Core::Patch->check;
+    my $patches_were_requested = ref($state->{patches}) eq 'HASH';
+    my $enabled = sub {
+        my ($module) = @_;
+        return 1 unless defined($module) && length($module) && $module ne '__core__';
+        (my $name = $module) =~ s/^MMPve::Module:://;
+        return (($cfg && ref($cfg->[0]{modules}) eq 'HASH')
+            && $cfg->[0]{modules}{lc($name)}) ? 1 : 0;
+    };
+    for my $target (sort keys %{$patches}) {
+        next unless $patches_were_requested;
+        my $item = $patches->{$target} || {};
+        next unless $enabled->($item->{module});
+        next if ($item->{status} // '') eq 'applied';
+        my $error = $item->{error} // $item->{note};
+        push @failures, {
+            target => $target,
+            status => $item->{status},
+            error => $error,
+            failed_target => $item->{failed_target},
+            failure => $item->{failure},
+        };
+        $failed_targets{$target} = 1;
     }
     my %mods;
     for my $n (sort keys %{ $state->{modules} // {} }) {
@@ -141,14 +166,32 @@ sub status {
             changed => $m->{changed},
             ts => $m->{ts},
         };
-        $st = 'error' if !$m->{ok};
+        if (!$m->{ok}) {
+            push @failures, { module => $n, error => $m->{error}, status => 'apply_failed' };
+        }
     }
+    if ($last_apply_failed || grep { !$_->{ok} } values %{ $state->{modules} // {} }) {
+        $st = 'error';
+    } elsif (defined $rev_cfg && ($state->{revision} // 0) < $rev_cfg) {
+        $st = 'pending';
+    } elsif (@failures) {
+        $st = 'partial';
+    }
+    my @failed = sort keys %failed_targets;
+    for my $failure (@failures) {
+        push @failed, $failure->{target} if defined($failure->{target});
+    }
+    my %seen;
+    @failed = sort grep { !$seen{$_}++ } @failed;
     return {
         config_revision => $rev_cfg,
         applied_revision => $state->{revision},
         state => $st,
+        last_apply_ok => $last_apply_failed ? 0 : 1,
         modules => \%mods,
-        patches => MMPve::Core::Patch->check,
+        patches => $patches,
+        failures => \@failures,
+        failed_targets => \@failed,
         finished => $state->{finished},
     };
 }

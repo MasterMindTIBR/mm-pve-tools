@@ -49,7 +49,7 @@ def build_js():
         shutil.copy2(OLD_JS, output)
         return output
     chunks = ['/* mm-tools.js — harness build */\n']
-    for name in ('core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
+    for name in ('i18n/en.js', 'i18n/pt_BR.js', 'i18n/es.js', 'core.js', 'renumber.js', 'restore.js', 'branding.js', 'ui.js', 'poollimits.js', 'updates.js'):
         source = (REPO / 'js/src' / name).read_text(encoding='utf-8')
         chunks.append(f'\n/* ===== js/src/{name} ===== */\n')
         chunks.append(source.replace('@MM_PVE_VERSION@', VERSION))
@@ -87,6 +87,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     mm_js = pathlib.Path()
     requests = []
     bulk_refused = False
+    bulk_active = False
+    bulk_id = '11111111-1111-4111-8111-111111111111'
+    bulk_cancel_calls = 0
+    transient_update_failure = False
     config_modules = {'ui': 1}
     pool_limits = {}
 
@@ -132,6 +136,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == '/pve2/js/mm-tools.js':
             self.serve(self.mm_js, 'application/javascript')
+            return
+        if path == '/pve2/js/mm-branding.json':
+            enabled = int(Handler.config_modules.get('branding', 0))
+            self.send_raw_json({'enabled': enabled, 'title': '', 'header_text': '',
+                                'login_text': '', 'logo': '', 'favicon': '',
+                                'assets_hash': ''})
             return
         if path == '/pve2/js/mm-ui.json':
             if STALL_UI:
@@ -229,10 +239,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({'status': 'inactive'})
         elif path.endswith('/qemu/100/config') and self.command == 'PUT':
             self.send_raw_json({'data': None, 'success': 0,
-                                'message': "pool 'labpool': limite de RAM excedido (uso atual 1024, pedido 4096, limite 2048)"})
+                                'message': "pool 'labpool': RAM MiB limit exceeded (current 1024, requested 4096, limit 2048)"})
         elif path.endswith('/qemu/100/resize') and self.command == 'PUT':
             self.send_raw_json({'data': None, 'success': 0,
-                                'message': "pool 'labpool': limite de disco total excedido (uso atual 3, pedido 5, limite 4)"})
+                                'message': "pool 'labpool': disk total limit exceeded (current 3, requested 5, limit 4)"})
         elif path.endswith('/mm-tools/config/modules') and self.command == 'PUT':
             if post.get('digest') != 'sha256:' + '0' * 64:
                 self.send_raw_json({'data': None, 'success': 0, 'message': 'DIGEST_MISMATCH'})
@@ -247,14 +257,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         'hide_subscription_popup': True},
             }})
         elif path.endswith('/mm-tools/status'):
-            self.send_json({'node': 'localhost', 'package_version': VERSION,
-                            'pve_version': '9.2.24', 'applied': {'state': 'applied'},
+            node = path.split('/nodes/', 1)[-1].split('/', 1)[0]
+            applied_modules = {
+                name: {'enabled': int(Handler.config_modules.get(name, 0)), 'ok': True}
+                for name in ('ui', 'updates', 'poollimits', 'renumber', 'restore', 'branding')
+            }
+            state = 'applied'
+            if node == 'failing-node' and Handler.config_modules.get('poollimits'):
+                applied_modules['poollimits'] = {'enabled': 1, 'ok': False, 'error': 'target fixture failed'}
+                state = 'partial'
+            if node == 'failing-node':
+                # Simulates a module-specific status omission: the node answered,
+                # but Branding remains unknown and must not count as applied.
+                del applied_modules['branding']
+            self.send_json({'node': node, 'package_version': VERSION,
+                            'pve_version': '9.2.24',
+                            'applied': {'state': state, 'modules': applied_modules},
                             'modules': {'ui': {'check': {'ok': True, 'note': 'símbolos compatíveis'}}}})
         elif path.endswith('/mm-tools/updates/status'):
-            self.send_json({'node': 'localhost', 'online': 1, 'pending': [
+            node = path.split('/nodes/', 1)[-1].split('/', 1)[0]
+            if Handler.transient_update_failure:
+                Handler.transient_update_failure = False
+                self.send_raw_json({'data': None, 'success': 0, 'message': 'temporary status failure'}, status=500)
+                return
+            online = node != 'offline-node'
+            bulk = None
+            job = None
+            if Handler.bulk_active:
+                job = {'id': '22222222-2222-4222-8222-222222222222', 'state': 'running',
+                       'phase': 'apt-update', 'elapsed_seconds': 17}
+                bulk = {'id': Handler.bulk_id, 'state': 'running', 'mode': 'parallel',
+                        'nodes': ['localhost'], 'current_node': 'localhost',
+                        'current_phase': 'apt-update', 'elapsed_seconds': 17,
+                        'node_states': {'localhost': {'state': 'running', 'phase': 'apt-update'}}}
+            self.send_json({'node': node, 'online': online, 'pending': [
                             {'Package': 'pve-manager', 'Version': '9.2.25'}],
-                            'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': True},
-                            'reboot_suggested': True, 'job': None, 'results': [],
+                            'kernel': {'running': '6.8.0-1-pve', 'reboot_suggested': online},
+                            'reboot_suggested': online, 'job': job, 'bulk': bulk, 'results': [],
                             'reboot_context': {'running_guests': [{'type': 'qemu', 'vmid': 100,
                                                                     'name': 'harness'}],
                                                'ha': {'state': 'started'}}})
@@ -262,15 +301,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json('UPID:harness:updates-run')
         elif path.endswith('/mm-tools/updates/refresh'):
             self.send_json('apt-get update concluído')
+        elif path.endswith('/mm-tools/updates/transient-failure'):
+            Handler.transient_update_failure = True
+            self.send_json({'ok': True})
+        elif path.endswith('/mm-tools/updates/bulk/cancel'):
+            Handler.bulk_cancel_calls += 1
+            Handler.bulk_active = False
+            self.send_json({'id': Handler.bulk_id, 'state': 'cancelled', 'cancel_requested': True})
         elif path.endswith('/mm-tools/updates/bulk'):
             override = post.get('override_preflight', query.get('override_preflight', ['0'])[-1]) in ('1', 'true')
             if not override and not Handler.bulk_refused:
                 Handler.bulk_refused = True
                 self.send_raw_json({'data': None, 'success': 0, 'message': 'preflight: HA migrando'})
             else:
-                self.send_json({'bulk_id': '11111111-1111-4111-8111-111111111111',
+                Handler.bulk_active = True
+                self.send_json({'bulk_id': Handler.bulk_id,
                                 'mode': 'parallel', 'nodes': ['localhost'],
-                                'override': override})
+                                'override': override, 'state': 'launching',
+                                'node_states': {'localhost': {'state': 'queued'}}})
         elif path.endswith('/mm-tools/updates/log'):
             self.send_json({'lines': ['job de teste'], 'total': 1})
         elif path.endswith('/mm-tools/updates/reboot'):
@@ -307,7 +355,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                 'errors': [], 'disk_errors': []})
             elif pool == 'conflictpool' and self.command == 'PUT':
                 self.send_raw_json({'data': None, 'success': 0,
-                                    'message': 'DIGEST_MISMATCH: a configuração do pool mudou no servidor'})
+                                    'message': 'DIGEST_MISMATCH: config changed since it was read (current server value)'})
             elif self.command == 'PUT':
                 Handler.pool_limits[pool] = json.loads(json.dumps(post))
                 self.send_json({'poolid': pool, 'module_enabled': 1, 'can_edit': 1,
@@ -330,7 +378,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                           'disk_total_bytes': 3 * 1024 ** 3,
                                           'disk_storage_bytes': {'local': 2 * 1024 ** 3,
                                                                  'fast': 1 * 1024 ** 3}},
-                                'errors': ['guest 101: contabilidade de recursos indisponível'],
+                                'errors': ['guest 101: accounting unavailable'],
                                 'disk_errors': []})
         elif path.endswith('/mm-tools/restore/sessions'):
             self.send_json([])

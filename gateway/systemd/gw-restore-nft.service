@@ -1,5 +1,5 @@
 [Unit]
-Description=MasterMind gw-restore: tabela nftables de isolamento
+Description=MasterMind gw-restore: nftables isolation table
 After=network-pre.target
 Before=smbd.service
 Wants=network-pre.target

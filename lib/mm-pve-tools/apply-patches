@@ -25,6 +25,7 @@ BEGIN {
 }
 
 use MMPve::Core::Patch;
+use MMPve::Core::Util qw(json_encode);
 
 my ($check, $revert, $json, $root, $syntax, $norestart);
 GetOptions(
@@ -43,7 +44,7 @@ $opts{no_restart} = 1 if $norestart;
 
 if ($check) {
     my $c = MMPve::Core::Patch->check;
-    print JSON::PP->new->canonical->pretty->utf8->encode($c), "\n" if $json;
+    print json_encode($c, pretty => 1), "\n" if $json;
     my ($missing_anchor, $not_applied) = (0, 0);
     for my $k (sort keys %{$c}) {
         my $st = $c->{$k}{status};
@@ -56,7 +57,7 @@ if ($check) {
 
 if ($revert) {
     my $r = MMPve::Core::Patch->revert(%opts);
-    print JSON::PP->new->canonical->pretty->utf8->encode($r), "\n" if $json;
+    print json_encode($r, pretty => 1), "\n" if $json;
     for my $k (sort keys %{ $r->{targets} // {} }) {
         print "$k: ", $r->{targets}{$k}{status}, "\n" unless $json;
     }
@@ -66,11 +67,11 @@ if ($revert) {
 # modo padrão: apply (tolerante)
 my $r = eval { MMPve::Core::Patch->apply(%opts) };
 if ($@) {
-    print STDERR "apply-patches: erro interno: $@\n";
-    MMPve::Core::Util->can('log_line') and eval { MMPve::Core::Util::log_line("apply-patches erro: $@") };
+    print STDERR "apply-patches: internal error: $@\n";
+    MMPve::Core::Util->can('log_line') and eval { MMPve::Core::Util::log_line("apply-patches error: $@") };
     exit 5;
 }
-print JSON::PP->new->canonical->pretty->utf8->encode($r), "\n" if $json;
+print json_encode($r, pretty => 1), "\n" if $json;
 for my $k (sort keys %{ $r->{targets} // {} }) {
     my $t = $r->{targets}{$k};
     print "$k: $t->{status}", (defined $t->{note} ? " ($t->{note})" : ''), "\n" unless $json;
