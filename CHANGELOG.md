@@ -53,6 +53,9 @@ versões diferentes do PVE 9). Provada no cluster do lab
 - Resize de VM desligada e alocação sem formato não são mais recusados como
   pedido malformado pelo poollimits.
 - A limpeza de jobs e bulks antigos do updates não dá mais erro 500.
+- A grade de updates não perde o estado de um node quando a resposta chega
+  durante a atualização automática da tela, e respostas que chegam depois de
+  fechar uma aba não geram mais erro no navegador.
 
 ## [0.3.2] - 2026-11-11
 
