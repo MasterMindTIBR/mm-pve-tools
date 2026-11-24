@@ -6,6 +6,54 @@ Todas as mudanças notáveis deste projeto ficam aqui. Formato baseado em
 
 ## [Unreleased]
 
+Correções vindas da primeira instalação em produção (cluster de 6 nodes com
+versões diferentes do PVE 9). Provada no cluster do lab
+(`docs/lab-evidence/2026-11-24.md`).
+
+### Adicionado
+
+- A tela do MM Tools segue o idioma escolhido no PVE: inglês, português do
+  Brasil e espanhol, com inglês como padrão para os outros idiomas. A aba
+  Sobre também é traduzida.
+- **Ligar todos** e **Desligar todos** na aba General, com uma confirmação
+  que lista o que muda em cada módulo. A General mostra em quantos nodes cada
+  módulo está aplicado e destaca os nodes com falha.
+- Updates: painel "Atualização em andamento" com modo, nodes, node atual,
+  fase (apt update, upgrade, triggers, apply) e tempo decorrido; estado por
+  node na grade; cancelamento do bulk, que tira da fila os nodes ainda não
+  iniciados.
+
+### Alterado
+
+- Ligar e desligar módulo só na aba General. Sai o botão **Apply on all
+  nodes**. As outras abas mostram uma faixa quando o módulo está desligado e
+  continuam deixando preparar a configuração, como o logo do branding.
+- Logs, Task Log, estado dos jobs, saída do CLI e erros da API ficam sempre
+  em inglês, inclusive as recusas de limite de pool.
+- Updates: um bulk por vez no cluster; um segundo pedido é recusado e
+  informa o que já está rodando. Upgrade bem-sucedido com apply falho vira
+  aviso, sem parar a fila.
+- O status dos patches é honesto: `error` ou `partial` quando o último
+  apply falhou, `outdated` quando o arquivo tem uma chamada de outra versão.
+  A falha anterior é limpa sozinha quando o pacote dono muda de versão.
+
+### Corrigido
+
+- Patches dos módulos valem em todas as versões do PVE 9 em uso, sem depender
+  da assinatura de cada versão. O CI confere as âncoras em cinco conjuntos de
+  versões.
+- Atualizar o pacote não deixa mais a chamada antiga junto da nova. Na
+  0.3.2, um node atualizado contava duas vezes o disco novo no limite do pool.
+- Texto com acento (nome de VM, pool ou usuário) aparece uma vez só e
+  correto no Task Log, nos arquivos de estado e na API.
+- Branding: com o módulo desligado, a GUI não gera mais um erro 500 em cada
+  carga de página, e a aba avisa que o módulo está desligado em vez de
+  salvar calada. O logo do cliente cabe no cabeçalho e não é invertido no
+  tema escuro.
+- Resize de VM desligada e alocação sem formato não são mais recusados como
+  pedido malformado pelo poollimits.
+- A limpeza de jobs e bulks antigos do updates não dá mais erro 500.
+
 ## [0.3.2] - 2026-11-11
 
 ### Adicionado
