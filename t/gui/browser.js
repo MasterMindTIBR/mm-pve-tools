@@ -390,6 +390,88 @@ async function main() {
             throw new Error(`faixas incorretas: ${JSON.stringify(moduleTabs)}`);
         }
         console.log('GUI OK: abas desligadas mostram faixa, link seleciona General e branding não pede JSON ausente');
+        const brandingPreview = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const started = Date.now();
+                while (!ok()) {
+                    if (Date.now() - started > assertionTimeout) { throw new Error(`Branding: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
+            const png = (width, height) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = width; canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#3366cc'; ctx.fillRect(0, 0, width, height);
+                return canvas.toDataURL('image/png').split(',').pop();
+            };
+            const panel = Ext.create('MM.panel.Branding', { renderTo: Ext.getBody(), width: 900, height: 700 });
+            await wait('reload não terminou', () => panel.state !== undefined);
+            const measure = (label) => {
+                const dom = panel.down('#logo-preview').el.dom;
+                const themes = [...dom.querySelectorAll('.mm-branding-preview-theme')];
+                return {
+                    label,
+                    themes: themes.map((theme) => {
+                        const box = theme.querySelector('.mm-branding-preview-logo').getBoundingClientRect();
+                        const img = theme.querySelector('img.mm-branding-logo');
+                        const imgBox = img.getBoundingClientRect();
+                        const style = getComputedStyle(img);
+                        return {
+                            key: theme.dataset.theme,
+                            background: getComputedStyle(theme.querySelector('.mm-branding-preview-header')).backgroundColor,
+                            box: [Math.round(box.width), Math.round(box.height)],
+                            img: [Math.round(imgBox.width), Math.round(imgBox.height)],
+                            fit: style.objectFit, filter: style.filter,
+                            text: theme.querySelector('.mm-branding-preview-text').textContent,
+                        };
+                    }),
+                    fit: panel.logoFit && [panel.logoFit.width, panel.logoFit.height],
+                    fitText: panel.down('#logo-fit').isHidden() ? null : panel.down('#logo-fit').el.dom.textContent,
+                    warning: panel.down('#logo-ratio-warning').isHidden() ? null
+                        : panel.down('#logo-ratio-warning').el.dom.textContent,
+                };
+            };
+            const show = async (b64) => {
+                panel.pendingLogo = b64;
+                panel.preview();
+                await wait('prévia não mediu o logo', () => !!panel.logoFit);
+            };
+            const hint = panel.down('#logo-hint').el.dom.textContent;
+            const empty = panel.down('#logo-preview').el.dom.textContent === MM.t('branding.no_logo');
+            await show(png(400, 200)); // logo empilhado, como o do primeiro cliente
+            const stacked = measure('2:1');
+            panel.down('textfield[name=header_text]').setValue('Cliente X');
+            const typed = measure('texto');
+            await show(png(400, 70));
+            const horizontal = measure('400x70');
+            panel.destroy();
+            return { hint, empty, stacked, typed, horizontal };
+        }, TIMEOUT);
+        {
+            const { hint, empty, stacked, typed, horizontal } = brandingPreview;
+            const box = (m) => m.themes.length === 2
+                && m.themes.map((t) => t.key).join(',') === 'light,dark'
+                && m.themes[0].background === 'rgb(207, 207, 207)'
+                && m.themes[1].background === 'rgb(26, 26, 26)'
+                && m.themes.every((t) => t.box.join('x') === '200x35' && t.img.join('x') === '200x35'
+                    && t.fit === 'contain' && t.filter === 'none');
+            const problems = [];
+            if (!hint.includes('400×70') || !empty) { problems.push('dica ou estado vazio'); }
+            if (!box(stacked) || stacked.fit.join('x') !== '70x35' || !stacked.fitText?.includes('70×35')
+                || !stacked.warning?.includes('2:1')
+                || !stacked.themes.every((t) => t.text === 'Virtual Environment')) {
+                problems.push('logo 2:1 sem tamanho real ou sem aviso');
+            }
+            if (!typed.themes.every((t) => t.text === 'Cliente X')) { problems.push('texto do topo não acompanhou'); }
+            if (!box(horizontal) || horizontal.fit.join('x') !== '200x35' || horizontal.warning !== null) {
+                problems.push('logo horizontal com aviso ou tamanho errado');
+            }
+            if (problems.length) {
+                throw new Error(`Branding: ${problems.join('; ')}: ${JSON.stringify(brandingPreview)}`);
+            }
+        }
+        console.log('GUI OK: prévia do branding em 200x35 nos temas claro e escuro, aviso só para logo empilhado');
         const updatesAssertions = await page.evaluate(async (assertionTimeout) => {
             const wait = async (what, ok) => {
                 const begin = Date.now();
