@@ -121,7 +121,11 @@ sub register_targets {
             }
         }
         $t{module} = $module;
-        $t{marker} //= $t{line};
+        # The marker must match every version of the inserted line, not only
+        # the current text: when the line changes between releases (e.g. from
+        # explicit arguments to @_), apply and revert must still find the old
+        # one, or an upgraded node keeps both calls and the hook runs twice.
+        $t{marker} //= ($t{line} =~ /(PVE::MMTools::\w+(?:::\w+)*->\w+\()/ ? $1 : $t{line});
         die "marker for target $id is invalid\n"
             if ref($t{marker}) || $t{marker} eq '' || $t{marker} =~ /\n/;
         $t{syntax} //= ($t{path} =~ /\.pm\z/ ? 1 : 0);
@@ -332,7 +336,13 @@ sub check {
                 if !defined($inserted_index) && defined($anchor_index);
             my @declaration_errors = defined($inserted_index)
                 ? $class->static_check_target($target, $lines, $inserted_index) : ();
-            my $status = $has_marker ? 'applied' : (!$has_anchor ? 'anchor_missing'
+            # applied = exactly one inserted line, identical to the current one.
+            # An old-version or duplicated line (left by an upgrade) is outdated
+            # until apply rewrites it.
+            my @inserted = grep { index($lines->[$_], $marker) >= 0 } 0 .. $#{$lines};
+            my $current = @inserted == 1 && $lines->[$inserted[0]] eq "$target->{line}\n";
+            my $status = $current ? 'applied' : @inserted ? 'outdated'
+                : (!$has_anchor ? 'anchor_missing'
                 : ($previous_failure ? 'previous_failure' : 'not_applied'));
             $status = 'declaration_missing' if @declaration_errors;
             $res{$id} = {
@@ -455,15 +465,11 @@ sub _patch_nodes_pm {
 
 sub _generic_desired {
     my ($class, $target, $raw) = @_;
-    my @lines = split(/^/, $raw);
     my $line = $target->{line} . "\n";
     my $marker = _marker($target);
-    for my $i (0 .. $#lines) {
-        next unless index($lines[$i], $marker) >= 0;
-        return { ok => 1, content => $raw } if $lines[$i] eq $line;
-        $lines[$i] = $line;
-        return { ok => 1, content => join('', @lines) };
-    }
+    # Drop every inserted line of this target (any version, duplicates from an
+    # upgrade included) and insert the current one at the current anchor.
+    my @lines = grep { index($_, $marker) < 0 } split(/^/, $raw);
     my $at = $class->_anchor_index($target, \@lines);
     return { ok => 0, status => 'anchor_missing', note => "anchor is missing in $target->{id}" }
         unless defined $at;
