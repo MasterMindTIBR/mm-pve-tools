@@ -15,4 +15,11 @@ libproxmox-rs-perl=0.4.1
 libpve-storage-perl=9.1.13
 qemu-server=9.2.14
 pve-container=6.1.18
+# Solto, o apt escolhe o mais novo, e o 5.2.6 exige pve-container >= 6.1.24 e
+# qemu-server >= 9.2.19, acima do fixado.
+pve-ha-manager=5.2.5
+# Dependências indiretas do qemu-server (pve-firewall) e do pve-cluster que, nas
+# versões novas, exigem libpve-common-perl acima do fixado.
+libpve-network-perl=1.6.9
+libproxmox-acme-perl=1.7.2
 proxmox-widget-toolkit=5.2.10

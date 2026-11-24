@@ -42,7 +42,10 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends perl make \
     libproxmox-rs-perl=$(pve_version libproxmox-rs-perl) \\
     libpve-storage-perl=$(pve_version libpve-storage-perl) \\
     qemu-server=$(pve_version qemu-server) \\
-    pve-container=$(pve_version pve-container) && rm -rf /var/lib/apt/lists/*
+    pve-container=$(pve_version pve-container) \\
+    pve-ha-manager=$(pve_version pve-ha-manager) \\
+    libpve-network-perl=$(pve_version libpve-network-perl) \\
+    libproxmox-acme-perl=$(pve_version libproxmox-acme-perl) && rm -rf /var/lib/apt/lists/*
 EOF
 
 run_rc=0
