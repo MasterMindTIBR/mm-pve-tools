@@ -358,6 +358,72 @@ async function main() {
         }
         console.log('GUI OK: General sem Apply-all, todos em um PUT + um apply e Nodes 2/2, 1/2, unknown');
 
+        const diag = await page.evaluate(async (assertionTimeout) => {
+            const wait = async (what, ok) => {
+                const started = Date.now();
+                while (!ok()) {
+                    if (Date.now() - started > assertionTimeout) { throw new Error(`Diagnóstico: ${what}`); }
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+            };
+            const grid = Ext.create('MM.panel.Diag', { renderTo: Ext.getBody(), width: 1000, height: 300 });
+            const store = grid.getStore();
+            const button = grid.down('#reload');
+            const rows = () => store.getRange().map((r) => ({
+                node: r.get('node'), loading: !!r.get('loading'), pkg: r.get('pkg') ?? null, state: r.get('state') ?? null,
+            }));
+            const cells = (node) => {
+                const record = store.findRecord('node', node, 0, false, true, true);
+                const row = grid.getView().getRow(record);
+                return [...row.querySelectorAll('.x-grid-cell-inner')].map((c) => c.textContent.trim());
+            };
+            // Duplo clique no primeiro carregamento: só um pedido conta.
+            MM.fillDiag(grid);
+            MM.fillDiag(grid);
+            const firstBusy = { disabled: button.isDisabled(), spin: button.iconCls.includes('fa-spin') };
+            await wait('primeira carga não terminou', () => !grid.diagLoading && store.getCount() > 0);
+            const first = rows();
+            const offlineCells = cells('offline-node');
+            const records = store.getRange();
+            // Recarregar: as linhas ficam, marcadas como carregando; o segundo clique é ignorado.
+            MM.fillDiag(grid);
+            const during = {
+                rows: rows(), disabled: button.isDisabled(),
+                spinners: grid.getView().getEl().dom.querySelectorAll('.mm-diag-loading').length,
+            };
+            MM.fillDiag(grid);
+            await wait('recarga não terminou', () => !grid.diagLoading);
+            const after = rows();
+            const same = store.getRange().every((r, i) => r === records[i]);
+            const enabled = !button.isDisabled() && !button.iconCls.includes('fa-spin');
+            grid.destroy();
+            return { firstBusy, first, offlineCells, during, after, same, enabled,
+                offline: MM.t('common.offline'), empty: MM.t('common.empty') };
+        }, TIMEOUT);
+        {
+            const nodes = (list) => list.map((r) => r.node).join(',');
+            const problems = [];
+            if (!diag.firstBusy.disabled || !diag.firstBusy.spin) { problems.push('botão não mostrou carregamento'); }
+            if (nodes(diag.first) !== 'localhost,offline-node') { problems.push('nodes duplicados, faltando ou fora de ordem'); }
+            const local = diag.first.find((r) => r.node === 'localhost');
+            const offline = diag.first.find((r) => r.node === 'offline-node');
+            if (!local?.pkg || local.loading) { problems.push('localhost sem dados'); }
+            if (offline?.state !== diag.offline || offline.pkg !== null
+                || diag.offlineCells.slice(1, 3).some((c) => c !== diag.empty)) {
+                problems.push('node offline sem estado ou sem "-" nos valores');
+            }
+            if (nodes(diag.during.rows) !== 'localhost,offline-node' || !diag.during.rows.every((r) => r.loading)
+                || !diag.during.disabled || diag.during.spinners !== 2) {
+                problems.push('recarga esvaziou a grade ou não mostrou carregando');
+            }
+            if (nodes(diag.after) !== 'localhost,offline-node' || diag.after.some((r) => r.loading)
+                || !diag.same || !diag.enabled) {
+                problems.push('recarga duplicou, trocou registros ou deixou o botão travado');
+            }
+            if (problems.length) { throw new Error(`Diagnóstico: ${problems.join('; ')}: ${JSON.stringify(diag)}`); }
+        }
+        console.log('GUI OK: Diagnóstico com uma linha por node, "-" sem dado, carregando no lugar e clique duplo ignorado');
+
         const moduleTabs = await page.evaluate(async (assertionTimeout) => {
             const wait = async (what, ok) => {
                 const started = Date.now();
